@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "vob": {
+      "command": "node",
+      "args": ["./mcp/server.js"]
+    }
+  }
+}

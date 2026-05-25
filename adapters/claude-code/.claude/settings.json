@@ -1,0 +1,34 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__vob__vob_init_project",
+      "mcp__vob__vob_read_state",
+      "mcp__vob__vob_read_state_summary",
+      "mcp__vob__vob_transition_phase",
+      "Read",
+      "Glob",
+      "Grep",
+      "Bash(ls *)",
+      "Bash(cat *)",
+      "Bash(jq *)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash|Read|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PROJECT_DIR:-$PWD}/.claude/hooks/session-write-guard.sh\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  },
+  "statusLine": {
+    "type": "command",
+    "command": "node \"${CLAUDE_PROJECT_DIR:-$PWD}/.claude/hooks/vob-statusline.js\""
+  }
+}
