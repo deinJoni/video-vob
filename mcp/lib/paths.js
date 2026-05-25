@@ -67,13 +67,51 @@ function packageDir(projectId) {
   return path.join(sessionDir(projectId), "package");
 }
 
+function packageFinalMp4Path(projectId) {
+  return path.join(packageDir(projectId), "final.mp4");
+}
+
+function packageThumbnailPath(projectId) {
+  return path.join(packageDir(projectId), "thumbnail.jpg");
+}
+
+function packageManifestPath(projectId) {
+  return path.join(packageDir(projectId), "manifest.json");
+}
+
+function packageReadmePath(projectId) {
+  return path.join(packageDir(projectId), "README.md");
+}
+
+function archiveDir(projectId) {
+  return path.join(sessionDir(projectId), "archive");
+}
+
+function archiveVersionDir(projectId, version) {
+  if (!Number.isInteger(version) || version < 1) {
+    throw new Error(`archive version must be a positive integer, got ${version}`);
+  }
+  return path.join(archiveDir(projectId), `v${version}`);
+}
+
+function archiveSnapshotPath(projectId, version) {
+  return path.join(archiveVersionDir(projectId, version), "snapshot.json");
+}
+
 module.exports = {
+  archiveDir,
+  archiveSnapshotPath,
+  archiveVersionDir,
   assertSafeProjectId,
   briefPath,
   composeDir,
   ingestDir,
   manifestPath,
   packageDir,
+  packageFinalMp4Path,
+  packageManifestPath,
+  packageReadmePath,
+  packageThumbnailPath,
   previewDir,
   rendersDir,
   sessionDir,

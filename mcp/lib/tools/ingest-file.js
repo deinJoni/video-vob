@@ -16,6 +16,7 @@ const {
 const { readSessionStateStrict } = require("../session-state.js");
 const { probeFile, summarizeProbe } = require("../ffprobe.js");
 const { checkHyperframesAvailable } = require("../hyperframes-runner.js");
+const { checkFfmpegAvailable } = require("../ffmpeg-runner.js");
 
 const VIDEO_EXTENSIONS = new Set([".mp4", ".mov", ".mkv", ".webm", ".m4v", ".avi"]);
 
@@ -116,11 +117,13 @@ function ingestFile(args) {
   const files = enumerateFiles(sourcePath, stat);
   const manifest = buildManifest({ projectId: id, sourcePath, files });
 
-  // Best-effort hyperframes preflight. Non-fatal — the lint/render tools fail
-  // loudly on their own if hyperframes disappears later. Recorded so the
-  // orchestrator can warn the user proactively at INGEST instead of after a
-  // BRIEF/STORYBOARD round trip.
+  // Best-effort preflight for downstream CLI deps. Non-fatal at INGEST — the
+  // lint/render/package tools fail loudly on their own if a binary disappears
+  // later. Recorded so the orchestrator can warn the user proactively at
+  // INGEST instead of after a BRIEF/STORYBOARD round trip, and so the
+  // RENDER -> PACKAGE gate can surface ffmpeg gaps with a clear blocker.
   const hyperframes = checkHyperframesAvailable();
+  const ffmpeg = checkFfmpegAvailable();
 
   return withSessionLock(id, () => {
     const state = readSessionStateStrict(id);
@@ -140,6 +143,7 @@ function ingestFile(args) {
       dependencies: {
         ...(state.dependencies && typeof state.dependencies === "object" && !Array.isArray(state.dependencies) ? state.dependencies : {}),
         hyperframes,
+        ffmpeg,
       },
       last_updated: ts,
       history: [
@@ -162,6 +166,7 @@ function ingestFile(args) {
       video_stream_count: manifest.video_stream_count,
       files: manifest.files.map(({ probe: _probe, ...summary }) => summary),
       hyperframes,
+      ffmpeg,
     };
   });
 }

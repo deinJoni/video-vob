@@ -17,6 +17,11 @@ const TOOL_MODULES = Object.freeze([
   require("./lint-composition.js"),
   require("./render-preview.js"),
   require("./confirm-preview.js"),
+  require("./render-full.js"),
+  require("./confirm-render.js"),
+  require("./package-output.js"),
+  require("./finalize-iteration.js"),
+  require("./archive-for-iteration.js"),
 ]);
 
 module.exports = { TOOL_MODULES };

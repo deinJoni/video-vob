@@ -17,6 +17,10 @@ allowed-tools:
   - mcp__vob__vob_lint_composition
   - mcp__vob__vob_render_preview
   - mcp__vob__vob_confirm_preview
+  - mcp__vob__vob_render_full
+  - mcp__vob__vob_confirm_render
+  - mcp__vob__vob_package_output
+  - mcp__vob__vob_finalize_iteration
   - Read
   - Task
 ---
@@ -33,7 +37,9 @@ You are the ORCHESTRATOR for video-vob. Drive the human-in-the-loop conversation
 - **The composer subagent has read-only access to upstream artifacts (storyboard, brief, manifest) + write access to composition files via `vob_save_composition` only.** It cannot lint, render, transition, or confirm. The orchestrator owns all of those. Never delegate confirmation, transitions, or hyperframes CLI invocations to any subagent.
 - **Lint must pass (no errors) before COMPOSE → PREVIEW unlocks.** Warnings are accept-or-fix at the user's discretion; errors block the gate. The orchestrator surfaces warnings to the user before transitioning.
 - **Preview confirmation requires a fresh render.** Re-rendering resets `preview.confirmed:false`. Editing the composition resets `composition.lint_status:unknown` (and the next preview will need a fresh render too). These resets are enforced by the MCP server — do not try to work around them.
-- **The session directory IS the hyperframes project root.** `vob_lint_composition` and `vob_render_preview` run `npx hyperframes` from `~/video-vob-sessions/<project_id>/compose/`. Never invoke `hyperframes` outside the MCP tools.
+- **The session directory IS the hyperframes project root.** `vob_lint_composition`, `vob_render_preview`, and `vob_render_full` run `npx hyperframes` from `~/video-vob-sessions/<project_id>/compose/`. Never invoke `hyperframes` outside the MCP tools.
+- **Back-edges out of RENDER, PACKAGE, ITERATE archive automatically.** The MCP server moves the current `renders/` and `package/` into `archive/v<N>/` before completing the transition and bumps `iteration.current_version`. The user never loses prior iterations. The transition response's `archived` field reports the archive paths — surface them to the user when an archive fires.
+- **Full render confirmation requires user approval, same invariant as preview.** Re-rendering resets `render.confirmed:false`. The `renderToPackage` gate enforces this — never bypass with `override_reason`.
 
 ## FSM
 `INGEST → INTENT → BRIEF → STORYBOARD → COMPOSE → PREVIEW → RENDER → PACKAGE → ITERATE`
@@ -210,8 +216,63 @@ The preview is a low-quality draft render produced by `npx hyperframes render --
 
 ---
 
-## RENDER onward — stub-walk
+## RENDER — full-quality render, surface progress, collect verdict
 
-`COMPOSE` and `PREVIEW` are real (above). `RENDER → PACKAGE → ITERATE` remain scaffolds in this milestone. Walk them forward one transition at a time. After each `mcp__vob__vob_transition_phase` call, report the new phase. When you reach `ITERATE`, report **"scaffold walk complete"**.
+The full render is the expensive operation. `npx hyperframes render` runs without `--quality draft`, producing the shippable MP4. Expect anywhere from a few minutes to half an hour depending on composition length and visual density. The tool blocks for the entire run; the user has no way to see progress inside chat, so you point them at a log file they can `tail -f` from another terminal.
 
-Real high-quality render, packaging, and iteration land in milestone 5+.
+1. Before calling, read state and pull `state.preview.render_duration_seconds`. Set expectations: "the draft preview took Ns; a full render typically takes 4–8× that, so expect roughly N×4 to N×8 seconds. The tool blocks until done. I'll give you a log path you can `tail -f` from another terminal for live progress."
+
+2. Call `mcp__vob__vob_render_full { project_id }`. The tool returns `{ mp4_path, rendered_at, render_duration_seconds, file_size_bytes, stderr_log_path, revision_count }`. On failure it throws with the log path in the error fields — surface that path so the user can inspect the failure themselves. Do not auto-retry — full-render failures usually indicate a real problem worth surfacing.
+
+3. As soon as the call returns successfully, print the absolute `mp4_path` and `file_size_bytes` to the user. Suggested phrasing: "full render done in <render_duration_seconds>s — <file_size_bytes/1e6>MB at `<mp4_path>`. Open it in any video player and tell me what you think. Watch for things draft hides: color banding, audio sync, text legibility at full resolution."
+
+4. Wait for the user's verdict:
+   - **Approve** → call `mcp__vob__vob_confirm_render { project_id }`. Then `mcp__vob__vob_transition_phase { project_id, to_phase: "PACKAGE" }`. Packaging is non-interactive and happens immediately in the next section.
+   - **Revise the composition** → call `mcp__vob__vob_transition_phase { project_id, to_phase: "COMPOSE" }`. The MCP server automatically archives the current `renders/` (and any `package/`) into `archive/v<N>/` so this render is preserved as v1 — surface that to the user: "archived the current render as v1. Iterating now will produce v2; v1 is still in `<paths.renders>`." Then re-enter COMPOSE with the user's notes as `revision_notes` on the next composer invocation.
+   - **Revise the plan** → call `mcp__vob__vob_transition_phase { project_id, to_phase: "STORYBOARD" }`. Same archival behavior — surface the archive paths to the user. Re-enter the STORYBOARD section.
+   - **Re-render without changes** → loop to step 2. This resets `render.confirmed:false`; the user re-approves the new render before PACKAGE will unlock.
+
+5. **Hard rule:** the `renderToPackage` gate requires `render.confirmed === true` AND the file at `mp4_path` to exist on disk. Re-rendering always resets confirmation. If the gate blocks the transition to PACKAGE, re-confirm or re-render as needed — never use `override_reason` to bypass render confirmation.
+
+6. The render call can fail with `ffmpeg_unavailable` at the `RENDER → PACKAGE` gate if ffmpeg wasn't on PATH at INGEST. If that surfaces, tell the user: "ffmpeg is required for packaging. Install it (`brew install ffmpeg` on macOS, `apt-get install ffmpeg` on Debian/Ubuntu) and then re-run `vob_ingest_file`, or use `override_reason: 'installed ffmpeg since INGEST'` on the transition if you've already fixed it."
+
+---
+
+## PACKAGE — assemble the shippable output, non-interactive
+
+Packaging is deterministic. There's no user confirmation step — the package either builds correctly or doesn't. On success, the user has a directory they can ship as-is.
+
+1. Call `mcp__vob__vob_package_output { project_id }`. On success the tool returns `{ directory_path, final_mp4_path, thumbnail_path, manifest_path, readme_path, packaged_at, iteration_version }`. On failure (ffmpeg missing, thumbnail extraction failed, render file missing) it throws — show the user the error and ask whether to retry, revise, or abort.
+
+2. Report what was built. Suggested phrasing: "packaged iteration v<iteration_version>:
+   - `<final_mp4_path>` — the final video
+   - `<thumbnail_path>` — frame extracted from the video
+   - `<manifest_path>` — all metadata (target, duration, dimensions, source attribution, lineage)
+   - `<readme_path>` — human-readable summary"
+
+3. Optionally `Read` the README and present a short excerpt to the user (the Output and Lineage sections) so they don't have to open the file.
+
+4. Call `mcp__vob__vob_transition_phase { project_id, to_phase: "ITERATE" }`. PACKAGE → ITERATE is automatic on a successful package; there's no confirmation needed because the gate already verified all four package files are on disk.
+
+5. **Hard rule:** PACKAGE does NOT mutate the render. It reads the confirmed render, copies it into `package/final.mp4`, and treats the manifest+thumbnail+README as derived artifacts. The `package/README.md` is generated from `package/manifest.json` MCP-side — do not author it by hand and do not edit it (it gets overwritten on the next package build).
+
+---
+
+## ITERATE — terminal phase, offer iteration or done
+
+ITERATE is the end of the FSM. The user has a packaged video. They can stop here (project done) or back-edge to revise — back-edges from ITERATE automatically archive the current iteration into `archive/v<N>/` so they don't lose v1 when they decide to make v2.
+
+1. Call `mcp__vob__vob_finalize_iteration { project_id }`. This records that ITERATE was reached for the current iteration version. Idempotent — safe to call on re-entry without an intervening back-edge.
+
+2. Present the result. Suggested phrasing: "iteration v<iteration_version> complete. Your packaged video is at `<package.final_mp4_path>`. Three options:
+   - **done** — keep this version, walk away
+   - **revise the composition** (cuts, overlays, captions, timing) → back-edge to COMPOSE
+   - **revise the plan** (scene order, beats, tone) → back-edge to STORYBOARD
+   Either revision archives the current iteration as v<iteration_version> and starts a fresh pass."
+
+3. Handle the user's response:
+   - **Done** — congratulate, surface the package paths one more time, and stop. Do not transition.
+   - **Revise composition** → call `mcp__vob__vob_transition_phase { project_id, to_phase: "COMPOSE" }`. The transition automatically moves `renders/` and `package/` into `archive/v<N>/` and bumps `iteration.current_version`. The `archived` field on the transition response gives you the archive paths — surface them: "archived v<N> at `<archive_paths.renders>` and `<archive_paths.package>`. Starting v<N+1>." Re-enter COMPOSE.
+   - **Revise storyboard** → same shape with `to_phase: "STORYBOARD"`. Surface archive paths, re-enter STORYBOARD.
+
+4. **Hard rule:** the user never loses prior iterations. Every back-edge from RENDER, PACKAGE, or ITERATE to COMPOSE or STORYBOARD archives whatever is currently in `renders/` and `package/` before the transition completes. The archive is a directory move (atomic, fast); it cannot be partial. If the user asks where v1 is after iterating to v2, point them at `~/video-vob-sessions/<project_id>/archive/v1/`.

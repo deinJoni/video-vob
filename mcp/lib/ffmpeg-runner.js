@@ -4,23 +4,20 @@ const { spawnSync } = require("child_process");
 const { ERROR_CODES, ToolError } = require("./envelope.js");
 const { spawnWithShutdown, DEFAULT_MAX_OUTPUT_BYTES } = require("./spawn-with-shutdown.js");
 
-const HYPERFRAMES_INSTALL_HINT =
-  "video-vob runs hyperframes via `npx hyperframes`. Ensure Node.js 20+ is installed and `npx` resolves on PATH. " +
-  "If `npx` cannot reach the package (offline, corp network), install it explicitly: `npm i -g hyperframes`. " +
-  "See https://github.com/heygen-com/hyperframes for details.";
+const FFMPEG_INSTALL_HINT =
+  "Install ffmpeg (https://ffmpeg.org/download.html) and ensure `ffmpeg` is on PATH. " +
+  "macOS: `brew install ffmpeg`. Debian/Ubuntu: `apt-get install ffmpeg`.";
 
-const LINT_TIMEOUT_MS = 60 * 1000;
-const RENDER_TIMEOUT_MS = 5 * 60 * 1000;
-const FULL_RENDER_TIMEOUT_MS = 30 * 60 * 1000;
+const FFMPEG_TIMEOUT_MS = 5 * 60 * 1000;
 const PREFLIGHT_TIMEOUT_MS = 30 * 1000;
 const MAX_OUTPUT_BYTES = DEFAULT_MAX_OUTPUT_BYTES;
 
-function runHyperframesSync(subArgv, { cwd, timeoutMs = LINT_TIMEOUT_MS } = {}) {
+function runFfmpegSync(argv, { cwd, timeoutMs = PREFLIGHT_TIMEOUT_MS } = {}) {
   let result;
   try {
     result = spawnSync(
-      "npx",
-      ["--yes", "hyperframes", ...subArgv],
+      "ffmpeg",
+      argv,
       {
         encoding: "utf8",
         cwd,
@@ -31,14 +28,14 @@ function runHyperframesSync(subArgv, { cwd, timeoutMs = LINT_TIMEOUT_MS } = {}) 
   } catch (error) {
     throw new ToolError(
       ERROR_CODES.INTERNAL_ERROR,
-      `npx hyperframes invocation failed: ${error.message || String(error)}. ${HYPERFRAMES_INSTALL_HINT}`,
+      `ffmpeg invocation failed: ${error.message || String(error)}. ${FFMPEG_INSTALL_HINT}`,
     );
   }
 
   if (result.error && result.error.code === "ENOENT") {
     throw new ToolError(
       ERROR_CODES.INTERNAL_ERROR,
-      `npx not found on PATH. ${HYPERFRAMES_INSTALL_HINT}`,
+      `ffmpeg not found on PATH. ${FFMPEG_INSTALL_HINT}`,
     );
   }
   if (result.error && result.error.code === "ETIMEDOUT") {
@@ -54,7 +51,7 @@ function runHyperframesSync(subArgv, { cwd, timeoutMs = LINT_TIMEOUT_MS } = {}) 
   if (result.error) {
     throw new ToolError(
       ERROR_CODES.INTERNAL_ERROR,
-      `npx hyperframes invocation failed: ${result.error.message || String(result.error)}. ${HYPERFRAMES_INSTALL_HINT}`,
+      `ffmpeg invocation failed: ${result.error.message || String(result.error)}. ${FFMPEG_INSTALL_HINT}`,
     );
   }
 
@@ -68,24 +65,24 @@ function runHyperframesSync(subArgv, { cwd, timeoutMs = LINT_TIMEOUT_MS } = {}) 
   };
 }
 
-function runHyperframesBlocking(subArgv, { cwd, timeoutMs = RENDER_TIMEOUT_MS, stderrLogPath = null } = {}) {
+function runFfmpegBlocking(argv, { cwd, timeoutMs = FFMPEG_TIMEOUT_MS, stderrLogPath = null } = {}) {
   return spawnWithShutdown(
-    "npx",
-    ["--yes", "hyperframes", ...subArgv],
+    "ffmpeg",
+    argv,
     {
       cwd,
       timeoutMs,
       maxOutputBytes: MAX_OUTPUT_BYTES,
       stderrLogPath,
-      installHint: HYPERFRAMES_INSTALL_HINT,
+      installHint: FFMPEG_INSTALL_HINT,
     },
   );
 }
 
-function checkHyperframesAvailable({ timeoutMs = PREFLIGHT_TIMEOUT_MS } = {}) {
+function checkFfmpegAvailable({ timeoutMs = PREFLIGHT_TIMEOUT_MS } = {}) {
   let result;
   try {
-    result = runHyperframesSync(["--version"], { timeoutMs });
+    result = runFfmpegSync(["-version"], { timeoutMs });
   } catch (error) {
     return { ok: false, version: null, error: error.message || String(error), checked_at: new Date().toISOString() };
   }
@@ -97,27 +94,27 @@ function checkHyperframesAvailable({ timeoutMs = PREFLIGHT_TIMEOUT_MS } = {}) {
     return {
       ok: false,
       version: null,
-      error: stderrPreview || `npx hyperframes --version exited with status ${result.exit_code}`,
+      error: stderrPreview || `ffmpeg -version exited with status ${result.exit_code}`,
       checked_at: new Date().toISOString(),
     };
   }
-  const versionMatch = (result.stdout || "").trim().match(/(\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?)/);
+  // ffmpeg banner starts with: "ffmpeg version 6.0 ..."
+  const firstLine = (result.stdout || "").split("\n")[0] || "";
+  const versionMatch = firstLine.match(/ffmpeg version\s+(\S+)/i);
   return {
     ok: true,
-    version: versionMatch ? versionMatch[1] : (result.stdout || "").trim().slice(0, 64) || null,
+    version: versionMatch ? versionMatch[1] : firstLine.slice(0, 64) || null,
     error: null,
     checked_at: new Date().toISOString(),
   };
 }
 
 module.exports = {
-  HYPERFRAMES_INSTALL_HINT,
-  LINT_TIMEOUT_MS,
-  RENDER_TIMEOUT_MS,
-  FULL_RENDER_TIMEOUT_MS,
+  FFMPEG_INSTALL_HINT,
+  FFMPEG_TIMEOUT_MS,
   PREFLIGHT_TIMEOUT_MS,
   MAX_OUTPUT_BYTES,
-  checkHyperframesAvailable,
-  runHyperframesBlocking,
-  runHyperframesSync,
+  checkFfmpegAvailable,
+  runFfmpegBlocking,
+  runFfmpegSync,
 };

@@ -6,6 +6,7 @@ const { ERROR_CODES, ToolError } = require("./envelope.js");
 const { sessionDir, statePath, assertSafeProjectId } = require("./paths.js");
 const { withSessionLock, writeFileAtomic, readJsonFile } = require("./storage.js");
 const { getGate } = require("./phase-gates.js");
+const { archiveForIteration, isArchivalTransition } = require("./archival.js");
 
 const ALLOWED_TRANSITIONS = Object.freeze({
   INGEST:     ["INTENT"],
@@ -14,8 +15,8 @@ const ALLOWED_TRANSITIONS = Object.freeze({
   STORYBOARD: ["COMPOSE", "BRIEF"],
   COMPOSE:    ["PREVIEW", "STORYBOARD"],
   PREVIEW:    ["RENDER", "COMPOSE", "STORYBOARD"],
-  RENDER:     ["PACKAGE"],
-  PACKAGE:    ["ITERATE"],
+  RENDER:     ["PACKAGE", "COMPOSE", "STORYBOARD"],
+  PACKAGE:    ["ITERATE", "COMPOSE", "STORYBOARD"],
   ITERATE:    ["COMPOSE", "STORYBOARD"],
 });
 
@@ -131,28 +132,51 @@ function transitionPhase(args) {
     }
 
     const ts = nowIso();
-    const next = {
+    // Versioned archival on back-edges out of {RENDER, PACKAGE, ITERATE} into
+    // {COMPOSE, STORYBOARD}. The user never loses prior iterations: the
+    // current renders/ and package/ are moved into archive/v<N>/ before the
+    // transition state is committed. Archival is a no-op (returns null) if
+    // there's nothing to move.
+    let archive = null;
+    if (isArchivalTransition(from, toPhase)) {
+      archive = archiveForIteration(state, { from, to: toPhase });
+    }
+
+    let next = {
       ...state,
       phase: toPhase,
       last_updated: ts,
-      history: [
-        ...(Array.isArray(state.history) ? state.history : []),
-        {
-          kind: "transition",
-          from,
-          to: toPhase,
-          at: ts,
-          override_reason: overrideReason,
-          gate_blockers: verdict.blockers && verdict.blockers.length ? verdict.blockers : null,
-        },
-      ],
     };
+    if (archive) {
+      next = archive.apply(next);
+    }
+    const archiveEvents = archive
+      ? [{
+          kind: "iteration_archived",
+          at: ts,
+          archive_version: archive.record.version,
+          paths: archive.record.paths,
+        }]
+      : [];
+    next.history = [
+      ...(Array.isArray(state.history) ? state.history : []),
+      ...archiveEvents,
+      {
+        kind: "transition",
+        from,
+        to: toPhase,
+        at: ts,
+        override_reason: overrideReason,
+        gate_blockers: verdict.blockers && verdict.blockers.length ? verdict.blockers : null,
+      },
+    ];
     writeFileAtomic(statePath(id), `${JSON.stringify(next, null, 2)}\n`);
     return {
       project_id: id,
       from,
       to: toPhase,
       override_reason: overrideReason,
+      archived: archive ? archive.record : null,
       state: next,
     };
   });

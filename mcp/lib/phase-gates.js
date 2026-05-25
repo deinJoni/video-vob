@@ -4,14 +4,7 @@ const fs = require("fs");
 const path = require("path");
 const { readJsonFile } = require("./storage.js");
 const { missingIntentKeys } = require("./intent-schema.js");
-const { composeDir } = require("./paths.js");
-
-// Stub: always allowed, no blockers. Used for transitions that don't have
-// real preconditions in this milestone (back-edges, plus everything from
-// STORYBOARD onward which is still scaffold-only).
-function allow() {
-  return { allowed: true, blockers: [] };
-}
+const { composeDir, packageDir, packageFinalMp4Path, packageManifestPath, packageReadmePath, packageThumbnailPath } = require("./paths.js");
 
 function blocker(code, message, fields = {}) {
   return { code, message, ...fields };
@@ -20,6 +13,8 @@ function blocker(code, message, fields = {}) {
 function block(blockers) {
   return { allowed: false, blockers };
 }
+
+const ALLOWED = Object.freeze({ allowed: true, blockers: [] });
 
 // INGEST -> INTENT: a manifest.json must exist on disk and report at least
 // one playable video stream. The state.manifest summary is convenient but the
@@ -69,7 +64,7 @@ function ingestToIntent(state) {
       ),
     ]);
   }
-  return { allowed: true, blockers: [] };
+  return ALLOWED;
 }
 
 // INTENT -> BRIEF: every required intent key must be present with a
@@ -87,47 +82,10 @@ function intentToBrief(state) {
       ),
     ]);
   }
-  return { allowed: true, blockers: [] };
-}
-
-// STORYBOARD -> COMPOSE: storyboard must be saved on disk AND explicitly
-// confirmed. Mirrors the BRIEF -> STORYBOARD invariant: a save without
-// confirmation, or a save followed by edits that reset confirmed:false,
-// both block here.
-function storyboardToCompose(state) {
-  const storyboard = state && typeof state.storyboard === "object" ? state.storyboard : null;
-  if (!storyboard || typeof storyboard.artifact_path !== "string" || !storyboard.artifact_path) {
-    return block([
-      blocker(
-        "storyboard_not_saved",
-        "no storyboard recorded in state — invoke the storyboarder subagent and call vob_save_storyboard with the JSON",
-      ),
-    ]);
-  }
-  if (!fs.existsSync(storyboard.artifact_path)) {
-    return block([
-      blocker(
-        "storyboard_not_saved",
-        `storyboard artifact referenced by state is not on disk: ${storyboard.artifact_path}`,
-        { storyboard_path: storyboard.artifact_path },
-      ),
-    ]);
-  }
-  if (storyboard.confirmed !== true) {
-    return block([
-      blocker(
-        "storyboard_not_confirmed",
-        "storyboard has been saved but not confirmed — call vob_confirm_storyboard after the user explicitly approves",
-        { storyboard_path: storyboard.artifact_path },
-      ),
-    ]);
-  }
-  return { allowed: true, blockers: [] };
+  return ALLOWED;
 }
 
 // BRIEF -> STORYBOARD: brief must be saved on disk AND explicitly confirmed.
-// A save without confirmation, or a save followed by edits that reset
-// confirmed:false, both block here.
 function briefToStoryboard(state) {
   const brief = state && typeof state.brief === "object" ? state.brief : null;
   if (!brief || typeof brief.path !== "string" || !brief.path) {
@@ -156,13 +114,73 @@ function briefToStoryboard(state) {
       ),
     ]);
   }
-  return { allowed: true, blockers: [] };
+  return ALLOWED;
 }
 
-// COMPOSE -> PREVIEW: composition must be saved on disk, lint must have run,
-// and lint must report no errors. "warnings_only" passes the gate (policy
-// belongs in the orchestrator, which surfaces warnings to the user before
-// transitioning). "errors" or "unknown" both block.
+// BRIEF -> INTENT (back-edge): allowed when the user wants to re-clarify
+// intent. Nominal check: state.intent.answers exists. Always passes under
+// normal flow (INTENT was completed before BRIEF was reachable).
+function briefToIntent(state) {
+  const answers = state && state.intent && state.intent.answers;
+  if (!answers || typeof answers !== "object") {
+    return block([
+      blocker(
+        "intent_missing",
+        "no intent answers recorded — cannot back-edge to INTENT without prior state",
+      ),
+    ]);
+  }
+  return ALLOWED;
+}
+
+// STORYBOARD -> COMPOSE: storyboard must be saved on disk AND explicitly
+// confirmed.
+function storyboardToCompose(state) {
+  const storyboard = state && typeof state.storyboard === "object" ? state.storyboard : null;
+  if (!storyboard || typeof storyboard.artifact_path !== "string" || !storyboard.artifact_path) {
+    return block([
+      blocker(
+        "storyboard_not_saved",
+        "no storyboard recorded in state — invoke the storyboarder subagent and call vob_save_storyboard with the JSON",
+      ),
+    ]);
+  }
+  if (!fs.existsSync(storyboard.artifact_path)) {
+    return block([
+      blocker(
+        "storyboard_not_saved",
+        `storyboard artifact referenced by state is not on disk: ${storyboard.artifact_path}`,
+        { storyboard_path: storyboard.artifact_path },
+      ),
+    ]);
+  }
+  if (storyboard.confirmed !== true) {
+    return block([
+      blocker(
+        "storyboard_not_confirmed",
+        "storyboard has been saved but not confirmed — call vob_confirm_storyboard after the user explicitly approves",
+        { storyboard_path: storyboard.artifact_path },
+      ),
+    ]);
+  }
+  return ALLOWED;
+}
+
+// STORYBOARD -> BRIEF (back-edge): nominal check that brief still exists.
+function storyboardToBrief(state) {
+  const brief = state && typeof state.brief === "object" ? state.brief : null;
+  if (!brief || typeof brief.path !== "string" || !fs.existsSync(brief.path)) {
+    return block([
+      blocker(
+        "brief_not_saved",
+        "cannot back-edge to BRIEF — brief artifact is missing from disk",
+      ),
+    ]);
+  }
+  return ALLOWED;
+}
+
+// COMPOSE -> PREVIEW: composition saved on disk, lint run, no errors.
 function composeToPreview(state) {
   const composition = state && typeof state.composition === "object" && !Array.isArray(state.composition)
     ? state.composition
@@ -203,13 +221,24 @@ function composeToPreview(state) {
       ),
     ]);
   }
-  return { allowed: true, blockers: [] };
+  return ALLOWED;
 }
 
-// PREVIEW -> RENDER: a preview render must exist on disk AND be explicitly
-// confirmed. Re-rendering resets confirmation to false (enforced by
-// vob_render_preview), so this gate is the load-bearing checkpoint that
-// guards full-quality render against unreviewed drafts.
+// COMPOSE -> STORYBOARD (back-edge): nominal check storyboard exists.
+function composeToStoryboard(state) {
+  const storyboard = state && typeof state.storyboard === "object" ? state.storyboard : null;
+  if (!storyboard || typeof storyboard.artifact_path !== "string" || !fs.existsSync(storyboard.artifact_path)) {
+    return block([
+      blocker(
+        "storyboard_not_saved",
+        "cannot back-edge to STORYBOARD — storyboard artifact is missing from disk",
+      ),
+    ]);
+  }
+  return ALLOWED;
+}
+
+// PREVIEW -> RENDER: preview render exists on disk AND explicitly confirmed.
 function previewToRender(state) {
   const preview = state && typeof state.preview === "object" && !Array.isArray(state.preview)
     ? state.preview
@@ -240,25 +269,168 @@ function previewToRender(state) {
       ),
     ]);
   }
-  return { allowed: true, blockers: [] };
+  return ALLOWED;
+}
+
+// PREVIEW -> COMPOSE (back-edge): composition files must still exist so the
+// user has something to iterate on.
+function previewToCompose(state) {
+  const composition = state && typeof state.composition === "object" && !Array.isArray(state.composition)
+    ? state.composition
+    : null;
+  if (!composition || !Array.isArray(composition.files) || composition.files.length === 0) {
+    return block([
+      blocker(
+        "composition_not_saved",
+        "cannot back-edge to COMPOSE — composition files are not recorded in state",
+      ),
+    ]);
+  }
+  return ALLOWED;
+}
+
+// PREVIEW -> STORYBOARD (back-edge): storyboard must still exist.
+function previewToStoryboard(state) {
+  return composeToStoryboard(state);
+}
+
+// RENDER -> PACKAGE: full render exists on disk AND explicitly confirmed.
+// This is the new M5 load-bearing forward gate.
+function renderToPackage(state) {
+  const render = state && typeof state.render === "object" && !Array.isArray(state.render)
+    ? state.render
+    : null;
+  if (!render || typeof render.mp4_path !== "string" || !render.mp4_path) {
+    return block([
+      blocker(
+        "render_not_complete",
+        "no full render recorded in state — call vob_render_full",
+      ),
+    ]);
+  }
+  if (!fs.existsSync(render.mp4_path)) {
+    return block([
+      blocker(
+        "render_not_complete",
+        `render file referenced by state is not on disk: ${render.mp4_path}`,
+        { mp4_path: render.mp4_path },
+      ),
+    ]);
+  }
+  if (render.confirmed !== true) {
+    return block([
+      blocker(
+        "render_not_confirmed",
+        "render has been produced but not confirmed — call vob_confirm_render after the user explicitly approves",
+        { mp4_path: render.mp4_path },
+      ),
+    ]);
+  }
+  // Ffmpeg is required for the next phase. Surface the install gap here
+  // rather than after a packaging attempt fails.
+  const ffmpeg = state.dependencies && state.dependencies.ffmpeg;
+  if (ffmpeg && ffmpeg.ok === false) {
+    return block([
+      blocker(
+        "ffmpeg_unavailable",
+        `ffmpeg is required for PACKAGE but was not available at INGEST: ${ffmpeg.error || "unknown error"}. Install ffmpeg and re-run vob_ingest_file (or use override_reason if you've installed it since).`,
+        { ffmpeg_error: ffmpeg.error || null },
+      ),
+    ]);
+  }
+  return ALLOWED;
+}
+
+// RENDER -> COMPOSE / STORYBOARD (back-edges): destination artifact must
+// still exist; archival of current renders/ is automatic in transitionPhase.
+function renderToCompose(state) {
+  return previewToCompose(state);
+}
+
+function renderToStoryboard(state) {
+  return composeToStoryboard(state);
+}
+
+// PACKAGE -> ITERATE: all four package files must exist on disk.
+function packageToIterate(state) {
+  const pkg = state && typeof state.package === "object" && !Array.isArray(state.package)
+    ? state.package
+    : null;
+  if (!pkg || typeof pkg.directory_path !== "string" || !pkg.directory_path) {
+    return block([
+      blocker(
+        "package_incomplete",
+        "no package recorded in state — call vob_package_output",
+      ),
+    ]);
+  }
+  const pkgRoot = packageDir(state.project_id);
+  if (!fs.existsSync(pkgRoot)) {
+    return block([
+      blocker(
+        "package_incomplete",
+        `package directory missing from disk: ${pkgRoot}`,
+        { package_dir: pkgRoot },
+      ),
+    ]);
+  }
+  const required = [
+    { label: "final.mp4", path: packageFinalMp4Path(state.project_id) },
+    { label: "thumbnail.jpg", path: packageThumbnailPath(state.project_id) },
+    { label: "manifest.json", path: packageManifestPath(state.project_id) },
+    { label: "README.md", path: packageReadmePath(state.project_id) },
+  ];
+  const missing = required.filter(({ path: p }) => !fs.existsSync(p)).map((r) => r.label);
+  if (missing.length > 0) {
+    return block([
+      blocker(
+        "package_incomplete",
+        `package files missing from disk: ${missing.join(", ")} — re-run vob_package_output`,
+        { missing_files: missing },
+      ),
+    ]);
+  }
+  return ALLOWED;
+}
+
+// PACKAGE -> COMPOSE / STORYBOARD (back-edges).
+function packageToCompose(state) {
+  return previewToCompose(state);
+}
+
+function packageToStoryboard(state) {
+  return composeToStoryboard(state);
+}
+
+// ITERATE -> COMPOSE / STORYBOARD (back-edges).
+function iterateToCompose(state) {
+  return previewToCompose(state);
+}
+
+function iterateToStoryboard(state) {
+  return composeToStoryboard(state);
 }
 
 const GATES = Object.freeze({
   "INGEST->INTENT":      ingestToIntent,
   "INTENT->BRIEF":       intentToBrief,
   "BRIEF->STORYBOARD":   briefToStoryboard,
-  "BRIEF->INTENT":       allow,
+  "BRIEF->INTENT":       briefToIntent,
   "STORYBOARD->COMPOSE": storyboardToCompose,
-  "STORYBOARD->BRIEF":   allow,
+  "STORYBOARD->BRIEF":   storyboardToBrief,
   "COMPOSE->PREVIEW":    composeToPreview,
-  "COMPOSE->STORYBOARD": allow,
+  "COMPOSE->STORYBOARD": composeToStoryboard,
   "PREVIEW->RENDER":     previewToRender,
-  "PREVIEW->COMPOSE":    allow,
-  "PREVIEW->STORYBOARD": allow,
-  "RENDER->PACKAGE":     allow,
-  "PACKAGE->ITERATE":    allow,
-  "ITERATE->COMPOSE":    allow,
-  "ITERATE->STORYBOARD": allow,
+  "PREVIEW->COMPOSE":    previewToCompose,
+  "PREVIEW->STORYBOARD": previewToStoryboard,
+  "RENDER->PACKAGE":     renderToPackage,
+  "RENDER->COMPOSE":     renderToCompose,
+  "RENDER->STORYBOARD":  renderToStoryboard,
+  "PACKAGE->ITERATE":    packageToIterate,
+  "PACKAGE->COMPOSE":    packageToCompose,
+  "PACKAGE->STORYBOARD": packageToStoryboard,
+  "ITERATE->COMPOSE":    iterateToCompose,
+  "ITERATE->STORYBOARD": iterateToStoryboard,
 });
 
 function getGate(from, to) {
