@@ -138,6 +138,7 @@ function transitionPhase(args) {
       history: [
         ...(Array.isArray(state.history) ? state.history : []),
         {
+          kind: "transition",
           from,
           to: toPhase,
           at: ts,

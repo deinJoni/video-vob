@@ -1,7 +1,7 @@
 {
   "name": "video-vob",
-  "version": "0.1.0",
-  "description": "Open-source agent-driven video pipeline (chassis only — milestone 1).",
+  "version": "0.2.0",
+  "description": "Open-source agent-driven video pipeline (milestone 2: real INGEST/INTENT/BRIEF).",
   "license": "Apache-2.0",
   "type": "commonjs",
   "engines": {

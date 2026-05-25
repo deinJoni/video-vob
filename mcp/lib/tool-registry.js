@@ -4,6 +4,8 @@ const { TOOL_MODULES } = require("./tools/index.js");
 
 const VALID_ROLE_BUNDLES = Object.freeze([
   "orchestrator",
+  "storyboarder",
+  "composer",
 ]);
 
 const CAPABILITY_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;

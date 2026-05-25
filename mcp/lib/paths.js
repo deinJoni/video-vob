@@ -35,12 +35,20 @@ function manifestPath(projectId) {
   return path.join(sessionDir(projectId), "manifest.json");
 }
 
+function briefPath(projectId) {
+  return path.join(sessionDir(projectId), "brief.md");
+}
+
 function ingestDir(projectId) {
   return path.join(sessionDir(projectId), "ingest");
 }
 
 function storyboardPath(projectId) {
   return path.join(sessionDir(projectId), "storyboard.json");
+}
+
+function storyboardMarkdownPath(projectId) {
+  return path.join(sessionDir(projectId), "storyboard.md");
 }
 
 function composeDir(projectId) {
@@ -61,6 +69,7 @@ function packageDir(projectId) {
 
 module.exports = {
   assertSafeProjectId,
+  briefPath,
   composeDir,
   ingestDir,
   manifestPath,
@@ -71,5 +80,6 @@ module.exports = {
   sessionLockPath,
   sessionsRoot,
   statePath,
+  storyboardMarkdownPath,
   storyboardPath,
 };
