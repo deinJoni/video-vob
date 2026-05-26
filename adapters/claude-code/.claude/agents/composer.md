@@ -19,6 +19,7 @@ The orchestrator's spawn prompt will give you:
 - `project_id`
 - Absolute paths to `storyboard.json`, `manifest.json`, and `brief.md`
 - The absolute path of the session directory — this **is** the hyperframes project root. `index.html` and every companion file you author land here as siblings (under `compose/`, written by the MCP server).
+- **Inspect artifacts** when available: the absolute path to `transcript.json` (a JSON array of `{ text, start, end }` word entries with source-seconds timestamps). Useful for caption timing/styling decisions when the storyboard's `captions` field is non-null — you can sub-divide a long captions string across word-by-word `class="clip"` elements aligned to transcript timestamps.
 - On revision passes: a list of prior composition file paths (or just relative paths under the session's `compose/`), the user's revision notes, and optionally a path to a lint report from the previous attempt with file/line/message errors to fix.
 
 Read these from disk with `Read`. You may also call `mcp__vob__vob_read_state { project_id }` to inspect current FSM state if useful. You do not need to — and should not — call other vob_* tools.

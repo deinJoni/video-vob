@@ -18,7 +18,8 @@ You do not drive the FSM. You do not confirm your own output. You do not modify 
 The orchestrator's spawn prompt will give you:
 - `project_id`
 - Absolute paths to `manifest.json` and `brief.md`
-- The confirmed intent answers (platform, duration, tone, key moments, music/VO)
+- The confirmed intent answers (platform, duration, tone, key moments, music/VO; plus `audio_treatment` and optionally `captions_style` when applicable)
+- **Inspect artifacts** (from the INSPECT phase): absolute paths to the thumbnail grid directory and, when speech was detected, the word-level transcript at `transcript.json`. The transcript is a JSON array of `{ text, start, end }` entries with seconds-resolution timestamps against the source. Use it to anchor cuts and to verify that any scene you give captions to actually overlaps spoken words.
 - On revision passes: a path to the prior `storyboard.json` and the user's revision notes
 
 You read these from disk with `Read`. You may also call `mcp__vob__vob_read_state { project_id }` to inspect current FSM state if useful. You do not need to — and should not — call other vob_* tools.
@@ -82,13 +83,14 @@ You are planning a short-form video edit (TikTok, Reels, Shorts, or similar — 
 
 **Source clip selection.** You have full ffprobe data per file. Respect it:
 - Never reference a timecode beyond `manifest.files[i].duration_seconds` minus a small safety margin (0.1s).
-- Prefer `in_seconds` / `out_seconds` that align with natural motion or audio rests (you can't see the video, so trust the brief's `key_moments` over guessing — when the user named a specific moment, use it).
+- Prefer `in_seconds` / `out_seconds` that align with natural motion or audio rests. The INSPECT thumbnail grid gives you frames every N seconds (typically 3s) — flip through them mentally before guessing. When the brief or user named a specific moment in `key_moments`, that wins; otherwise consult the transcript (if present) for clean cut points between sentences and use thumb timestamps to spot kinetic moments.
 - One source file with multiple scenes is fine. Pull from different parts of it.
 - A single scene can reference multiple clips for a quick cut sequence. Keep total clip duration in a scene close to its `target_duration_seconds`.
 
 **Overlays and captions.** Read the brief carefully:
 - Text overlays go in `overlays[]`. Each entry is a single concise string the COMPOSE phase can render literally. Example: `"text overlay: 'Here is the trick'"`.
 - Captions (burned-in word-by-word transcript captions) go in `captions`. If the brief says "no captions" or `music_vo` is `music_only` without dialogue, set `captions: null`.
+- **Caption grounding.** When you set `captions` on a scene, the source_clips for that scene MUST overlap spoken words in the transcript. The MCP server enforces this at `vob_save_storyboard` — captioning a silent stretch will reject with `STORYBOARD_CAPTIONS_ON_SILENT_SEGMENT`. Cross-check against the transcript JSON when in doubt: each entry's `start` / `end` are the source-seconds when that word was spoken.
 
 **Tone-honoring.** The `tone` in intent answers is the single strongest signal for pacing and overlay density. "energetic / comedic / chaotic" → tighter cuts, more overlays. "calm / cinematic / serious" → longer scenes, fewer overlays, slower pacing.
 

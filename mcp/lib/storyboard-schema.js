@@ -145,9 +145,85 @@ function validateStoryboard(input) {
   return { ok: errors.length === 0, errors };
 }
 
+// Content-level validation — runs AFTER validateStoryboard succeeds. Where
+// validateStoryboard checks JSON shape, this checks that the storyboard's
+// content claims are consistent with observable source facts (e.g. the
+// transcript from INSPECT). Failures surface as actionable error codes.
+function loadTranscript(transcriptPath) {
+  if (!transcriptPath || typeof transcriptPath !== "string") return null;
+  const fs = require("fs");
+  if (!fs.existsSync(transcriptPath)) return null;
+  try {
+    const parsed = JSON.parse(fs.readFileSync(transcriptPath, "utf8"));
+    if (!Array.isArray(parsed)) return null;
+    return parsed.filter((entry) => entry && isFiniteNumber(entry.start) && isFiniteNumber(entry.end));
+  } catch {
+    return null;
+  }
+}
+
+function transcriptOverlapsClip(transcript, inSeconds, outSeconds) {
+  for (const entry of transcript) {
+    // any overlap between [entry.start, entry.end] and [in, out]
+    if (entry.end > inSeconds && entry.start < outSeconds) return true;
+  }
+  return false;
+}
+
+function clipHasSpokenWords(scene, transcript) {
+  if (!Array.isArray(scene.source_clips) || scene.source_clips.length === 0) {
+    return false;
+  }
+  return scene.source_clips.some((clip) => {
+    return clip
+      && isFiniteNumber(clip.in_seconds)
+      && isFiniteNumber(clip.out_seconds)
+      && transcriptOverlapsClip(transcript, clip.in_seconds, clip.out_seconds);
+  });
+}
+
+function sceneHasCaptions(scene) {
+  return typeof scene.captions === "string" && scene.captions.trim() !== "";
+}
+
+function validateStoryboardContent(parsed, state) {
+  const errors = [];
+  if (!isPlainObject(parsed)) {
+    return { ok: false, errors: ["storyboard must be a JSON object"] };
+  }
+
+  // Captions vs transcript: if a transcript exists, every captioned scene
+  // whose source_clips reference source windows must overlap at least one
+  // transcript word. A captioned scene that pulls from a silent stretch of
+  // the source is the "captions don't reflect what the source actually says"
+  // failure mode.
+  const transcriptPath = state && state.inspect && state.inspect.transcript_path;
+  if (transcriptPath) {
+    const transcript = loadTranscript(transcriptPath);
+    if (Array.isArray(transcript) && transcript.length > 0 && Array.isArray(parsed.scenes)) {
+      parsed.scenes.forEach((scene, ix) => {
+        if (!sceneHasCaptions(scene)) return;
+        if (!Array.isArray(scene.source_clips) || scene.source_clips.length === 0) return;
+        if (!clipHasSpokenWords(scene, transcript)) {
+          errors.push({
+            code: "STORYBOARD_CAPTIONS_ON_SILENT_SEGMENT",
+            message: `scenes[${ix}] has captions but none of its source_clips overlap any transcript word — captions would be unsupported by source speech`,
+            scene_index: ix,
+            scene_id: scene.scene_id || null,
+            captions_preview: typeof scene.captions === "string" ? scene.captions.slice(0, 100) : null,
+          });
+        }
+      });
+    }
+  }
+
+  return { ok: errors.length === 0, errors };
+}
+
 module.exports = {
   SCHEMA_VERSION,
   PURPOSES,
   PACINGS,
   validateStoryboard,
+  validateStoryboardContent,
 };

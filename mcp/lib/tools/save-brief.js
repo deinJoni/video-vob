@@ -4,6 +4,7 @@ const { ERROR_CODES, ToolError } = require("../envelope.js");
 const { assertSafeProjectId, briefPath, statePath } = require("../paths.js");
 const { withSessionLock, writeFileAtomic } = require("../storage.js");
 const { readSessionStateStrict } = require("../session-state.js");
+const { validateBriefGrounding } = require("../brief-validator.js");
 
 const MAX_BRIEF_LENGTH = 100 * 1024;
 
@@ -33,6 +34,14 @@ function saveBrief(args) {
 
   return withSessionLock(id, () => {
     const state = readSessionStateStrict(id);
+    const grounding = validateBriefGrounding(content, state);
+    if (!grounding.ok) {
+      throw new ToolError(
+        ERROR_CODES.INVALID_ARGUMENTS,
+        `brief contains ungrounded claims: ${grounding.violations.map((v) => v.message).join("; ")}`,
+        { violations: grounding.violations },
+      );
+    }
     const file = briefPath(id);
     writeFileAtomic(file, content);
 

@@ -9,7 +9,7 @@ const {
 } = require("../paths.js");
 const { withSessionLock, writeFileAtomic } = require("../storage.js");
 const { readSessionStateStrict } = require("../session-state.js");
-const { validateStoryboard } = require("../storyboard-schema.js");
+const { validateStoryboard, validateStoryboardContent } = require("../storyboard-schema.js");
 const { renderStoryboardMarkdown } = require("../storyboard-markdown.js");
 
 const MAX_STORYBOARD_LENGTH = 256 * 1024;
@@ -57,6 +57,18 @@ function saveStoryboard(args) {
 
   return withSessionLock(id, () => {
     const state = readSessionStateStrict(id);
+
+    const contentCheck = validateStoryboardContent(storyboard, state);
+    if (!contentCheck.ok) {
+      const summary = contentCheck.errors
+        .map((e) => (typeof e === "string" ? e : `${e.code}: ${e.message}`))
+        .join("; ");
+      throw new ToolError(
+        ERROR_CODES.INVALID_ARGUMENTS,
+        `storyboard content checks failed: ${summary}`,
+        { content_errors: contentCheck.errors },
+      );
+    }
 
     const jsonFile = storyboardPath(id);
     const mdFile = storyboardMarkdownPath(id);

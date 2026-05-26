@@ -192,7 +192,7 @@ The storyboard is the editorial plan: scene-by-scene, with source-clip timecodes
    ```
    Task(subagent_type: "storyboarder",
         description: "Storyboard scene plan",
-        prompt: "Project: <project_id>. Manifest: <state.manifest.path>. Brief: <state.brief.path>. Intent answers: target_platform=<>, target_duration=<>, tone=<>, key_moments=<>, music_vo=<>. <If revising: 'Prior storyboard at <state.storyboard.artifact_path>. Revision notes: <user notes>.'> Call mcp__vob__vob_save_storyboard once with the JSON. Do not call any other vob_* tool.")
+        prompt: "Project: <project_id>. Manifest: <state.manifest.path>. Brief: <state.brief.path>. Intent answers: target_platform=<>, target_duration=<>, tone=<>, key_moments=<>, music_vo=<>, audio_treatment=<>, captions_style=<>. Inspect artifacts: thumbs_dir=<state.inspect.thumbs_dir>, transcript=<state.inspect.transcript_path or 'none'>. <If revising: 'Prior storyboard at <state.storyboard.artifact_path>. Revision notes: <user notes>.'> Call mcp__vob__vob_save_storyboard once with the JSON. Do not call any other vob_* tool.")
    ```
 
 4. After the subagent returns, re-read state with `mcp__vob__vob_read_state` and read the rendered markdown from `state.storyboard.markdown_path` using the `Read` tool. Present the markdown to the user (don't paraphrase — show it). Ask: "approve, revise, or back to brief?"
@@ -220,7 +220,7 @@ The composition is hyperframes-compatible HTML/CSS/JS that the renderer can turn
    ```
    Task(subagent_type: "composer",
         description: "Hyperframes composition",
-        prompt: "Project: <project_id>. Session dir (hyperframes project root): ~/video-vob-sessions/<project_id>/. Storyboard JSON: <state.storyboard.artifact_path>. Brief: <state.brief.path>. Manifest: <state.manifest.path>. <If revising: 'Prior composition files (under compose/): <state.composition.files[]>. Revision notes: <user notes or lint findings>. Lint report (if rejecting due to errors): <state.composition.lint_report_path>.'> Produce hyperframes-compatible composition files. Call mcp__vob__vob_save_composition exactly once with the file map, then return. Do not call any other vob_* tool. Do not run hyperframes lint or render — the orchestrator will.")
+        prompt: "Project: <project_id>. Session dir (hyperframes project root): ~/video-vob-sessions/<project_id>/. Storyboard JSON: <state.storyboard.artifact_path>. Brief: <state.brief.path>. Manifest: <state.manifest.path>. Inspect transcript (for caption timing if needed): <state.inspect.transcript_path or 'none'>. <If revising: 'Prior composition files (under compose/): <state.composition.files[]>. Revision notes: <user notes or lint findings>. Lint report (if rejecting due to errors): <state.composition.lint_report_path>.'> Produce hyperframes-compatible composition files. Call mcp__vob__vob_save_composition exactly once with the file map, then return. Do not call any other vob_* tool. Do not run hyperframes lint or render — the orchestrator will.")
    ```
 
 4. After the subagent returns, re-read state with `mcp__vob__vob_read_state` and confirm `state.composition.files` is populated. Then call `mcp__vob__vob_lint_composition { project_id }`. Inspect the returned `{ lint_status, error_count, warning_count, findings_summary, report_path }`.
