@@ -6,6 +6,8 @@ const TOOL_MODULES = Object.freeze([
   require("./read-state-summary.js"),
   require("./transition-phase.js"),
   require("./ingest-file.js"),
+  require("./inspect-source.js"),
+  require("./acknowledge-inspect.js"),
   require("./record-intent-answer.js"),
   require("./save-brief.js"),
   require("./confirm-brief.js"),

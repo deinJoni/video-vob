@@ -2,6 +2,7 @@
 
 const PHASE_VALUES = Object.freeze([
   "INGEST",
+  "INSPECT",
   "INTENT",
   "BRIEF",
   "STORYBOARD",

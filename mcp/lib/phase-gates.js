@@ -4,7 +4,7 @@ const fs = require("fs");
 const path = require("path");
 const { readJsonFile } = require("./storage.js");
 const { missingIntentKeys } = require("./intent-schema.js");
-const { composeDir, packageDir, packageFinalMp4Path, packageManifestPath, packageReadmePath, packageThumbnailPath } = require("./paths.js");
+const { composeDir, inspectSummaryPath, packageDir, packageFinalMp4Path, packageManifestPath, packageReadmePath, packageThumbnailPath } = require("./paths.js");
 
 function blocker(code, message, fields = {}) {
   return { code, message, ...fields };
@@ -16,10 +16,11 @@ function block(blockers) {
 
 const ALLOWED = Object.freeze({ allowed: true, blockers: [] });
 
-// INGEST -> INTENT: a manifest.json must exist on disk and report at least
+// INGEST -> INSPECT: a manifest.json must exist on disk and report at least
 // one playable video stream. The state.manifest summary is convenient but the
-// disk artifact is the source of truth.
-function ingestToIntent(state) {
+// disk artifact is the source of truth. (Previously the INGEST -> INTENT
+// gate; INSPECT now sits between INGEST and INTENT.)
+function ingestToInspect(state) {
   const manifest = state && typeof state.manifest === "object" ? state.manifest : null;
   if (!manifest || typeof manifest.path !== "string" || !manifest.path) {
     return block([
@@ -61,6 +62,55 @@ function ingestToIntent(state) {
         "no_video_streams",
         "manifest has no playable video streams — re-run vob_ingest_file with a valid video source",
         { manifest_path: manifest.path, file_count: files.length },
+      ),
+    ]);
+  }
+  return ALLOWED;
+}
+
+// INSPECT -> INTENT: inspect.json must exist on disk AND the user must have
+// been shown the artifacts (user_acknowledged:true via vob_acknowledge_inspect).
+// This is the comprehension gate: you cannot move to INTENT without someone
+// having had the chance to look at frames + read the transcript.
+function inspectToIntent(state) {
+  const inspect = state && typeof state.inspect === "object" && !Array.isArray(state.inspect)
+    ? state.inspect
+    : null;
+  if (!inspect || typeof inspect.summary_path !== "string" || !inspect.summary_path) {
+    return block([
+      blocker(
+        "inspect_artifacts_missing",
+        "no inspect summary recorded in state — call vob_inspect_source",
+      ),
+    ]);
+  }
+  if (!fs.existsSync(inspect.summary_path)) {
+    return block([
+      blocker(
+        "inspect_artifacts_missing",
+        `inspect summary referenced by state is not on disk: ${inspect.summary_path}`,
+        { summary_path: inspect.summary_path },
+      ),
+    ]);
+  }
+  // Cross-check against the canonical disk path so a stale state slot can't
+  // fake out the gate.
+  const expectedSummary = inspectSummaryPath(state.project_id);
+  if (!fs.existsSync(expectedSummary)) {
+    return block([
+      blocker(
+        "inspect_artifacts_missing",
+        `inspect summary missing from canonical path: ${expectedSummary}`,
+        { expected_path: expectedSummary },
+      ),
+    ]);
+  }
+  if (inspect.user_acknowledged !== true) {
+    return block([
+      blocker(
+        "inspect_not_acknowledged",
+        "inspect artifacts have been written but the user has not been shown them — call vob_acknowledge_inspect after surfacing the findings",
+        { summary_path: inspect.summary_path },
       ),
     ]);
   }
@@ -412,7 +462,8 @@ function iterateToStoryboard(state) {
 }
 
 const GATES = Object.freeze({
-  "INGEST->INTENT":      ingestToIntent,
+  "INGEST->INSPECT":     ingestToInspect,
+  "INSPECT->INTENT":     inspectToIntent,
   "INTENT->BRIEF":       intentToBrief,
   "BRIEF->STORYBOARD":   briefToStoryboard,
   "BRIEF->INTENT":       briefToIntent,

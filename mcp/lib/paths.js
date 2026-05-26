@@ -43,6 +43,26 @@ function ingestDir(projectId) {
   return path.join(sessionDir(projectId), "ingest");
 }
 
+function inspectDir(projectId) {
+  return path.join(sessionDir(projectId), "inspect");
+}
+
+function inspectThumbsDir(projectId) {
+  return path.join(inspectDir(projectId), "thumbs");
+}
+
+function inspectAudioPath(projectId) {
+  return path.join(inspectDir(projectId), "audio.wav");
+}
+
+function inspectTranscriptPath(projectId) {
+  return path.join(inspectDir(projectId), "transcript.json");
+}
+
+function inspectSummaryPath(projectId) {
+  return path.join(inspectDir(projectId), "inspect.json");
+}
+
 function storyboardPath(projectId) {
   return path.join(sessionDir(projectId), "storyboard.json");
 }
@@ -106,6 +126,11 @@ module.exports = {
   briefPath,
   composeDir,
   ingestDir,
+  inspectAudioPath,
+  inspectDir,
+  inspectSummaryPath,
+  inspectThumbsDir,
+  inspectTranscriptPath,
   manifestPath,
   packageDir,
   packageFinalMp4Path,

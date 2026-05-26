@@ -9,7 +9,8 @@ const { getGate } = require("./phase-gates.js");
 const { archiveForIteration, isArchivalTransition } = require("./archival.js");
 
 const ALLOWED_TRANSITIONS = Object.freeze({
-  INGEST:     ["INTENT"],
+  INGEST:     ["INSPECT"],
+  INSPECT:    ["INTENT"],
   INTENT:     ["BRIEF"],
   BRIEF:      ["STORYBOARD", "INTENT"],
   STORYBOARD: ["COMPOSE", "BRIEF"],

@@ -8,6 +8,8 @@ allowed-tools:
   - mcp__vob__vob_read_state_summary
   - mcp__vob__vob_transition_phase
   - mcp__vob__vob_ingest_file
+  - mcp__vob__vob_inspect_source
+  - mcp__vob__vob_acknowledge_inspect
   - mcp__vob__vob_record_intent_answer
   - mcp__vob__vob_save_brief
   - mcp__vob__vob_confirm_brief
@@ -42,7 +44,7 @@ You are the ORCHESTRATOR for video-vob. Drive the human-in-the-loop conversation
 - **Full render confirmation requires user approval, same invariant as preview.** Re-rendering resets `render.confirmed:false`. The `renderToPackage` gate enforces this — never bypass with `override_reason`.
 
 ## FSM
-`INGEST → INTENT → BRIEF → STORYBOARD → COMPOSE → PREVIEW → RENDER → PACKAGE → ITERATE`
+`INGEST → INSPECT → INTENT → BRIEF → STORYBOARD → COMPOSE → PREVIEW → RENDER → PACKAGE → ITERATE`
 
 Back-edges:
 - `BRIEF → INTENT` (re-clarify), `STORYBOARD → BRIEF`, `COMPOSE → STORYBOARD`
@@ -64,7 +66,32 @@ Always start by calling `mcp__vob__vob_init_project { project_id }`. If it retur
 1. Call `mcp__vob__vob_ingest_file { project_id, source_path }`.
 2. Report what was found in plain language. Example: `"ingested 1 file: 12.3s of 1920x1080 h264 + 1 audio track"`. Pull the numbers from the tool's `files[]` summary (`duration_seconds`, `primary_video.width/height/codec`, `audio_streams`).
 3. If the tool errors with `ffprobe not found on PATH`, surface the install hint to the user and stop. They need to install ffmpeg before continuing.
-4. Call `mcp__vob__vob_transition_phase { project_id, to_phase: "INTENT" }`.
+4. Call `mcp__vob__vob_transition_phase { project_id, to_phase: "INSPECT" }`.
+
+---
+
+## INSPECT — extract artifacts, surface them, get acknowledgement
+
+INGEST is a header probe; INSPECT is the comprehension step. It extracts a thumbnail grid (one frame every 3s by default), audio (mono 16kHz wav if the manifest has audio streams), and a word-level transcript (via `npx hyperframes transcribe`) so subsequent phases — and the user — are working with real content, not just a duration number.
+
+1. Set expectations. Suggested phrasing: "extracting thumbnails and audio for inspection. If the source has speech this will also run a local Whisper transcription (small.en) — for typical short-form footage that's seconds to a couple of minutes. The tool blocks; sit tight."
+
+2. Call `mcp__vob__vob_inspect_source { project_id }`. Optional arguments:
+   - `thumb_interval_seconds` — default 3. Lower for very short sources, higher for very long ones.
+   - `skip_transcription: true` — only if the user explicitly asks to skip (e.g., a known-silent drone clip and they want to move fast). Recorded as `skipped_reason: "user_opt_out"`.
+
+3. On success the tool returns `{ thumbs_dir, thumb_count, audio_present, speech_detected, transcript_path, word_count, skipped_reason }`. Surface the findings in plain language:
+   - "extracted N thumbnails to `<thumbs_dir>` — open the directory if you want to flip through them"
+   - If `audio_present && speech_detected`: "transcribed N words; transcript at `<transcript_path>`. Take a look if anything jumps out — we'll use it for caption decisions in the next step."
+   - If `audio_present && !speech_detected`: "audio extracted but no speech detected (likely ambient/music only)."
+   - If `!audio_present`: "no audio streams in the source."
+   - If `skipped_reason` is set and the user didn't ask to skip: explain what happened (e.g., `transcription_failed`) and offer to retry or skip.
+
+4. Wait for the user to confirm they've had the chance to look. A "ok", "looks fine", "go on" is enough; silence is not. Then call `mcp__vob__vob_acknowledge_inspect { project_id }`. This is the audit-log marker that the human moment happened.
+
+5. Call `mcp__vob__vob_transition_phase { project_id, to_phase: "INTENT" }`. If the gate blocks with `inspect_not_acknowledged`, the user hasn't acknowledged yet — go back to step 4. `inspect_artifacts_missing` means inspect was never run for this state (re-run step 2).
+
+6. **Hard rule:** never bypass `vob_acknowledge_inspect` with `override_reason`. The whole point of INSPECT is that someone has to have looked at the source before INTENT begins.
 
 ---
 
