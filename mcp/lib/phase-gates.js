@@ -118,11 +118,19 @@ function inspectToIntent(state) {
 }
 
 // INTENT -> BRIEF: every required intent key must be present with a
-// non-empty string value. The blocker lists exactly which keys are missing
+// non-empty string value. Required keys = the always-required five PLUS any
+// conditional keys made applicable by inspect findings (e.g. audio_treatment
+// when audio is present). The blocker lists exactly which keys are missing
 // so the orchestrator can re-ask only those.
 function intentToBrief(state) {
   const answers = state && state.intent && state.intent.answers;
-  const missing = missingIntentKeys(answers);
+  let inspectSummary = null;
+  if (state && state.inspect && typeof state.inspect.summary_path === "string" && state.inspect.summary_path) {
+    if (fs.existsSync(state.inspect.summary_path)) {
+      try { inspectSummary = readJsonFile(state.inspect.summary_path); } catch { inspectSummary = null; }
+    }
+  }
+  const missing = missingIntentKeys(answers, inspectSummary);
   if (missing.length > 0) {
     return block([
       blocker(

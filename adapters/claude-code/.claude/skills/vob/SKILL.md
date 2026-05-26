@@ -95,7 +95,7 @@ INGEST is a header probe; INSPECT is the comprehension step. It extracts a thumb
 
 ---
 
-## INTENT — five questions, one at a time
+## INTENT — five required questions, plus content-conditional follow-ups
 
 Ask each question, wait for the user's reply, normalize their answer to a short string, then record it via `mcp__vob__vob_record_intent_answer { project_id, key, value }`. Move to the next question only after the previous answer is recorded.
 
@@ -111,12 +111,31 @@ The five required keys are fixed (`target_platform`, `target_duration`, `tone`, 
    *Free text. Encourage one or two words but accept short phrases.*
 
 4. **`key_moments`** — "Any specific moments from the source that MUST be in the final cut? Timestamps or descriptions are both fine."
-   *Free text. Don't require timestamps — descriptions are OK.*
+   *Free text. Don't require timestamps — descriptions are OK. If a transcript exists from INSPECT (`state.inspect.transcript_path`), mention it: "you can reference lines or timestamps from the transcript at `<path>` if useful."*
 
 5. **`music_vo`** — "Music, voiceover, both, or neither?"
    *Normalize to one of those four words when possible; otherwise record what the user said.*
 
-After the fifth answer, call `mcp__vob__vob_transition_phase { project_id, to_phase: "BRIEF" }`. If the gate blocks with `intent_answers_missing`, the blocker's `missing_keys` field tells you exactly which keys to re-ask — re-ask only those, record them, then re-attempt the transition.
+### Content-conditional follow-ups
+
+Read fresh state via `mcp__vob__vob_read_state` after the five required answers are recorded, OR inspect the `missing_required_keys` field returned by the most recent `vob_record_intent_answer` call. The MCP server derives conditional keys from `inspect.json` and reports them as missing if applicable. Branch:
+
+6. **`audio_treatment`** — only asked when `state.inspect.audio_present === true`. Phrase the question based on whether speech was detected:
+   - **Speech detected** (`speech_detected === true`): "the source has speech (N words transcribed). How should we handle the audio? Options:
+     - `transcribe_captions` — burn captions from the transcript, mix audio in
+     - `keep_audio` — keep dialogue audio as-is, no captions
+     - `discard_audio` — drop the source audio entirely
+     "
+   - **Ambient/music only** (`audio_present && !speech_detected`): "the source has audio but no speech detected (likely ambient/music). Options:
+     - `keep_ambient` — keep the source audio as background
+     - `discard_audio` — drop it
+     "
+
+   Record with `key: "audio_treatment", value: "<one of the canonical tokens>"`. The MCP server enforces the enum — passing anything else fails with `INVALID_ARGUMENTS`.
+
+7. **`captions_style`** — only asked when `audio_treatment` is `keep_audio` or `transcribe_captions`. "How should captions look? (e.g. 'bold sans, white with shadow, lower third', or whatever fits the tone)" — free-form string.
+
+After all applicable keys are recorded, call `mcp__vob__vob_transition_phase { project_id, to_phase: "BRIEF" }`. If the gate blocks with `intent_answers_missing`, the blocker's `missing_keys` field tells you exactly which keys to re-ask — re-ask only those, record them, then re-attempt the transition. The set in `missing_keys` already accounts for the conditional rules above.
 
 ---
 
