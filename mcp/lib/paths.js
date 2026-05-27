@@ -63,6 +63,18 @@ function inspectSummaryPath(projectId) {
   return path.join(inspectDir(projectId), "inspect.json");
 }
 
+function inspectContactSheetPath(projectId, fileIndex) {
+  return path.join(inspectDir(projectId), `contact_sheet_file_${fileIndex}.jpg`);
+}
+
+function inspectTranscriptSummaryPath(projectId) {
+  return path.join(inspectDir(projectId), "transcript_summary.md");
+}
+
+function inspectTranscriptParagraphsPath(projectId) {
+  return path.join(inspectDir(projectId), "transcript_paragraphs.json");
+}
+
 function storyboardPath(projectId) {
   return path.join(sessionDir(projectId), "storyboard.json");
 }
@@ -73,6 +85,10 @@ function storyboardMarkdownPath(projectId) {
 
 function composeDir(projectId) {
   return path.join(sessionDir(projectId), "compose");
+}
+
+function composeSourceDir(projectId) {
+  return path.join(composeDir(projectId), "source");
 }
 
 function previewDir(projectId) {
@@ -125,12 +141,16 @@ module.exports = {
   assertSafeProjectId,
   briefPath,
   composeDir,
+  composeSourceDir,
   ingestDir,
   inspectAudioPath,
+  inspectContactSheetPath,
   inspectDir,
   inspectSummaryPath,
   inspectThumbsDir,
+  inspectTranscriptParagraphsPath,
   inspectTranscriptPath,
+  inspectTranscriptSummaryPath,
   manifestPath,
   packageDir,
   packageFinalMp4Path,

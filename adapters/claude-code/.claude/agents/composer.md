@@ -40,7 +40,7 @@ Exactly one call to `mcp__vob__vob_save_composition { project_id, files }`. `fil
 
 Allowed extensions: `.html`, `.css`, `.js`, `.json`, `.svg`. Max 64 files, 256 KiB per file, 1 MiB aggregate.
 
-Do not include files you didn't author (no copies of source video, no manifest re-saves). Asset references inside your HTML point at absolute paths from the manifest — they are NOT in your file map.
+Do not include files you didn't author (no copies of source video, no manifest re-saves). Asset references for source clips inside your HTML point at `./source/<basename>` — the MCP server creates these symlinks under `compose/source/` on every save. They are NOT in your file map.
 
 ## Hyperframes essentials
 
@@ -61,14 +61,14 @@ You are authoring HTML that will be rendered to MP4 by headless Chrome under hyp
 
 Missing any of `data-composition-id`, `data-width`, `data-height` causes a hard render failure. `data-width` and `data-height` are the FINAL output dimensions in pixels (no units). `data-duration` on the master root is the total runtime of the video in seconds — it MUST be greater than or equal to the sum of all scene durations, or the timeline truncates and the tail of your video is silently dropped.
 
-**The clip class.** Every element that is timed (i.e., appears and disappears at specific points on the timeline) MUST have `class="clip"` plus `data-start` and `data-duration`. This is the #1 lint failure. A `<div class="clip" data-start="3" data-duration="4">` appears at t=3s and disappears at t=7s. No `class="clip"`, no timing — the element is treated as static and visible for the entire composition.
+**The clip class.** Every element that is timed (i.e., appears and disappears at specific points on the timeline) MUST have `class="clip"` plus `data-start` and `data-duration`. See Gotchas → `timed_element_missing_clip_class`. A `<div class="clip" data-start="3" data-duration="4">` appears at t=3s and disappears at t=7s. No `class="clip"`, no timing — the element is treated as static and visible for the entire composition.
 
 ```html
 <div class="clip"
      data-start="0"
      data-duration="2.5"
      data-track-index="0">
-  <video src="/abs/path/clip.mp4" muted
+  <video src="./source/clip.mp4" muted
          data-media-start="14.2"
          data-playback-start="0"></video>
 </div>
@@ -79,7 +79,7 @@ Missing any of `data-composition-id`, `data-width`, `data-height` causes a hard 
 - `data-playback-start` — the offset INSIDE the parent clip where this media element starts playing (usually `0` when the media fills its parent clip).
 - Do NOT set `currentTime` in JS. Do NOT call `.play()` or `.pause()`. Hyperframes owns playback position; your job is to declare WHAT plays WHEN, never to drive it.
 
-**Audio vs muted video.** `<video muted>` plays visual frames only — use this for every source clip whose audio you do not want in the final mix. `<audio>` plays sound. If a scene's source clip should contribute audio (diegetic dialogue, native sound), use `<video>` without `muted`. If the brief calls for a music bed or VO, add a separate `<audio>` element with its own `class="clip"` on a track of its own.
+**Audio vs muted video.** `<video muted>` plays visual frames only — use this for every source clip whose audio you do not want in the final mix. `<audio>` plays sound. If a scene's source clip should contribute audio (diegetic dialogue, native sound), use `<video>` without `muted` AND add `data-has-audio="true"` (see Gotchas → `video_missing_muted`). If the brief calls for a music bed or VO, add a separate `<audio>` element with its own `class="clip"` on a track of its own.
 
 **Track index.** `data-track-index` stacks layers at the same time. Default is `0`. Conventional layering:
 - `0` — background video
@@ -101,9 +101,148 @@ window.__timelines["master"] = gsap.timeline({ paused: true })
   .from(".hero-sub",   { y: 40, opacity: 0, duration: 0.4, ease: "power3.out" }, 0.15);
 ```
 
-**Asset paths.** Source clip references in `<video src="...">` and `<audio src="...">` use the ABSOLUTE paths from `manifest.json` (specifically `manifest.files[i].path`). Do not relativize, do not symlink, do not copy. For assets you generate yourself (CSS background gradients, inline SVG, web fonts loaded via `<link>`), inline them or reference relative paths inside the project dir.
+**Asset paths.** Source clip references in `<video src="...">` and `<audio src="...">` use relative paths under `./source/<basename>`. The MCP server creates these symlinks automatically on every `vob_save_composition` call by iterating `manifest.files[]` — you do not create them, copy source video, or use absolute paths. Compute the basename with `path.basename(manifest.files[i].path)`. If two manifest entries share a basename, MCP suffixes the colliding ones with `-1`, `-2`, etc. — derive from `manifest.files[i].path`, never invent. For assets you generate yourself (CSS background gradients, inline SVG, web fonts), inline them, base64-encode them, or reference relative paths inside your file map.
 
 **Determinism.** Renders MUST be reproducible. No `Math.random()` without a seeded PRNG. No `Date.now()` driving visuals. No network fetches at render time (no Google Fonts unless cached locally, no CDN images). Hyperframes treats two renders of the same composition as bit-identical-equivalent video; randomness breaks that.
+
+## Hyperframes lint gotchas
+
+The hyperframes linter runs after every save. The orchestrator will bounce you back up to 3 times on errors before surfacing them to the user — each retry costs tokens and wall time. Read this list once and ship clean the first time. Rules are keyed to the codes the linter emits; if your revision notes mention a rule code, jump straight to it here.
+
+### `video_missing_muted` (alias `media_audible_not_marked`)
+
+Triggers when a `<video>` element with `data-start` is neither `muted` nor explicitly marked as audible. The lint message itself says: "Mark audible videos with `data-has-audio='true'`".
+
+✗
+```html
+<video src="./source/clip.mov" data-media-start="14.2" data-playback-start="0"></video>
+```
+
+✓ (silent visual — for b-roll without dialogue):
+```html
+<video src="./source/clip.mov" muted
+       data-media-start="14.2" data-playback-start="0"></video>
+```
+
+✓ (keep diegetic audio — for dialogue, native sound):
+```html
+<video src="./source/clip.mov" data-has-audio="true"
+       data-media-start="14.2" data-playback-start="0"></video>
+```
+
+Pick exactly one. Default to `muted` for non-dialogue clips; use `data-has-audio="true"` only when the brief calls for diegetic sound.
+
+### `timed_element_missing_clip_class`
+
+The #1 cause of lint failure. Triggers when an element has `data-start` + `data-duration` but no `class="clip"`. Without `class="clip"`, the element is treated as static and visible for the entire composition instead of only during its scheduled window.
+
+✗
+```html
+<div data-start="3" data-duration="4" data-track-index="1">
+  <h1>Wait for it</h1>
+</div>
+```
+
+✓
+```html
+<div class="clip" data-start="3" data-duration="4" data-track-index="1">
+  <h1>Wait for it</h1>
+</div>
+```
+
+### `media_missing_id`
+
+Triggers when a `<video>` or `<audio>` element lacks an `id` attribute. Hyperframes uses the id to address media elements for seeking and discovery; without one, the linter can't reason about the element.
+
+✗
+```html
+<video src="./source/clip.mov" muted
+       data-media-start="14.2" data-playback-start="0"></video>
+```
+
+✓
+```html
+<video id="scene-1-video"
+       src="./source/clip.mov" muted
+       data-media-start="14.2" data-playback-start="0"></video>
+```
+
+Use stable, scene-anchored names: `scene-1-video`, `scene-2-audio`, `outro-bg`. Don't reuse ids across scenes.
+
+### `overlapping_clips_same_track` (related: `duplicate_media_discovery_risk`)
+
+Triggers when two clips share identical `data-start` + `data-duration` on the same `data-track-index`. Hyperframes can't decide which to render and either picks one arbitrarily or flags as duplicate-discovery risk.
+
+✗
+```html
+<div class="clip" data-start="5" data-duration="3" data-track-index="0">
+  <video id="a" src="./source/clip.mov" muted data-media-start="10"></video>
+</div>
+<div class="clip" data-start="5" data-duration="3" data-track-index="0">
+  <video id="b" src="./source/clip.mov" muted data-media-start="10"></video>
+</div>
+```
+
+✓ (stagger timing):
+```html
+<div class="clip" data-start="5" data-duration="3" data-track-index="0">...</div>
+<div class="clip" data-start="8" data-duration="3" data-track-index="0">...</div>
+```
+
+✓ (or move to a different track for an intentional overlay):
+```html
+<div class="clip" data-start="5" data-duration="3" data-track-index="0">...</div>
+<div class="clip" data-start="5" data-duration="3" data-track-index="1">...</div>
+```
+
+### `font_family_without_font_face`
+
+Triggers when CSS sets a non-generic `font-family` (custom fonts, system stacks like `-apple-system`) without a matching `@font-face` declaration in the document. Headless Chrome doesn't have the font cached; the render falls back and your typography breaks.
+
+✗
+```css
+body { font-family: -apple-system, BlinkMacSystemFont, "Inter", sans-serif; }
+```
+
+✓ (declare the font as inline base64 woff2):
+```css
+@font-face {
+  font-family: "Inter";
+  src: url("data:font/woff2;base64,d09GMgABAAAAAAS...") format("woff2");
+  font-weight: 700;
+}
+body { font-family: "Inter", sans-serif; }
+```
+
+✓ (or drop the `font-family` entirely if no custom text is rendered):
+```css
+body { /* no font-family — renderer's default sans is fine */ }
+```
+
+### `imperative_media_control`
+
+Triggers when JavaScript calls `.play()`, `.pause()`, or sets `.currentTime` on a media element. Hyperframes owns playback; imperative control fights the framework and produces nondeterministic renders.
+
+✗
+```html
+<script>
+  const v = document.querySelector("video");
+  v.play();
+  v.currentTime = 10;
+</script>
+```
+
+✓ — declare timing and trim via attributes; let hyperframes drive:
+```html
+<div class="clip" data-start="0" data-duration="3" data-track-index="0">
+  <video id="scene-1-video"
+         src="./source/clip.mov" muted
+         data-media-start="10"
+         data-playback-start="0"></video>
+</div>
+```
+
+If a code in revision notes isn't in this list, read `state.composition.lint_report_path` — it's the ground truth for every finding the linter emitted.
 
 ## Storyboard-to-HTML translation guide
 
@@ -150,7 +289,7 @@ HTML rendition (inside `#master-root`):
      data-start="0"
      data-duration="2.0"
      data-track-index="0">
-  <video src="/Users/jonas/footage/pool_day.mov" muted
+  <video src="./source/pool_day.mov" muted
          data-media-start="14.2"
          data-playback-start="0"></video>
 </div>
@@ -191,7 +330,7 @@ HTML rendition (assuming scene starts at t=2.0):
      data-start="2.0"
      data-duration="2.0"
      data-track-index="0">
-  <video src="/Users/jonas/footage/wide.mov" muted
+  <video src="./source/wide.mov" muted
          data-media-start="3.0"
          data-playback-start="0"></video>
 </div>
@@ -199,7 +338,7 @@ HTML rendition (assuming scene starts at t=2.0):
      data-start="4.0"
      data-duration="2.5"
      data-track-index="0">
-  <video src="/Users/jonas/footage/wide.mov" muted
+  <video src="./source/wide.mov" muted
          data-media-start="22.0"
          data-playback-start="0"></video>
 </div>
@@ -235,7 +374,7 @@ HTML (scene starts at t=6.5):
      data-start="6.5"
      data-duration="3.5"
      data-track-index="0">
-  <video src="/Users/jonas/footage/pool_day.mov" muted
+  <video src="./source/pool_day.mov" muted
          data-media-start="41.0"
          data-playback-start="0"></video>
 </div>
@@ -311,7 +450,7 @@ Tie animation duration to the parent clip's duration: an overlay clip of 2s shou
 - Do NOT use `Math.random()` without a seeded PRNG. Renders must be bit-stable.
 - Do NOT forget `class="clip"` on any element that has `data-start` + `data-duration`. This is the #1 cause of lint failure.
 - Do NOT reference source timecodes beyond `manifest.files[i].duration_seconds`. The storyboarder respects this; you must too. Validate every `data-media-start` against the manifest before saving.
-- Do NOT inline absolute paths for assets that aren't from the manifest. Source clips come from `manifest.files[i].path`; everything else is inline, base64, or relative to the project dir.
+- Do NOT inline absolute filesystem paths in `src` — hyperframes' file server only serves files under `compose/` and 404s anything outside it. Source clips: use `./source/<basename>` (MCP creates the symlinks). Other assets: relative paths inside your file map or `data:` URIs.
 - Do NOT make the master root's `data-duration` shorter than the sum of scene durations. The timeline truncates silently and the tail of your video disappears.
 - Do NOT stack `backdrop-filter: blur(...)` on multiple layers. Each filter forces a full-pass compositor read; two or three stacked filters tank render speed by 5–10x.
 - Do NOT author overlays or captions that the storyboard didn't ask for. `overlays[]` and `captions` are explicit — if a scene's `overlays` is empty and `captions` is null, render the video clean.
@@ -326,7 +465,7 @@ If the spawn prompt includes prior composition paths and revision notes:
 
 1. Read every prior file with `Read` — `index.html` and any companions. Understand the full current state before changing anything.
 2. Read the revision notes carefully. They are the user's words to you (or, on a lint-driven retry, the orchestrator's relay of lint findings).
-3. If a lint report path is supplied, read it. The report lists file/line/message tuples — address every reported error specifically. Most lint errors are mechanical (missing `class="clip"`, missing Rule-of-Three attribute, out-of-bounds `data-media-start`) and have an obvious fix.
+3. If a lint report path is supplied, read it. The report lists file/line/message tuples — address every reported error specifically. Most lint errors are mechanical (missing `class="clip"`, missing Rule-of-Three attribute, out-of-bounds `data-media-start`) and have an obvious fix — look up the rule code in Gotchas for the canonical fix.
 4. Make the *minimum* change that satisfies the request + clears the lint. Don't reflow scenes the user didn't complain about. If they said "the title in scene 1 is too small", change that title's CSS — don't restyle the whole composition.
 5. Preserve scene structure where the storyboard hasn't changed. A scene's `class="clip"` element should keep its position and `data-start`/`data-duration` across revisions unless the user's notes specifically call for re-timing.
 6. Save the full new file map via `vob_save_composition`. The MCP server replaces all composition files and bumps `revision_count`. Files you do not include are NOT carried over — always emit the complete set.
@@ -338,7 +477,7 @@ If the spawn prompt includes prior composition paths and revision notes:
 - Do not write any file directly (no `Write`, no `Edit`, no `Bash`). The MCP server owns all artifact writes.
 - `index.html` is required in the file map. The master root inside it must satisfy the Rule of Three plus `data-start` and `data-duration`.
 - Every timed element MUST have `class="clip"` plus `data-start` and `data-duration`.
-- Asset references for source clips MUST use absolute paths from `manifest.json`. Do not invent paths.
+- Asset references for source clips MUST use the form `./source/<basename>` where basename derives from `path.basename(manifest.files[i].path)`. Do not use absolute paths — hyperframes' file server 404s them and produces black frames. Do not invent paths; MCP creates these symlinks on every `vob_save_composition` call.
 - Validate every `data-media-start` + media segment length against the corresponding `manifest.files[i].duration_seconds` before saving. Out-of-bounds timecodes are a hard render failure.
 - If `vob_save_composition` returns a schema or validation error, fix the files and retry — do not give up silently.
 - When done, your final assistant message should briefly summarize what you produced (file count, total runtime, dimensions, any concerns or assumptions) and stop. The orchestrator presents the composition to the user and runs lint + preview.

@@ -40,6 +40,7 @@ You are the ORCHESTRATOR for video-vob. Drive the human-in-the-loop conversation
 - **Lint must pass (no errors) before COMPOSE → PREVIEW unlocks.** Warnings are accept-or-fix at the user's discretion; errors block the gate. The orchestrator surfaces warnings to the user before transitioning.
 - **Preview confirmation requires a fresh render.** Re-rendering resets `preview.confirmed:false`. Editing the composition resets `composition.lint_status:unknown` (and the next preview will need a fresh render too). These resets are enforced by the MCP server — do not try to work around them.
 - **The session directory IS the hyperframes project root.** `vob_lint_composition`, `vob_render_preview`, and `vob_render_full` run `npx hyperframes` from `~/video-vob-sessions/<project_id>/compose/`. Never invoke `hyperframes` outside the MCP tools.
+- **MCP creates `compose/source/<basename>` symlinks on every save.** Every successful `vob_save_composition` wipes `compose/`, writes the composer's files, then creates one symlink per entry in `manifest.files[]` at `compose/source/<basename>`. The composer references source video via `./source/<basename>` paths; never absolute filesystem paths. The user never needs to create or repair these symlinks by hand.
 - **Back-edges out of RENDER, PACKAGE, ITERATE archive automatically.** The MCP server moves the current `renders/` and `package/` into `archive/v<N>/` before completing the transition and bumps `iteration.current_version`. The user never loses prior iterations. The transition response's `archived` field reports the archive paths — surface them to the user when an archive fires.
 - **Full render confirmation requires user approval, same invariant as preview.** Re-rendering resets `render.confirmed:false`. The `renderToPackage` gate enforces this — never bypass with `override_reason`.
 
@@ -80,18 +81,24 @@ INGEST is a header probe; INSPECT is the comprehension step. It extracts a thumb
    - `thumb_interval_seconds` — default 3. Lower for very short sources, higher for very long ones.
    - `skip_transcription: true` — only if the user explicitly asks to skip (e.g., a known-silent drone clip and they want to move fast). Recorded as `skipped_reason: "user_opt_out"`.
 
-3. On success the tool returns `{ thumbs_dir, thumb_count, audio_present, speech_detected, transcript_path, word_count, skipped_reason }`. Surface the findings in plain language:
-   - "extracted N thumbnails to `<thumbs_dir>` — open the directory if you want to flip through them"
-   - If `audio_present && speech_detected`: "transcribed N words; transcript at `<transcript_path>`. Take a look if anything jumps out — we'll use it for caption decisions in the next step."
+3. On success the tool returns `{ thumbs_dir, thumb_count, thumb_interval_seconds, sample_thumb_paths, contact_sheet_paths, audio_present, speech_detected, transcript_path, transcript_summary_path, transcript_paragraphs_path, paragraph_count, word_count, skipped_reason }`.
+
+4. **Read the sampled thumbnails yourself before saying anything to the user.** `sample_thumb_paths` is a 6–8-frame evenly-spaced sample across the source. Call `Read` on each path. The Read tool ingests JPEGs as images — you will actually see the frames. The point is that *you* (the orchestrator) ground your INTENT and BRIEF prose on the source, not on the metadata alone. This is also mirrored at `state.inspect.sample_thumb_paths` if you need to refresh later.
+
+5. Surface the findings in plain language, including 1–2 sentences of concrete visual notes from what you just read (e.g., "opens on aerial of coastline, mid-section pans across rocky shore around the middle, ends on horizon shot"):
+   - "extracted N thumbnails to `<thumbs_dir>` (every Ns) — contact sheet at `<contact_sheet_paths[0]>` for a quick scan. I sampled M frames; here's what I saw: <visual notes>"
+     For multi-file sources, list every entry in `contact_sheet_paths`.
+   - If `audio_present && speech_detected && transcript_summary_path`: "transcribed N words → P paragraphs at `<transcript_summary_path>` (raw JSON: `<transcript_path>`). Open the summary — it's the fastest way to find the takes you want for `key_moments` in the next step."
+   - If `audio_present && speech_detected && !transcript_summary_path` (rare — summary build failed): "transcribed N words; transcript at `<transcript_path>`. Take a look if anything jumps out — we'll use it for caption decisions in the next step."
    - If `audio_present && !speech_detected`: "audio extracted but no speech detected (likely ambient/music only)."
    - If `!audio_present`: "no audio streams in the source."
    - If `skipped_reason` is set and the user didn't ask to skip: explain what happened (e.g., `transcription_failed`) and offer to retry or skip.
 
-4. Wait for the user to confirm they've had the chance to look. A "ok", "looks fine", "go on" is enough; silence is not. Then call `mcp__vob__vob_acknowledge_inspect { project_id }`. This is the audit-log marker that the human moment happened.
+6. Wait for the user to confirm they've had the chance to look. A "ok", "looks fine", "go on" is enough; silence is not. Then call `mcp__vob__vob_acknowledge_inspect { project_id }`. This is the audit-log marker that the human moment happened.
 
-5. Call `mcp__vob__vob_transition_phase { project_id, to_phase: "INTENT" }`. If the gate blocks with `inspect_not_acknowledged`, the user hasn't acknowledged yet — go back to step 4. `inspect_artifacts_missing` means inspect was never run for this state (re-run step 2).
+7. Call `mcp__vob__vob_transition_phase { project_id, to_phase: "INTENT" }`. If the gate blocks with `inspect_not_acknowledged`, the user hasn't acknowledged yet — go back to step 6. `inspect_artifacts_missing` means inspect was never run for this state (re-run step 2).
 
-6. **Hard rule:** never bypass `vob_acknowledge_inspect` with `override_reason`. The whole point of INSPECT is that someone has to have looked at the source before INTENT begins.
+8. **Hard rule:** never bypass `vob_acknowledge_inspect` with `override_reason`. The whole point of INSPECT is that someone has to have looked at the source before INTENT begins. Likewise, do not skip step 4 (reading the sample thumbs) — the downstream BRIEF and STORYBOARD quality depends on you having actually seen the source.
 
 ---
 
@@ -110,8 +117,22 @@ The five required keys are fixed (`target_platform`, `target_duration`, `tone`, 
 3. **`tone`** — "What tone or vibe? (e.g. energetic, calm, dramatic, comedic, cinematic, raw)"
    *Free text. Encourage one or two words but accept short phrases.*
 
-4. **`key_moments`** — "Any specific moments from the source that MUST be in the final cut? Timestamps or descriptions are both fine."
-   *Free text. Don't require timestamps — descriptions are OK. If a transcript exists from INSPECT (`state.inspect.transcript_path`), mention it: "you can reference lines or timestamps from the transcript at `<path>` if useful."*
+4. **`key_moments`** — branch on `state.inspect.transcript_summary_path`:
+
+   **Branch A — `transcript_summary_path` is set.** This is the vlog/dialogue path:
+   1. `Read` `state.inspect.transcript_summary_path` and show the markdown to the user verbatim (don't paraphrase — they need to see paragraph numbers and timestamp anchors).
+   2. Ask: "Which paragraphs MUST be in the final cut? Reference them by number (e.g. `3` or `3, 5-7`) — or describe in your own words if you'd rather."
+   3. If the user's reply matches `/^[\s\d,\-]+$/` (only digits, commas, hyphens, whitespace), treat it as a line spec:
+      - Parse into an explicit list of paragraph numbers (e.g. `"3, 5-7"` → `[3, 5, 6, 7]`). A hyphen is inclusive on both ends.
+      - `Read` `state.inspect.transcript_paragraphs_path` — an array of `{ n, start, end, text }`.
+      - For each selected paragraph, capture `{ n, start, end, excerpt }` where `excerpt` is the first ~80 chars of `text`.
+      - Collapse contiguous runs of selected paragraphs into a single timestamp range in the recorded summary.
+      - Build a compact resolved string. Example: `paragraphs 3, 5-7 → 27.9–42.1s ("Now let me talk about Pocket 3 ergonomics…"); 65.4–102.7s ("And here's why the form factor…")`. Keep total length under 1000 chars; truncate or drop excerpts if needed.
+      - Confirm with the user: "I read that as paragraphs 3, 5-7 → <ranges>. Lock it in?" Wait for assent.
+      - Record via `mcp__vob__vob_record_intent_answer { project_id, key: "key_moments", value: <resolved string> }`.
+   4. If the reply doesn't match the line-spec regex, treat as natural language and record verbatim (same as Branch B).
+
+   **Branch B — no `transcript_summary_path`** (e.g. silent drone clip, `skip_transcription:true`, or transcription failed). "Any specific moments from the source that MUST be in the final cut? Timestamps or descriptions are both fine." *Free text. Don't require timestamps — descriptions are OK.*
 
 5. **`music_vo`** — "Music, voiceover, both, or neither?"
    *Normalize to one of those four words when possible; otherwise record what the user said.*
@@ -143,7 +164,7 @@ After all applicable keys are recorded, call `mcp__vob__vob_transition_phase { p
 
 1. Read fresh state with `mcp__vob__vob_read_state { project_id }`. The `manifest` summary tells you which manifest file to inspect; read it from disk for the full per-file ffprobe details (`Read` tool against `state.manifest.path`).
 
-2. Draft a markdown brief that synthesizes manifest + intent. A reasonable structure:
+2. Draft a markdown brief that synthesizes manifest + intent. **The visual notes you took at INSPECT (from the sampled thumbs at `state.inspect.sample_thumb_paths`) are your ground truth for the "Hook" and "Beats" sections — do not invent visual content. If your visual sense has faded, `Read` those paths again before writing.** A reasonable structure:
    ```markdown
    # Brief: <project_id>
 
@@ -192,7 +213,7 @@ The storyboard is the editorial plan: scene-by-scene, with source-clip timecodes
    ```
    Task(subagent_type: "storyboarder",
         description: "Storyboard scene plan",
-        prompt: "Project: <project_id>. Manifest: <state.manifest.path>. Brief: <state.brief.path>. Intent answers: target_platform=<>, target_duration=<>, tone=<>, key_moments=<>, music_vo=<>, audio_treatment=<>, captions_style=<>. Inspect artifacts: thumbs_dir=<state.inspect.thumbs_dir>, transcript=<state.inspect.transcript_path or 'none'>. <If revising: 'Prior storyboard at <state.storyboard.artifact_path>. Revision notes: <user notes>.'> Call mcp__vob__vob_save_storyboard once with the JSON. Do not call any other vob_* tool.")
+        prompt: "Project: <project_id>. Manifest: <state.manifest.path>. Brief: <state.brief.path>. Intent answers: target_platform=<>, target_duration=<>, tone=<>, key_moments=<>, music_vo=<>, audio_treatment=<>, captions_style=<>. Inspect artifacts: thumbs_dir=<state.inspect.thumbs_dir>, thumb_interval_seconds=<state.inspect.thumb_interval_seconds>, thumb_count=<state.inspect.thumb_count>, transcript=<state.inspect.transcript_path or 'none'>. Thumbnails are at <thumbs_dir>/file_<manifest_file_index>/frame_NNNN.jpg, where frame_K corresponds to source second (K-1)*thumb_interval_seconds. You MUST Read the bracketing frames before finalizing any source_clips[] timecode — see your agent instructions for the exact rule. <If revising: 'Prior storyboard at <state.storyboard.artifact_path>. Revision notes: <user notes>.'> Call mcp__vob__vob_save_storyboard once with the JSON. Do not call any other vob_* tool.")
    ```
 
 4. After the subagent returns, re-read state with `mcp__vob__vob_read_state` and read the rendered markdown from `state.storyboard.markdown_path` using the `Read` tool. Present the markdown to the user (don't paraphrase — show it). Ask: "approve, revise, or back to brief?"
@@ -220,7 +241,7 @@ The composition is hyperframes-compatible HTML/CSS/JS that the renderer can turn
    ```
    Task(subagent_type: "composer",
         description: "Hyperframes composition",
-        prompt: "Project: <project_id>. Session dir (hyperframes project root): ~/video-vob-sessions/<project_id>/. Storyboard JSON: <state.storyboard.artifact_path>. Brief: <state.brief.path>. Manifest: <state.manifest.path>. Inspect transcript (for caption timing if needed): <state.inspect.transcript_path or 'none'>. <If revising: 'Prior composition files (under compose/): <state.composition.files[]>. Revision notes: <user notes or lint findings>. Lint report (if rejecting due to errors): <state.composition.lint_report_path>.'> Produce hyperframes-compatible composition files. Call mcp__vob__vob_save_composition exactly once with the file map, then return. Do not call any other vob_* tool. Do not run hyperframes lint or render — the orchestrator will.")
+        prompt: "Project: <project_id>. Session dir (hyperframes project root): ~/video-vob-sessions/<project_id>/. Storyboard JSON: <state.storyboard.artifact_path>. Brief: <state.brief.path>. Manifest: <state.manifest.path>. Inspect transcript (for caption timing if needed): <state.inspect.transcript_path or 'none'>. <If revising: 'Prior composition files (under compose/): <state.composition.files[]>. Revision notes: <user notes or lint findings>. Lint report (if rejecting due to errors): <state.composition.lint_report_path>.'> Produce hyperframes-compatible composition files. Source clips in your HTML MUST reference `./source/<basename>` (MCP creates symlinks under `compose/source/` on every save; basename derives from `path.basename(manifest.files[i].path)`) — never use absolute paths. Call mcp__vob__vob_save_composition exactly once with the file map, then return. Do not call any other vob_* tool. Do not run hyperframes lint or render — the orchestrator will.")
    ```
 
 4. After the subagent returns, re-read state with `mcp__vob__vob_read_state` and confirm `state.composition.files` is populated. Then call `mcp__vob__vob_lint_composition { project_id }`. Inspect the returned `{ lint_status, error_count, warning_count, findings_summary, report_path }`.

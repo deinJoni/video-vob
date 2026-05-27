@@ -49,7 +49,11 @@ async function renderPreview(args) {
   const start = Date.now();
 
   const result = await runHyperframesBlocking(
-    ["render", "--quality", "draft", "--out", outPath, composeRoot],
+    // --workers 1 serializes frame capture; the auto-tuner overcommits Chrome
+    // workers on heavy HEVC sources and crashes them with "Target closed".
+    // One worker is fine for draft previews; the M4-era default of "auto"
+    // turned out to be unreliable in practice.
+    ["render", "--quality", "draft", "--workers", "1", "--output", outPath, composeRoot],
     { cwd: composeRoot, timeoutMs: RENDER_TIMEOUT_MS },
   );
 

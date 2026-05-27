@@ -2,3 +2,7 @@ node_modules/
 .DS_Store
 .env
 .env.*
+
+# Test fixtures (large binaries; keep out of git)
+DJI_*.MP4
+DJI_*.mp4

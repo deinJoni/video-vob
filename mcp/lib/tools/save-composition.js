@@ -8,6 +8,7 @@ const { assertSafeProjectId, composeDir, statePath } = require("../paths.js");
 const { withSessionLock, writeFileAtomic } = require("../storage.js");
 const { readSessionStateStrict } = require("../session-state.js");
 const { validateCompositionFiles } = require("../composition-files.js");
+const { recreateSourceSymlinks } = require("../source-symlink.js");
 
 function nowIso() {
   return new Date().toISOString();
@@ -62,6 +63,8 @@ function saveComposition(args) {
       writtenRelPaths.push(entry.relPath);
     }
 
+    const symlinkResult = recreateSourceSymlinks(id, composeRoot);
+
     const ts = nowIso();
     const prev = state.composition && typeof state.composition === "object" && !Array.isArray(state.composition)
       ? state.composition
@@ -78,6 +81,9 @@ function saveComposition(args) {
         lint_report_path: null,
         lint_ran_at: null,
         revision_count: revisionCount,
+        ...(symlinkResult.warnings.length > 0
+          ? { source_link_warnings: symlinkResult.warnings }
+          : {}),
       },
       last_updated: ts,
       history: [
@@ -88,6 +94,7 @@ function saveComposition(args) {
           revision_count: revisionCount,
           file_count: writtenRelPaths.length,
           total_bytes: verdict.total_bytes,
+          source_link_count: symlinkResult.links.length,
         },
       ],
     };
@@ -105,7 +112,7 @@ function saveComposition(args) {
 
 module.exports = Object.freeze({
   name: "vob_save_composition",
-  description: "Save (or overwrite) the hyperframes composition for a project. Input is a map of relative-path → string content; index.html is required, companion files optional (.html, .css, .js, .json, .svg only). Files are written atomically to the session's compose/ directory; any prior composition files are wiped first (save is fully replacing). Any save resets composition.lint_status to 'unknown' and increments revision_count — vob_lint_composition must run again before COMPOSE -> PREVIEW will unlock.",
+  description: "Save (or overwrite) the hyperframes composition for a project. Input is a map of relative-path → string content; index.html is required, companion files optional (.html, .css, .js, .json, .svg only). Files are written atomically to the session's compose/ directory; any prior composition files are wiped first (save is fully replacing). After writing files, MCP creates symlinks at compose/source/<basename> for every entry in manifest.files[] so the composition can reference source video via ./source/<basename>. Any save resets composition.lint_status to 'unknown' and increments revision_count — vob_lint_composition must run again before COMPOSE -> PREVIEW will unlock.",
   inputSchema: {
     type: "object",
     properties: {
@@ -128,6 +135,6 @@ module.exports = Object.freeze({
   browser_access: false,
   scope_required: false,
   sensitive_output: false,
-  session_artifacts_written: ["compose/*", "state.json"],
+  session_artifacts_written: ["compose/*", "compose/source/*", "state.json"],
   hook_required: false,
 });

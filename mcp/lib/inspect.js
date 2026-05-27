@@ -9,19 +9,38 @@ const { runFfmpegBlocking } = require("./ffmpeg-runner.js");
 const { runHyperframesBlocking } = require("./hyperframes-runner.js");
 const {
   inspectAudioPath,
+  inspectContactSheetPath,
   inspectDir,
   inspectSummaryPath,
   inspectThumbsDir,
+  inspectTranscriptParagraphsPath,
   inspectTranscriptPath,
+  inspectTranscriptSummaryPath,
 } = require("./paths.js");
+const { buildTranscriptSummary } = require("./transcript-summary.js");
 
 const THUMB_TIMEOUT_MS = 120 * 1000;
 const AUDIO_TIMEOUT_MS = 180 * 1000;
 const TRANSCRIBE_TIMEOUT_MS = 10 * 60 * 1000;
+const CONTACT_SHEET_TIMEOUT_MS = 120 * 1000;
+const CONTACT_SHEET_COLS = 5;
+const CONTACT_SHEET_CELL_WIDTH = 320;
 const DEFAULT_THUMB_INTERVAL_SECONDS = 3;
+const DEFAULT_SAMPLE_THUMB_COUNT = 7;
 
 function nowIso() {
   return new Date().toISOString();
+}
+
+function pickSampleThumbs(thumbPaths, targetCount = DEFAULT_SAMPLE_THUMB_COUNT) {
+  if (!Array.isArray(thumbPaths) || thumbPaths.length === 0) return [];
+  if (thumbPaths.length <= targetCount) return thumbPaths.slice();
+  const picks = new Set();
+  for (let i = 0; i < targetCount; i += 1) {
+    const idx = Math.round((i * (thumbPaths.length - 1)) / (targetCount - 1));
+    picks.add(idx);
+  }
+  return Array.from(picks).sort((a, b) => a - b).map((i) => thumbPaths[i]);
 }
 
 function clearInspectDir(projectId) {
@@ -67,6 +86,40 @@ async function extractThumbnailsForFile({ projectId, fileIndex, sourcePath, inte
     .sort()
     .map((name) => path.join(fileSubdir, name));
   return entries;
+}
+
+async function buildContactSheet({ projectId, fileIndex, thumbCount, outPath }) {
+  if (thumbCount <= 0) return null;
+  const cols = Math.min(CONTACT_SHEET_COLS, thumbCount);
+  const rows = Math.ceil(thumbCount / cols);
+  const inputGlob = path.join(inspectThumbsDir(projectId), `file_${fileIndex}`, "frame_*.jpg");
+  const result = await runFfmpegBlocking(
+    [
+      "-y",
+      "-pattern_type", "glob",
+      "-i", inputGlob,
+      "-vf", `scale=${CONTACT_SHEET_CELL_WIDTH}:-1,tile=${cols}x${rows}`,
+      "-q:v", "3",
+      outPath,
+    ],
+    { timeoutMs: CONTACT_SHEET_TIMEOUT_MS },
+  );
+  if (result.timed_out) {
+    throw new ToolError(
+      ERROR_CODES.INTERNAL_ERROR,
+      `ffmpeg contact sheet build timed out for file_${fileIndex}`,
+      { stderr_preview: (result.stderr || "").trim().slice(0, 1000) || null },
+    );
+  }
+  if (result.exit_code !== 0 || !fs.existsSync(outPath)) {
+    const stderrPreview = (result.stderr || "").trim().slice(0, 2000) || null;
+    throw new ToolError(
+      ERROR_CODES.INTERNAL_ERROR,
+      `ffmpeg contact sheet build failed (exit ${result.exit_code}) for file_${fileIndex}`,
+      { exit_code: result.exit_code, stderr_preview: stderrPreview },
+    );
+  }
+  return outPath;
 }
 
 async function extractAudio({ sourcePath, outPath }) {
@@ -170,6 +223,7 @@ async function runInspect({ projectId, manifest, options = {} }) {
   const summaryAbs = inspectSummaryPath(projectId);
 
   const thumbPaths = [];
+  const thumbCountsByFile = new Map();
   for (let i = 0; i < manifest.files.length; i += 1) {
     const file = manifest.files[i];
     if (!file || typeof file.path !== "string") continue;
@@ -180,6 +234,15 @@ async function runInspect({ projectId, manifest, options = {} }) {
       intervalSeconds,
     });
     thumbPaths.push(...created);
+    thumbCountsByFile.set(i, created.length);
+  }
+
+  const contactSheetPaths = [];
+  for (const [fileIndex, count] of thumbCountsByFile.entries()) {
+    if (count <= 0) continue;
+    const sheetPath = inspectContactSheetPath(projectId, fileIndex);
+    await buildContactSheet({ projectId, fileIndex, thumbCount: count, outPath: sheetPath });
+    contactSheetPaths.push(sheetPath);
   }
 
   const fileWithAudio = manifest.files.find((f) => f && Number(f.audio_streams) > 0);
@@ -215,6 +278,30 @@ async function runInspect({ projectId, manifest, options = {} }) {
     skippedReason = "no_audio_stream";
   }
 
+  let transcriptSummaryPathOut = null;
+  let transcriptParagraphsPathOut = null;
+  let paragraphCount = 0;
+  if (transcriptPathOut) {
+    try {
+      const transcript = JSON.parse(fs.readFileSync(transcriptPathOut, "utf8"));
+      const { paragraphs, markdown } = buildTranscriptSummary(transcript, {
+        sourceLabel: fileWithAudio ? path.basename(fileWithAudio.path) : "",
+      });
+      if (paragraphs.length > 0) {
+        const mdPath = inspectTranscriptSummaryPath(projectId);
+        const jsonPath = inspectTranscriptParagraphsPath(projectId);
+        writeFileAtomic(mdPath, markdown);
+        writeFileAtomic(jsonPath, `${JSON.stringify(paragraphs, null, 2)}\n`);
+        transcriptSummaryPathOut = mdPath;
+        transcriptParagraphsPathOut = jsonPath;
+        paragraphCount = paragraphs.length;
+      }
+    } catch {
+      // Best-effort derived artifact. transcript.json remains authoritative
+      // for the captions-vs-transcript gate.
+    }
+  }
+
   const summary = {
     schema_version: "1.0",
     project_id: projectId,
@@ -223,10 +310,15 @@ async function runInspect({ projectId, manifest, options = {} }) {
     thumb_count: thumbPaths.length,
     thumbs_dir: thumbsRootAbs,
     thumb_paths: thumbPaths,
+    sample_thumb_paths: pickSampleThumbs(thumbPaths),
+    contact_sheet_paths: contactSheetPaths,
     audio_present: audioPresent,
     audio_path: audioPathOut,
     speech_detected: speechDetected,
     transcript_path: transcriptPathOut,
+    transcript_summary_path: transcriptSummaryPathOut,
+    transcript_paragraphs_path: transcriptParagraphsPathOut,
+    paragraph_count: paragraphCount,
     word_count: wordCount,
     peaks_seconds: [],
     skipped_reason: skippedReason,
@@ -238,5 +330,7 @@ async function runInspect({ projectId, manifest, options = {} }) {
 
 module.exports = {
   runInspect,
+  pickSampleThumbs,
   DEFAULT_THUMB_INTERVAL_SECONDS,
+  DEFAULT_SAMPLE_THUMB_COUNT,
 };
