@@ -95,6 +95,9 @@ function saveComposition(args) {
           file_count: writtenRelPaths.length,
           total_bytes: verdict.total_bytes,
           source_link_count: symlinkResult.links.length,
+          scene_clip_link_count: Array.isArray(symlinkResult.scene_clip_links)
+            ? symlinkResult.scene_clip_links.length
+            : 0,
         },
       ],
     };
@@ -112,7 +115,7 @@ function saveComposition(args) {
 
 module.exports = Object.freeze({
   name: "vob_save_composition",
-  description: "Save (or overwrite) the hyperframes composition for a project. Input is a map of relative-path → string content; index.html is required, companion files optional (.html, .css, .js, .json, .svg only). Files are written atomically to the session's compose/ directory; any prior composition files are wiped first (save is fully replacing). After writing files, MCP creates symlinks at compose/source/<basename> for every entry in manifest.files[] so the composition can reference source video via ./source/<basename>. Any save resets composition.lint_status to 'unknown' and increments revision_count — vob_lint_composition must run again before COMPOSE -> PREVIEW will unlock.",
+  description: "Save (or overwrite) the hyperframes composition for a project. Input is a map of relative-path → string content; index.html is required, companion files optional (.html, .css, .js, .json, .svg only). Files are written atomically to the session's compose/ directory; any prior composition files are wiped first (save is fully replacing). After writing files, MCP creates two sets of symlinks under compose/source/: (a) one symlink per manifest.files[] entry named after the source's basename — original-source fallback for overlay frames; (b) one symlink per storyboard source_clips[] entry named <scene_id>-<clip_index>.mp4, pointing at the H.264 pre-cut clip in <session>/transcoded/clips/. Compositions should reference scene clips (./source/<scene_id>-<clip_index>.mp4) with data-media-start=0 rather than the original source — pre-cut clips avoid the HEVC + deep-seek failure modes in headless Chrome. Any save resets composition.lint_status to 'unknown' and increments revision_count — vob_lint_composition must run again before COMPOSE -> PREVIEW will unlock.",
   inputSchema: {
     type: "object",
     properties: {

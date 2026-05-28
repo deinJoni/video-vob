@@ -94,10 +94,7 @@ async function renderFull(args) {
 
   const start = Date.now();
   const result = await runHyperframesBlocking(
-    // --workers 1 serializes frame capture; the auto-tuner overcommits Chrome
-    // workers on heavy HEVC sources and crashes them. See render-preview.js
-    // for the M5 rationale; mirrored here for full renders.
-    ["render", "--workers", "1", "--output", outPath, composeRoot],
+    ["render", "--output", outPath, composeRoot],
     { cwd: composeRoot, timeoutMs: FULL_RENDER_TIMEOUT_MS, stderrLogPath },
   );
 

@@ -3,7 +3,14 @@
 const fs = require("fs");
 const path = require("path");
 
-const { manifestPath, composeSourceDir, assertSafeProjectId } = require("./paths.js");
+const {
+  assertSafeProjectId,
+  assertSafeSceneId,
+  composeSourceDir,
+  manifestPath,
+  storyboardPath,
+  transcodedClipPath,
+} = require("./paths.js");
 
 const SOURCE_SUBDIR = "source";
 
@@ -18,6 +25,49 @@ function readManifestSafe(projectId) {
     if (err instanceof SyntaxError) return null;
     throw err;
   }
+}
+
+function readStoryboardSafe(projectId) {
+  try {
+    const raw = fs.readFileSync(storyboardPath(projectId), "utf8");
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed;
+    return null;
+  } catch (err) {
+    if (err && err.code === "ENOENT") return null;
+    if (err instanceof SyntaxError) return null;
+    throw err;
+  }
+}
+
+function resolveSceneClipLinks(projectId) {
+  const id = assertSafeProjectId(projectId);
+  const sb = readStoryboardSafe(id);
+  if (!sb || !Array.isArray(sb.scenes)) return [];
+  const linkDir = composeSourceDir(id);
+  const tuples = [];
+  for (const scene of sb.scenes) {
+    if (!scene || typeof scene.scene_id !== "string") continue;
+    let sceneId;
+    try {
+      sceneId = assertSafeSceneId(scene.scene_id);
+    } catch {
+      continue;
+    }
+    const sourceClips = Array.isArray(scene.source_clips) ? scene.source_clips : [];
+    for (let clipIndex = 0; clipIndex < sourceClips.length; clipIndex += 1) {
+      const clipAbs = transcodedClipPath(id, sceneId, clipIndex);
+      const linkName = `${sceneId}-${clipIndex}.mp4`;
+      tuples.push({
+        scene_id: sceneId,
+        clip_index: clipIndex,
+        clip_abs: clipAbs,
+        link_rel: `${SOURCE_SUBDIR}/${linkName}`,
+        link_abs: path.join(linkDir, linkName),
+      });
+    }
+  }
+  return tuples;
 }
 
 function dedupeBasename(basename, used) {
@@ -61,13 +111,16 @@ function recreateSourceSymlinks(projectId, composeRoot) {
   const id = assertSafeProjectId(projectId);
   const manifest = readManifestSafe(id);
   if (!manifest) {
-    return { links: [], warnings: ["manifest not found; no source symlinks created"] };
+    return { links: [], scene_clip_links: [], warnings: ["manifest not found; no source symlinks created"] };
   }
   if (!Array.isArray(manifest.files) || manifest.files.length === 0) {
-    return { links: [], warnings: [] };
+    return { links: [], scene_clip_links: [], warnings: [] };
   }
   const links = resolveSourceLinks(id);
-  if (links.length === 0) return { links: [], warnings: [] };
+  const sceneClipLinks = resolveSceneClipLinks(id);
+  if (links.length === 0 && sceneClipLinks.length === 0) {
+    return { links: [], scene_clip_links: [], warnings: [] };
+  }
 
   const linkDir = path.join(composeRoot, SOURCE_SUBDIR);
   fs.mkdirSync(linkDir, { recursive: true });
@@ -98,11 +151,44 @@ function recreateSourceSymlinks(projectId, composeRoot) {
       throw err;
     }
   }
-  return { links: created, warnings };
+
+  // Scene-clip symlinks: <composeRoot>/source/<scene_id>.mp4 → <session>/transcoded/clips/<scene_id>.mp4.
+  // The composer references these directly (./source/s001.mp4) instead of seeking
+  // into the original source with #t= fragments or `currentTime`, both of which
+  // are unreliable in headless Chrome on large or HEVC sources. Materialization
+  // happens at STORYBOARD -> COMPOSE; if a scene's clip is missing here we warn
+  // (don't fail) because save-composition is also called on raw compose authoring
+  // and the gate already blocks PREVIEW until clips resolve.
+  const sceneClipsCreated = [];
+  for (const link of sceneClipLinks) {
+    if (!fs.existsSync(link.clip_abs)) {
+      warnings.push(`scene clip missing on disk for ${link.scene_id}-${link.clip_index}: ${link.clip_abs}`);
+      continue;
+    }
+    try {
+      try {
+        fs.unlinkSync(link.link_abs);
+      } catch (err) {
+        if (err && err.code !== "ENOENT") throw err;
+      }
+      fs.symlinkSync(link.clip_abs, link.link_abs);
+      sceneClipsCreated.push(link);
+    } catch (err) {
+      if (err && (err.code === "EPERM" || err.code === "EACCES")) {
+        warnings.push(
+          `could not create scene-clip symlink for ${link.scene_id}-${link.clip_index}: ${err.code}`,
+        );
+        continue;
+      }
+      throw err;
+    }
+  }
+  return { links: created, scene_clip_links: sceneClipsCreated, warnings };
 }
 
 module.exports = {
   SOURCE_SUBDIR,
-  resolveSourceLinks,
   recreateSourceSymlinks,
+  resolveSceneClipLinks,
+  resolveSourceLinks,
 };

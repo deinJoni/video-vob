@@ -91,6 +91,44 @@ function composeSourceDir(projectId) {
   return path.join(composeDir(projectId), "source");
 }
 
+function transcodedDir(projectId) {
+  return path.join(sessionDir(projectId), "transcoded");
+}
+
+function transcodedClipsDir(projectId) {
+  return path.join(transcodedDir(projectId), "clips");
+}
+
+function assertSafeSceneId(sceneId) {
+  if (typeof sceneId !== "string" || !sceneId.trim()) {
+    throw new Error("scene_id must be a non-empty string");
+  }
+  const trimmed = sceneId.trim();
+  if (/[\/\\]/.test(trimmed) || /(?:^|\.)\.\.(?:\.|$)/.test(trimmed)) {
+    throw new Error(`scene_id contains invalid path characters: ${trimmed}`);
+  }
+  return trimmed;
+}
+
+function assertNonNegativeInt(value, label) {
+  if (!Number.isInteger(value) || value < 0) {
+    throw new Error(`${label} must be a non-negative integer (got ${value})`);
+  }
+  return value;
+}
+
+function transcodedClipStem(sceneId, clipIndex) {
+  return `${assertSafeSceneId(sceneId)}-${assertNonNegativeInt(clipIndex, "clip_index")}`;
+}
+
+function transcodedClipPath(projectId, sceneId, clipIndex) {
+  return path.join(transcodedClipsDir(projectId), `${transcodedClipStem(sceneId, clipIndex)}.mp4`);
+}
+
+function transcodedClipSidecarPath(projectId, sceneId, clipIndex) {
+  return path.join(transcodedClipsDir(projectId), `${transcodedClipStem(sceneId, clipIndex)}.json`);
+}
+
 function previewDir(projectId) {
   return path.join(sessionDir(projectId), "preview");
 }
@@ -139,6 +177,7 @@ module.exports = {
   archiveSnapshotPath,
   archiveVersionDir,
   assertSafeProjectId,
+  assertSafeSceneId,
   briefPath,
   composeDir,
   composeSourceDir,
@@ -165,4 +204,9 @@ module.exports = {
   statePath,
   storyboardMarkdownPath,
   storyboardPath,
+  transcodedClipPath,
+  transcodedClipSidecarPath,
+  transcodedClipStem,
+  transcodedClipsDir,
+  transcodedDir,
 };

@@ -4,9 +4,10 @@ const fs = require("fs");
 const { PHASE_VALUES } = require("./constants.js");
 const { ERROR_CODES, ToolError } = require("./envelope.js");
 const { sessionDir, statePath, assertSafeProjectId } = require("./paths.js");
-const { withSessionLock, writeFileAtomic, readJsonFile } = require("./storage.js");
+const { acquireSessionLock, withSessionLock, writeFileAtomic, readJsonFile } = require("./storage.js");
 const { getGate } = require("./phase-gates.js");
 const { archiveForIteration, isArchivalTransition } = require("./archival.js");
+const { materializeSceneClips } = require("./clip-materialize.js");
 
 const ALLOWED_TRANSITIONS = Object.freeze({
   INGEST:     ["INSPECT"],
@@ -100,7 +101,14 @@ function readStateSummary(args) {
   };
 }
 
-function transitionPhase(args) {
+function readAudioTreatment(state) {
+  const intent = state && state.intent;
+  const answers = intent && typeof intent === "object" && !Array.isArray(intent) ? intent.answers : null;
+  const value = answers && typeof answers === "object" ? answers.audio_treatment : null;
+  return typeof value === "string" && value.trim() ? value : "keep_audio";
+}
+
+async function transitionPhase(args) {
   const id = assertSafeProjectId(args && args.project_id);
   const toPhase = args && args.to_phase;
   const overrideReason = args && args.override_reason != null ? String(args.override_reason) : null;
@@ -109,7 +117,15 @@ function transitionPhase(args) {
     throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, `unknown to_phase: ${toPhase}`);
   }
 
-  return withSessionLock(id, () => {
+  // Hold the lock across validation, scene-clip materialization (when entering
+  // COMPOSE), and the state commit. The session lock is exclusive and uncontended
+  // during phase transitions — the orchestrator drives one transition at a time —
+  // so blocking on ffmpeg work inside the lock is the simplest way to keep the
+  // transition atomic. `withSessionLock` does not await async callbacks; we use
+  // `acquireSessionLock` + try/finally directly so the lock is held until the
+  // async work resolves.
+  const release = acquireSessionLock(id);
+  try {
     const state = readSessionStateStrict(id);
     const from = state.phase;
     const allowed = ALLOWED_TRANSITIONS[from] || [];
@@ -132,6 +148,19 @@ function transitionPhase(args) {
       );
     }
 
+    // Pre-cut every storyboard scene to its own H.264 clip when entering COMPOSE
+    // (forward edge from STORYBOARD, or any back-edge from a downstream phase).
+    // Sidecar caching makes back-edge re-entry a no-op when the storyboard hasn't
+    // changed. Cutting before the state write means the user is never advanced
+    // into COMPOSE with a half-prepared compose/source/ tree.
+    let transcodedClips = null;
+    if (toPhase === "COMPOSE") {
+      transcodedClips = await materializeSceneClips({
+        projectId: id,
+        audioTreatment: readAudioTreatment(state),
+      });
+    }
+
     const ts = nowIso();
     // Versioned archival on back-edges out of {RENDER, PACKAGE, ITERATE} into
     // {COMPOSE, STORYBOARD}. The user never loses prior iterations: the
@@ -151,6 +180,9 @@ function transitionPhase(args) {
     if (archive) {
       next = archive.apply(next);
     }
+    if (transcodedClips) {
+      next.transcoded_clips = transcodedClips;
+    }
     const archiveEvents = archive
       ? [{
           kind: "iteration_archived",
@@ -159,9 +191,18 @@ function transitionPhase(args) {
           paths: archive.record.paths,
         }]
       : [];
+    const clipEvents = transcodedClips
+      ? [{
+          kind: "scene_clips_materialized",
+          at: ts,
+          audio_treatment: transcodedClips.audio_treatment,
+          summary: transcodedClips.summary,
+        }]
+      : [];
     next.history = [
       ...(Array.isArray(state.history) ? state.history : []),
       ...archiveEvents,
+      ...clipEvents,
       {
         kind: "transition",
         from,
@@ -178,9 +219,12 @@ function transitionPhase(args) {
       to: toPhase,
       override_reason: overrideReason,
       archived: archive ? archive.record : null,
+      transcoded_clips: transcodedClips,
       state: next,
     };
-  });
+  } finally {
+    release();
+  }
 }
 
 module.exports = {

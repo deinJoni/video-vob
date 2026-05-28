@@ -9,6 +9,7 @@ const FFMPEG_INSTALL_HINT =
   "macOS: `brew install ffmpeg`. Debian/Ubuntu: `apt-get install ffmpeg`.";
 
 const FFMPEG_TIMEOUT_MS = 5 * 60 * 1000;
+const CLIP_CUT_TIMEOUT_MS = 10 * 60 * 1000;
 const PREFLIGHT_TIMEOUT_MS = 30 * 1000;
 const MAX_OUTPUT_BYTES = DEFAULT_MAX_OUTPUT_BYTES;
 
@@ -79,6 +80,43 @@ function runFfmpegBlocking(argv, { cwd, timeoutMs = FFMPEG_TIMEOUT_MS, stderrLog
   );
 }
 
+function buildClipCutArgv({ src, out, inSeconds, outSeconds, dropAudio }) {
+  // `-i <src>` before `-ss` does decode-then-seek: slower but frame-accurate,
+  // and required for HEVC (input-side `-ss` lands on the previous keyframe
+  // and corrupts the cut). The clip is re-encoded to H.264 + yuv420p so
+  // headless Chrome can decode it reliably regardless of source codec.
+  const argv = [
+    "-y",
+    "-i", src,
+    "-ss", String(inSeconds),
+    "-to", String(outSeconds),
+    "-c:v", "libx264",
+    "-preset", "fast",
+    "-crf", "20",
+    "-pix_fmt", "yuv420p",
+    "-movflags", "+faststart",
+  ];
+  if (dropAudio) {
+    argv.push("-an");
+  } else {
+    argv.push("-c:a", "aac", "-b:a", "128k");
+  }
+  argv.push(out);
+  return argv;
+}
+
+async function cutClip({ src, out, inSeconds, outSeconds, dropAudio = false, timeoutMs = CLIP_CUT_TIMEOUT_MS } = {}) {
+  if (typeof src !== "string" || !src) throw new Error("cutClip: src is required");
+  if (typeof out !== "string" || !out) throw new Error("cutClip: out is required");
+  if (!Number.isFinite(inSeconds) || inSeconds < 0) throw new Error("cutClip: inSeconds must be >= 0");
+  if (!Number.isFinite(outSeconds) || outSeconds <= inSeconds) {
+    throw new Error("cutClip: outSeconds must be > inSeconds");
+  }
+  const argv = buildClipCutArgv({ src, out, inSeconds, outSeconds, dropAudio });
+  const result = await runFfmpegBlocking(argv, { timeoutMs });
+  return { ...result, argv };
+}
+
 function checkFfmpegAvailable({ timeoutMs = PREFLIGHT_TIMEOUT_MS } = {}) {
   let result;
   try {
@@ -112,9 +150,12 @@ function checkFfmpegAvailable({ timeoutMs = PREFLIGHT_TIMEOUT_MS } = {}) {
 module.exports = {
   FFMPEG_INSTALL_HINT,
   FFMPEG_TIMEOUT_MS,
+  CLIP_CUT_TIMEOUT_MS,
   PREFLIGHT_TIMEOUT_MS,
   MAX_OUTPUT_BYTES,
+  buildClipCutArgv,
   checkFfmpegAvailable,
+  cutClip,
   runFfmpegBlocking,
   runFfmpegSync,
 };

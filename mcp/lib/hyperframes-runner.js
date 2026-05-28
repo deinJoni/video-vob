@@ -10,7 +10,7 @@ const HYPERFRAMES_INSTALL_HINT =
   "See https://github.com/heygen-com/hyperframes for details.";
 
 const LINT_TIMEOUT_MS = 60 * 1000;
-const RENDER_TIMEOUT_MS = 5 * 60 * 1000;
+const RENDER_TIMEOUT_MS = 15 * 60 * 1000;
 const FULL_RENDER_TIMEOUT_MS = 30 * 60 * 1000;
 const PREFLIGHT_TIMEOUT_MS = 30 * 1000;
 const MAX_OUTPUT_BYTES = DEFAULT_MAX_OUTPUT_BYTES;
