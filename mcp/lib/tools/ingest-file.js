@@ -1,6 +1,7 @@
 "use strict";
 
 const fs = require("fs");
+const crypto = require("crypto");
 const path = require("path");
 const { ERROR_CODES, ToolError } = require("../envelope.js");
 const {
@@ -19,13 +20,18 @@ const { checkHyperframesAvailable } = require("../hyperframes-runner.js");
 const { checkFfmpegAvailable } = require("../ffmpeg-runner.js");
 
 const VIDEO_EXTENSIONS = new Set([".mp4", ".mov", ".mkv", ".webm", ".m4v", ".avi"]);
+// Audio-only drops are first-class: a bare voiceover/narration track is a valid
+// spine source (stream-layout prior 'narration'). Accept common audio
+// containers so they're ingested rather than silently skipped.
+const AUDIO_EXTENSIONS = new Set([".m4a", ".mp3", ".wav", ".aac", ".flac", ".ogg", ".opus", ".wma"]);
+const MEDIA_EXTENSIONS = new Set([...VIDEO_EXTENSIONS, ...AUDIO_EXTENSIONS]);
 
 function nowIso() {
   return new Date().toISOString();
 }
 
-function isVideoFile(filePath) {
-  return VIDEO_EXTENSIONS.has(path.extname(filePath).toLowerCase());
+function isMediaFile(filePath) {
+  return MEDIA_EXTENSIONS.has(path.extname(filePath).toLowerCase());
 }
 
 function resolveSource(rawSourcePath) {
@@ -50,10 +56,10 @@ function resolveSource(rawSourcePath) {
 
 function enumerateFiles(resolved, stat) {
   if (stat.isFile()) {
-    if (!isVideoFile(resolved)) {
+    if (!isMediaFile(resolved)) {
       throw new ToolError(
         ERROR_CODES.INVALID_ARGUMENTS,
-        `source_path is not a recognized video file (extension must be one of ${[...VIDEO_EXTENSIONS].join(", ")}): ${resolved}`,
+        `source_path is not a recognized media file (extension must be one of ${[...MEDIA_EXTENSIONS].join(", ")}): ${resolved}`,
       );
     }
     return [resolved];
@@ -61,14 +67,14 @@ function enumerateFiles(resolved, stat) {
   if (!stat.isDirectory()) {
     throw new ToolError(
       ERROR_CODES.INVALID_ARGUMENTS,
-      `source_path must be a video file or directory: ${resolved}`,
+      `source_path must be a media file or directory: ${resolved}`,
     );
   }
   const entries = fs.readdirSync(resolved)
     .map((name) => path.join(resolved, name))
     .filter((entry) => {
       try {
-        return fs.statSync(entry).isFile() && isVideoFile(entry);
+        return fs.statSync(entry).isFile() && isMediaFile(entry);
       } catch {
         return false;
       }
@@ -77,27 +83,104 @@ function enumerateFiles(resolved, stat) {
   if (entries.length === 0) {
     throw new ToolError(
       ERROR_CODES.INVALID_ARGUMENTS,
-      `no recognized video files in directory: ${resolved}`,
+      `no recognized media files in directory: ${resolved}`,
     );
   }
   return entries;
 }
 
-function buildManifest({ projectId, sourcePath, files }) {
-  const probedFiles = files.map((filePath) => {
-    const probe = probeFile(filePath);
-    const summary = summarizeProbe(filePath, probe);
-    return { ...summary, probe };
-  });
+// Stream-layout prior, set BEFORE any content analysis. Audio-only drops are a
+// first-class narration/VO spine; silent video is a B-roll candidate; a file
+// with both is ambiguous (let INSPECT/classification decide).
+function streamLayoutPrior(summary) {
+  if (summary.has_audio && !summary.has_video) return "narration";
+  if (summary.has_video && !summary.has_audio) return "broll";
+  return null;
+}
 
-  const videoStreamCount = probedFiles.reduce(
+function fileSignature(filePath) {
+  const st = fs.statSync(filePath);
+  return { size_bytes: st.size, mtime_ms: Math.round(st.mtimeMs) };
+}
+
+// Streaming SHA-256 of the file content. Only invoked for new/changed files
+// (the size+mtime fast-path in buildManifest avoids re-hashing on re-drops),
+// so the cost of hashing a large source is paid once.
+function hashFile(filePath) {
+  const h = crypto.createHash("sha256");
+  const fd = fs.openSync(filePath, "r");
+  try {
+    const buf = Buffer.allocUnsafe(1024 * 1024);
+    let pos = 0;
+    let bytesRead;
+    // eslint-disable-next-line no-cond-assign
+    while ((bytesRead = fs.readSync(fd, buf, 0, buf.length, pos)) > 0) {
+      h.update(buf.subarray(0, bytesRead));
+      pos += bytesRead;
+    }
+  } finally {
+    fs.closeSync(fd);
+  }
+  return h.digest("hex");
+}
+
+function probeOneFile(filePath) {
+  const sig = fileSignature(filePath);
+  const probe = probeFile(filePath);
+  const summary = summarizeProbe(filePath, probe);
+  return {
+    ...summary,
+    size_bytes: sig.size_bytes,
+    mtime_ms: sig.mtime_ms,
+    hash: hashFile(filePath),
+    prior: streamLayoutPrior(summary),
+    probe,
+  };
+}
+
+// Hash-keyed, additive, incremental merge. Prior manifest entries are kept
+// (a file ingested in an earlier drop survives even if it's not in this drop),
+// then the currently-enumerated files are overlaid: an unchanged file (same
+// path + size + mtime, with a hash already on record) reuses its prior entry
+// untouched (no re-probe, no re-hash); a new or changed file is freshly
+// probed + hashed. Never a full rebuild.
+function buildManifest({ projectId, sourcePath, files, priorManifest }) {
+  const byPath = new Map();
+  const priorFiles = priorManifest && Array.isArray(priorManifest.files) ? priorManifest.files : [];
+  for (const entry of priorFiles) {
+    if (entry && typeof entry.path === "string") byPath.set(entry.path, entry);
+  }
+
+  let reprobedCount = 0;
+  let reusedCount = 0;
+  for (const filePath of files) {
+    const prior = byPath.get(filePath);
+    let sig = null;
+    try { sig = fileSignature(filePath); } catch { sig = null; }
+    const unchanged = prior
+      && sig
+      && Number(prior.size_bytes) === sig.size_bytes
+      && Number(prior.mtime_ms) === sig.mtime_ms
+      && typeof prior.hash === "string"
+      && prior.has_video !== undefined
+      && prior.prior !== undefined;
+    if (unchanged) {
+      reusedCount += 1;
+    } else {
+      byPath.set(filePath, probeOneFile(filePath));
+      reprobedCount += 1;
+    }
+  }
+
+  const mergedFiles = Array.from(byPath.values());
+  const videoStreamCount = mergedFiles.reduce(
     (sum, entry) => sum + (Number(entry.video_streams) || 0),
     0,
   );
   if (videoStreamCount === 0) {
     throw new ToolError(
       ERROR_CODES.INVALID_ARGUMENTS,
-      `source contains no playable video streams: ${sourcePath}`,
+      `source contains no playable video streams (across all ingested files): ${sourcePath}`,
     );
   }
 
@@ -105,9 +188,11 @@ function buildManifest({ projectId, sourcePath, files }) {
     project_id: projectId,
     source_path: sourcePath,
     ingested_at: nowIso(),
-    file_count: probedFiles.length,
+    file_count: mergedFiles.length,
     video_stream_count: videoStreamCount,
-    files: probedFiles,
+    new_or_changed_count: reprobedCount,
+    reused_count: reusedCount,
+    files: mergedFiles,
   };
 }
 
@@ -115,7 +200,16 @@ function ingestFile(args) {
   const id = assertSafeProjectId(args && args.project_id);
   const { resolved: sourcePath, stat } = resolveSource(args && args.source_path);
   const files = enumerateFiles(sourcePath, stat);
-  const manifest = buildManifest({ projectId: id, sourcePath, files });
+
+  // Read the prior manifest (best-effort) so the merge is incremental/additive
+  // rather than a full rebuild. Probing/hashing happens outside the session
+  // lock; only the manifest + state write below are locked.
+  const manifestFile = manifestPath(id);
+  let priorManifest = null;
+  if (fs.existsSync(manifestFile)) {
+    try { priorManifest = readJsonFile(manifestFile); } catch { priorManifest = null; }
+  }
+  const manifest = buildManifest({ projectId: id, sourcePath, files, priorManifest });
 
   // Best-effort preflight for downstream CLI deps. Non-fatal at INGEST — the
   // lint/render/package tools fail loudly on their own if a binary disappears
@@ -127,7 +221,6 @@ function ingestFile(args) {
 
   return withSessionLock(id, () => {
     const state = readSessionStateStrict(id);
-    const manifestFile = manifestPath(id);
     writeFileAtomic(manifestFile, `${JSON.stringify(manifest, null, 2)}\n`);
 
     const ts = nowIso();
@@ -153,6 +246,8 @@ function ingestFile(args) {
           source_path: sourcePath,
           file_count: manifest.file_count,
           video_stream_count: manifest.video_stream_count,
+          new_or_changed_count: manifest.new_or_changed_count,
+          reused_count: manifest.reused_count,
           at: ts,
         },
       ],
@@ -164,6 +259,8 @@ function ingestFile(args) {
       source_path: sourcePath,
       file_count: manifest.file_count,
       video_stream_count: manifest.video_stream_count,
+      new_or_changed_count: manifest.new_or_changed_count,
+      reused_count: manifest.reused_count,
       files: manifest.files.map(({ probe: _probe, ...summary }) => summary),
       hyperframes,
       ffmpeg,
@@ -173,7 +270,7 @@ function ingestFile(args) {
 
 module.exports = Object.freeze({
   name: "vob_ingest_file",
-  description: "Probe a video file (or directory of video files) with ffprobe and write a manifest.json plus a state.json summary of source_path + counts. Errors if ffprobe is missing, the source has no playable video stream, or the project has not been initialized.",
+  description: "Probe a video/audio file (or directory) with ffprobe and write a hash-keyed manifest.json plus a state.json summary. INCREMENTAL + ADDITIVE: re-running merges with the existing manifest — unchanged files (same path+size+mtime) reuse their prior probe+hash, new/changed files are re-probed and re-hashed, and files from earlier drops are preserved. Each entry carries {hash, container, resolution, fps, has_video, has_audio} plus a stream-layout `prior` ('narration' for audio-only, 'broll' for silent video, null for both). Returns new_or_changed_count/reused_count. Errors if ffprobe is missing, the merged manifest has no playable video stream, or the project is uninitialized.",
   inputSchema: {
     type: "object",
     properties: {

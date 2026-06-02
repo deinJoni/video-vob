@@ -118,7 +118,7 @@ function saveStoryboard(args) {
 
 module.exports = Object.freeze({
   name: "vob_save_storyboard",
-  description: "Save (or overwrite) the storyboard for a project. Input is a JSON string conforming to storyboard schema 1.0; the MCP server validates it, writes storyboard.json, and renders the human-readable storyboard.md from the JSON (markdown is never authored separately). Any save resets confirmed:false and increments revision_count — the user must explicitly approve again via vob_confirm_storyboard before STORYBOARD -> COMPOSE will unlock.",
+  description: "Save (or overwrite) the storyboard for a project (the structural half of the PLAN gate). Input is a JSON string conforming to storyboard schema 1.0; the MCP server validates it, writes storyboard.json, and renders the human-readable storyboard.md from the JSON (markdown is never authored separately). Any save resets confirmed:false and increments revision_count — the user must explicitly approve again via vob_confirm_storyboard before the PLAN -> COMPOSE gate will unlock.",
   inputSchema: {
     type: "object",
     properties: {

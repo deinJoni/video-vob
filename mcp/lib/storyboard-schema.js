@@ -3,9 +3,20 @@
 const SCHEMA_VERSION = "1.0";
 const PURPOSES = Object.freeze(["hook", "beat", "payoff", "outro"]);
 const PACINGS = Object.freeze(["fast", "medium", "slow"]);
+// Clip role: how the composer should treat a source clip.
+//   a_roll  — spine footage; carries the narrative (audio kept per intent), visible base track.
+//   b_roll  — coverage/cutaway; materialized MUTED and laid as video over the spine on a higher track.
+//   overlay — graphic/text element with no source video of its own.
+// Optional + backward-compatible: a clip with no `role` is treated as a_roll.
+const CLIP_ROLES = Object.freeze(["a_roll", "b_roll", "overlay"]);
 
 const PURPOSE_SET = new Set(PURPOSES);
 const PACING_SET = new Set(PACINGS);
+const CLIP_ROLE_SET = new Set(CLIP_ROLES);
+
+function clipRoleOf(clip) {
+  return clip && typeof clip.role === "string" && clip.role.trim() ? clip.role : "a_roll";
+}
 
 function isPlainObject(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -44,6 +55,9 @@ function validateClip(clip, sceneIx, clipIx, errors) {
   }
   if (clip.note !== undefined && clip.note !== null && typeof clip.note !== "string") {
     errors.push(`${where}.note must be a string when present`);
+  }
+  if (clip.role !== undefined && clip.role !== null && !CLIP_ROLE_SET.has(clip.role)) {
+    errors.push(`${where}.role must be one of: ${CLIP_ROLES.join(", ")} (omit for default a_roll)`);
   }
 }
 
@@ -91,6 +105,68 @@ function validateScene(scene, ix, errors) {
   if (scene.notes !== undefined && scene.notes !== null && typeof scene.notes !== "string") {
     errors.push(`${where}.notes must be a string when present`);
   }
+}
+
+// Optional top-level broll_placements[]: the storyboarder's explicit record of
+// where each B-roll cutaway sits over the A-roll/narration spine. ADVISORY — the
+// clips themselves live in scenes[].source_clips with role:"b_roll" (and are
+// materialized + symlinked by the normal machinery); a placement only references
+// one of those existing clips by {scene_id, clip_index}, so there is no separate
+// materialization path and no way to dangle into a 404 at render. Backward-compat:
+// absent/empty broll_placements is fine.
+function buildSceneClipIndex(scenes) {
+  const index = new Map();
+  if (!Array.isArray(scenes)) return index;
+  scenes.forEach((scene) => {
+    if (!isPlainObject(scene) || !isNonEmptyString(scene.scene_id)) return;
+    const clips = Array.isArray(scene.source_clips) ? scene.source_clips : [];
+    index.set(scene.scene_id, clips);
+  });
+  return index;
+}
+
+function validateBrollPlacements(input, errors) {
+  if (input.broll_placements === undefined || input.broll_placements === null) return;
+  if (!Array.isArray(input.broll_placements)) {
+    errors.push("broll_placements must be an array when present");
+    return;
+  }
+  const sceneClips = buildSceneClipIndex(input.scenes);
+  input.broll_placements.forEach((p, ix) => {
+    const where = `broll_placements[${ix}]`;
+    if (!isPlainObject(p)) {
+      errors.push(`${where} must be an object`);
+      return;
+    }
+    if (!isPlainObject(p.clip)) {
+      errors.push(`${where}.clip must be an object { scene_id, clip_index }`);
+    } else {
+      if (!isNonEmptyString(p.clip.scene_id)) {
+        errors.push(`${where}.clip.scene_id must be a non-empty string`);
+      } else if (!sceneClips.has(p.clip.scene_id)) {
+        errors.push(`${where}.clip.scene_id "${p.clip.scene_id}" does not match any scene`);
+      } else if (!Number.isInteger(p.clip.clip_index) || p.clip.clip_index < 0) {
+        errors.push(`${where}.clip.clip_index must be a non-negative integer`);
+      } else if (p.clip.clip_index >= sceneClips.get(p.clip.scene_id).length) {
+        errors.push(`${where}.clip.clip_index ${p.clip.clip_index} is out of range for scene "${p.clip.scene_id}" (has ${sceneClips.get(p.clip.scene_id).length} source_clips)`);
+      }
+    }
+    if (p.narration_span !== undefined && p.narration_span !== null) {
+      const ns = p.narration_span;
+      if (!isPlainObject(ns) || !isFiniteNumber(ns.start_seconds) || !isFiniteNumber(ns.end_seconds) || ns.start_seconds < 0 || ns.end_seconds <= ns.start_seconds) {
+        errors.push(`${where}.narration_span must be { start_seconds, end_seconds } with end > start >= 0 when present`);
+      }
+    }
+    if (p.insert_at_seconds !== undefined && p.insert_at_seconds !== null && (!isFiniteNumber(p.insert_at_seconds) || p.insert_at_seconds < 0)) {
+      errors.push(`${where}.insert_at_seconds must be a non-negative finite number when present`);
+    }
+    if (p.transition !== undefined && p.transition !== null && typeof p.transition !== "string") {
+      errors.push(`${where}.transition must be a string when present`);
+    }
+    if (p.reason !== undefined && p.reason !== null && typeof p.reason !== "string") {
+      errors.push(`${where}.reason must be a string when present`);
+    }
+  });
 }
 
 function validateStoryboard(input) {
@@ -141,6 +217,7 @@ function validateStoryboard(input) {
   if (input.notes !== undefined && input.notes !== null && typeof input.notes !== "string") {
     errors.push("notes must be a string when present");
   }
+  validateBrollPlacements(input, errors);
 
   return { ok: errors.length === 0, errors };
 }
@@ -224,6 +301,8 @@ module.exports = {
   SCHEMA_VERSION,
   PURPOSES,
   PACINGS,
+  CLIP_ROLES,
+  clipRoleOf,
   validateStoryboard,
   validateStoryboardContent,
 };

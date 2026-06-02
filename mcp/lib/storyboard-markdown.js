@@ -1,5 +1,7 @@
 "use strict";
 
+const { clipRoleOf } = require("./storyboard-schema.js");
+
 function formatSeconds(value) {
   if (typeof value !== "number" || !Number.isFinite(value)) {
     return "?";
@@ -23,7 +25,29 @@ function formatTimecode(value) {
 function renderClip(clip) {
   const note = typeof clip.note === "string" && clip.note.trim() !== "" ? ` — ${clip.note.trim()}` : "";
   const duration = formatSeconds(clip.out_seconds - clip.in_seconds);
-  return `  - [file ${clip.manifest_file_index}] ${formatTimecode(clip.in_seconds)} → ${formatTimecode(clip.out_seconds)} (${duration}) \`${clip.source_path}\`${note}`;
+  const role = clipRoleOf(clip);
+  const roleTag = role === "a_roll" ? "" : ` **[${role.replace("_", "-").toUpperCase()}]**`;
+  return `  - [file ${clip.manifest_file_index}]${roleTag} ${formatTimecode(clip.in_seconds)} → ${formatTimecode(clip.out_seconds)} (${duration}) \`${clip.source_path}\`${note}`;
+}
+
+function renderBrollPlacements(placements) {
+  const lines = [];
+  lines.push(`## B-roll placements (${placements.length})`);
+  lines.push("");
+  lines.push("_Cutaways laid over the A-roll/narration spine. Each references a `role:\"b_roll\"` clip already in the scenes above._");
+  lines.push("");
+  placements.forEach((p, ix) => {
+    const clip = p && p.clip ? p.clip : {};
+    const ref = `${clip.scene_id || "?"}[${Number.isInteger(clip.clip_index) ? clip.clip_index : "?"}]`;
+    const span = p && p.narration_span
+      ? ` over narration ${formatTimecode(p.narration_span.start_seconds)}→${formatTimecode(p.narration_span.end_seconds)}`
+      : (typeof p.insert_at_seconds === "number" ? ` at ${formatTimecode(p.insert_at_seconds)}` : "");
+    const transition = p && typeof p.transition === "string" && p.transition.trim() ? ` (${p.transition.trim()})` : "";
+    const reason = p && typeof p.reason === "string" && p.reason.trim() ? ` — ${p.reason.trim()}` : "";
+    lines.push(`${ix + 1}. clip ${ref}${span}${transition}${reason}`);
+  });
+  lines.push("");
+  return lines.join("\n");
 }
 
 function renderScene(scene) {
@@ -95,6 +119,10 @@ function renderStoryboardMarkdown(storyboard) {
   scenes.forEach((scene) => {
     lines.push(renderScene(scene));
   });
+
+  if (Array.isArray(storyboard.broll_placements) && storyboard.broll_placements.length > 0) {
+    lines.push(renderBrollPlacements(storyboard.broll_placements));
+  }
 
   if (typeof storyboard.notes === "string" && storyboard.notes.trim() !== "") {
     lines.push("## Notes for COMPOSE");

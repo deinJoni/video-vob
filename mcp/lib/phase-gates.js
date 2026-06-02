@@ -117,12 +117,14 @@ function inspectToIntent(state) {
   return ALLOWED;
 }
 
-// INTENT -> BRIEF: every required intent key must be present with a
+// INTENT -> PLAN: every required intent key must be present with a
 // non-empty string value. Required keys = the always-required five PLUS any
 // conditional keys made applicable by inspect findings (e.g. audio_treatment
 // when audio is present). The blocker lists exactly which keys are missing
-// so the orchestrator can re-ask only those.
-function intentToBrief(state) {
+// so the orchestrator can re-ask only those. (Under adaptive intent the
+// orchestrator pre-records proposed answers, so this gate typically passes
+// with zero or one human question.)
+function intentToPlan(state) {
   const answers = state && state.intent && state.intent.answers;
   let inspectSummary = null;
   if (state && state.inspect && typeof state.inspect.summary_path === "string" && state.inspect.summary_path) {
@@ -143,8 +145,13 @@ function intentToBrief(state) {
   return ALLOWED;
 }
 
-// BRIEF -> STORYBOARD: brief must be saved on disk AND explicitly confirmed.
-function briefToStoryboard(state) {
+// PLAN -> COMPOSE: the single plan gate. Both halves of the plan must be saved
+// on disk AND explicitly confirmed — the brief (creative direction) and the
+// storyboard (A-roll order, chosen takes, B-roll placements). They are presented
+// to the human together at one gate; internally each carries its own confirmed
+// flag (set by vob_confirm_brief / vob_confirm_storyboard). The blocker codes are
+// granular so the orchestrator knows which half still needs work.
+function planToCompose(state) {
   const brief = state && typeof state.brief === "object" ? state.brief : null;
   if (!brief || typeof brief.path !== "string" || !brief.path) {
     return block([
@@ -167,33 +174,11 @@ function briefToStoryboard(state) {
     return block([
       blocker(
         "brief_not_confirmed",
-        "brief has been saved but not confirmed — call vob_confirm_brief after the user explicitly approves",
+        "brief has been saved but not confirmed — call vob_confirm_brief after the user explicitly approves the plan",
         { brief_path: brief.path },
       ),
     ]);
   }
-  return ALLOWED;
-}
-
-// BRIEF -> INTENT (back-edge): allowed when the user wants to re-clarify
-// intent. Nominal check: state.intent.answers exists. Always passes under
-// normal flow (INTENT was completed before BRIEF was reachable).
-function briefToIntent(state) {
-  const answers = state && state.intent && state.intent.answers;
-  if (!answers || typeof answers !== "object") {
-    return block([
-      blocker(
-        "intent_missing",
-        "no intent answers recorded — cannot back-edge to INTENT without prior state",
-      ),
-    ]);
-  }
-  return ALLOWED;
-}
-
-// STORYBOARD -> COMPOSE: storyboard must be saved on disk AND explicitly
-// confirmed.
-function storyboardToCompose(state) {
   const storyboard = state && typeof state.storyboard === "object" ? state.storyboard : null;
   if (!storyboard || typeof storyboard.artifact_path !== "string" || !storyboard.artifact_path) {
     return block([
@@ -216,7 +201,7 @@ function storyboardToCompose(state) {
     return block([
       blocker(
         "storyboard_not_confirmed",
-        "storyboard has been saved but not confirmed — call vob_confirm_storyboard after the user explicitly approves",
+        "storyboard has been saved but not confirmed — call vob_confirm_storyboard after the user explicitly approves the plan",
         { storyboard_path: storyboard.artifact_path },
       ),
     ]);
@@ -224,14 +209,16 @@ function storyboardToCompose(state) {
   return ALLOWED;
 }
 
-// STORYBOARD -> BRIEF (back-edge): nominal check that brief still exists.
-function storyboardToBrief(state) {
-  const brief = state && typeof state.brief === "object" ? state.brief : null;
-  if (!brief || typeof brief.path !== "string" || !fs.existsSync(brief.path)) {
+// PLAN -> INTENT (back-edge): allowed when the user wants to re-clarify
+// intent. Nominal check: state.intent.answers exists. Always passes under
+// normal flow (INTENT was completed before PLAN was reachable).
+function planToIntent(state) {
+  const answers = state && state.intent && state.intent.answers;
+  if (!answers || typeof answers !== "object") {
     return block([
       blocker(
-        "brief_not_saved",
-        "cannot back-edge to BRIEF — brief artifact is missing from disk",
+        "intent_missing",
+        "no intent answers recorded — cannot back-edge to INTENT without prior state",
       ),
     ]);
   }
@@ -282,14 +269,15 @@ function composeToPreview(state) {
   return ALLOWED;
 }
 
-// COMPOSE -> STORYBOARD (back-edge): nominal check storyboard exists.
-function composeToStoryboard(state) {
+// COMPOSE -> PLAN (back-edge): nominal check that the storyboard half of the
+// plan still exists on disk so the user has something to revise.
+function composeToPlan(state) {
   const storyboard = state && typeof state.storyboard === "object" ? state.storyboard : null;
   if (!storyboard || typeof storyboard.artifact_path !== "string" || !fs.existsSync(storyboard.artifact_path)) {
     return block([
       blocker(
         "storyboard_not_saved",
-        "cannot back-edge to STORYBOARD — storyboard artifact is missing from disk",
+        "cannot back-edge to PLAN — storyboard artifact is missing from disk",
       ),
     ]);
   }
@@ -347,9 +335,9 @@ function previewToCompose(state) {
   return ALLOWED;
 }
 
-// PREVIEW -> STORYBOARD (back-edge): storyboard must still exist.
-function previewToStoryboard(state) {
-  return composeToStoryboard(state);
+// PREVIEW -> PLAN (back-edge): plan's storyboard half must still exist.
+function previewToPlan(state) {
+  return composeToPlan(state);
 }
 
 // RENDER -> PACKAGE: full render exists on disk AND explicitly confirmed.
@@ -399,14 +387,14 @@ function renderToPackage(state) {
   return ALLOWED;
 }
 
-// RENDER -> COMPOSE / STORYBOARD (back-edges): destination artifact must
+// RENDER -> COMPOSE / PLAN (back-edges): destination artifact must
 // still exist; archival of current renders/ is automatic in transitionPhase.
 function renderToCompose(state) {
   return previewToCompose(state);
 }
 
-function renderToStoryboard(state) {
-  return composeToStoryboard(state);
+function renderToPlan(state) {
+  return composeToPlan(state);
 }
 
 // PACKAGE -> ITERATE: all four package files must exist on disk.
@@ -451,45 +439,43 @@ function packageToIterate(state) {
   return ALLOWED;
 }
 
-// PACKAGE -> COMPOSE / STORYBOARD (back-edges).
+// PACKAGE -> COMPOSE / PLAN (back-edges).
 function packageToCompose(state) {
   return previewToCompose(state);
 }
 
-function packageToStoryboard(state) {
-  return composeToStoryboard(state);
+function packageToPlan(state) {
+  return composeToPlan(state);
 }
 
-// ITERATE -> COMPOSE / STORYBOARD (back-edges).
+// ITERATE -> COMPOSE / PLAN (back-edges).
 function iterateToCompose(state) {
   return previewToCompose(state);
 }
 
-function iterateToStoryboard(state) {
-  return composeToStoryboard(state);
+function iterateToPlan(state) {
+  return composeToPlan(state);
 }
 
 const GATES = Object.freeze({
-  "INGEST->INSPECT":     ingestToInspect,
-  "INSPECT->INTENT":     inspectToIntent,
-  "INTENT->BRIEF":       intentToBrief,
-  "BRIEF->STORYBOARD":   briefToStoryboard,
-  "BRIEF->INTENT":       briefToIntent,
-  "STORYBOARD->COMPOSE": storyboardToCompose,
-  "STORYBOARD->BRIEF":   storyboardToBrief,
-  "COMPOSE->PREVIEW":    composeToPreview,
-  "COMPOSE->STORYBOARD": composeToStoryboard,
-  "PREVIEW->RENDER":     previewToRender,
-  "PREVIEW->COMPOSE":    previewToCompose,
-  "PREVIEW->STORYBOARD": previewToStoryboard,
-  "RENDER->PACKAGE":     renderToPackage,
-  "RENDER->COMPOSE":     renderToCompose,
-  "RENDER->STORYBOARD":  renderToStoryboard,
-  "PACKAGE->ITERATE":    packageToIterate,
-  "PACKAGE->COMPOSE":    packageToCompose,
-  "PACKAGE->STORYBOARD": packageToStoryboard,
-  "ITERATE->COMPOSE":    iterateToCompose,
-  "ITERATE->STORYBOARD": iterateToStoryboard,
+  "INGEST->INSPECT":  ingestToInspect,
+  "INSPECT->INTENT":  inspectToIntent,
+  "INTENT->PLAN":     intentToPlan,
+  "PLAN->COMPOSE":    planToCompose,
+  "PLAN->INTENT":     planToIntent,
+  "COMPOSE->PREVIEW": composeToPreview,
+  "COMPOSE->PLAN":    composeToPlan,
+  "PREVIEW->RENDER":  previewToRender,
+  "PREVIEW->COMPOSE": previewToCompose,
+  "PREVIEW->PLAN":    previewToPlan,
+  "RENDER->PACKAGE":  renderToPackage,
+  "RENDER->COMPOSE":  renderToCompose,
+  "RENDER->PLAN":     renderToPlan,
+  "PACKAGE->ITERATE": packageToIterate,
+  "PACKAGE->COMPOSE": packageToCompose,
+  "PACKAGE->PLAN":    packageToPlan,
+  "ITERATE->COMPOSE": iterateToCompose,
+  "ITERATE->PLAN":    iterateToPlan,
 });
 
 function getGate(from, to) {

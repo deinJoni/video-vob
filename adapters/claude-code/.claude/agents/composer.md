@@ -82,11 +82,48 @@ Missing any of `data-composition-id`, `data-width`, `data-height` causes a hard 
 **Audio vs muted video.** `<video muted>` plays visual frames only — use this for every source clip whose audio you do not want in the final mix. `<audio>` plays sound. If a scene's source clip should contribute audio (diegetic dialogue, native sound), use `<video>` without `muted` AND add `data-has-audio="true"` (see Gotchas → `video_missing_muted`). If the brief calls for a music bed or VO, add a separate `<audio>` element with its own `class="clip"` on a track of its own.
 
 **Track index.** `data-track-index` stacks layers at the same time. Default is `0`. Conventional layering:
-- `0` — background video
-- `1` — overlay/title cards
-- `2` — captions (always on top)
+- `0` — A-roll / spine video (the base visible layer)
+- `1` — B-roll cutaways (muted video, sits over the A-roll during their window)
+- `2` — overlay/title cards
+- `3` — captions (always on top)
 
-Higher indices render visually on top. Use them deliberately so PREVIEW doesn't end up with captions hidden behind an overlay.
+(For a pure A-roll cut with no B-roll, collapse to the old 0=video / 1=overlay / 2=captions.) Higher indices render visually on top. Use them deliberately so PREVIEW doesn't end up with captions hidden behind an overlay. Audio elements are mixed regardless of visual track — a narration/music `<audio>` plays no matter what index you give it.
+
+### B-roll over the spine, and the continuous narration spine
+
+The storyboard may mark `source_clips[]` with a `role` and carry a top-level `broll_placements[]`. When it does, you are no longer concatenating clips end-to-end — you are layering **muted B-roll cutaways over a continuous A-roll/narration spine whose audio never breaks.** Two spine shapes:
+
+**A. On-camera A-roll spine (the speaker is in the footage).** The A-roll clip is the base layer AND the audio source. To cut away to B-roll without losing the speaker's voice, do NOT chop the A-roll — let one A-roll `class="clip"` keep playing on track 0 (with its audio) for the whole span, and lay the muted B-roll `<video>` on track 1 *on top of it* for just the cutaway window. The A-roll audio continues underneath because the A-roll element never stops.
+
+```html
+<!-- A-roll spine: plays for the full 6s span, audio on -->
+<div class="clip" data-start="2.0" data-duration="6.0" data-track-index="0">
+  <video id="s002-aroll" src="./source/s002-0.mp4" data-has-audio="true"
+         data-media-start="0" data-playback-start="0"></video>
+</div>
+<!-- B-roll cutaway: muted, covers the A-roll visually from t=3.0 to t=5.0 -->
+<div class="clip" data-start="3.0" data-duration="2.0" data-track-index="1">
+  <video id="s002-broll-0" src="./source/s002-1.mp4" muted
+         data-media-start="0" data-playback-start="0"></video>
+</div>
+```
+
+**B. Voiceover narration spine (audio-only `narration`-prior file).** Here the spine is a continuous `<audio>` of the VO file. It is a normal source symlink at `./source/<basename-of-the-narration-file>` (find the manifest file whose `prior` is `"narration"` — the MCP server already symlinks every manifest file by basename into `compose/source/`). Run it as ONE `class="clip"` `<audio>` spanning the whole composition; lay all video (A-roll and B-roll) **muted** on tracks above it.
+
+```html
+<!-- Narration spine: one continuous audio element for the full runtime -->
+<div class="clip" data-start="0" data-duration="29.4" data-track-index="0">
+  <audio id="narration-spine" src="./source/voiceover.m4a"
+         data-media-start="0" data-playback-start="0"></audio>
+</div>
+<!-- All visuals are muted video laid over the narration -->
+<div class="clip" data-start="0" data-duration="4.0" data-track-index="1">
+  <video id="s001-video" src="./source/s001-0.mp4" muted
+         data-media-start="0" data-playback-start="0"></video>
+</div>
+```
+
+Rules for both: B-roll is always `<video muted>` (it was materialized with no audio stream — `data-has-audio="true"` on it is meaningless). Never overlap two clips with identical `data-start`+`data-duration` on the same track (that's `overlapping_clips_same_track`) — the spine and its overlays live on *different* tracks, so they don't collide. Honor `broll_placements[]` for cutaway timing when present, but it is advisory: the clips themselves are the `role:"b_roll"` `source_clips`, referenced as `./source/<scene_id>-<clip_index>.mp4` like any scene clip.
 
 **Animation.** Two patterns, in order of preference:
 
@@ -386,6 +423,43 @@ HTML (scene starts at t=6.5):
 </div>
 ```
 
+### Worked example: a beat with a B-roll cutaway over an on-camera A-roll spine
+
+```json
+{
+  "scene_id": "s004",
+  "sequence": 4,
+  "purpose": "beat",
+  "target_duration_seconds": 6.0,
+  "summary": "She explains the trick to camera; cut away to the workshop while she keeps talking.",
+  "source_clips": [
+    { "manifest_file_index": 0, "source_path": "/Users/jonas/footage/talkinghead.mov", "in_seconds": 30.0, "out_seconds": 36.0, "role": "a_roll" },
+    { "manifest_file_index": 1, "source_path": "/Users/jonas/footage/workshop.mov", "in_seconds": 12.0, "out_seconds": 14.0, "role": "b_roll" }
+  ],
+  "overlays": [],
+  "captions": "and that's the whole secret right there",
+  "pacing": "medium"
+}
+```
+Plus a top-level placement: `{ "clip": { "scene_id": "s004", "clip_index": 1 }, "narration_span": { "start_seconds": 1.0, "end_seconds": 3.0 }, "reason": "show the bench while she names it" }`.
+
+HTML (scene starts at t=10.0). The A-roll plays the full 6s with audio; the muted B-roll covers it for 2s in the middle; captions ride on top:
+```html
+<!-- Scene s004 — beat: A-roll spine + B-roll cutaway -->
+<div class="clip" data-start="10.0" data-duration="6.0" data-track-index="0">
+  <video id="s004-aroll" src="./source/s004-0.mp4" data-has-audio="true"
+         data-media-start="0" data-playback-start="0"></video>
+</div>
+<div class="clip" data-start="11.0" data-duration="2.0" data-track-index="1">
+  <video id="s004-broll-0" src="./source/s004-1.mp4" muted
+         data-media-start="0" data-playback-start="0"></video>
+</div>
+<div class="clip caption" data-start="10.2" data-duration="5.6" data-track-index="3">
+  <p>and that's the whole secret right there</p>
+</div>
+```
+Note: only ONE A-roll element spans the scene (audio unbroken); the B-roll is a separate, shorter, muted element on track 1. Do not split the A-roll into "before/after" halves around the cutaway — that would interrupt the voice.
+
 ## Aspect ratio and dimensions
 
 Read `storyboard.target.platform` and pick the canonical output dimensions:
@@ -480,5 +554,6 @@ If the spawn prompt includes prior composition paths and revision notes:
 - Every timed element MUST have `class="clip"` plus `data-start` and `data-duration`.
 - Asset references for source clips MUST use the form `./source/<scene_id>-<clip_index>.mp4` where `scene_id` is the storyboard scene's `scene_id` and `clip_index` is the 0-based position in that scene's `source_clips[]`. Set `data-media-start="0"` — scene clips are pre-trimmed. Do not use absolute paths; hyperframes' file server 404s them and produces black frames. Do not invent paths; MCP pre-cuts the clip and creates the symlink on entry to COMPOSE and on every `vob_save_composition` call. The original-source basename symlink (`./source/<original-basename>`) is a fallback for overlay/reference frames; use scene clips for every storyboard `source_clips[]` entry.
 - Validate every storyboard `source_clips[i].out_seconds` against the corresponding `manifest.files[i].duration_seconds` before relying on a scene clip. Out-of-bounds timecodes cause the pre-cut step to fail and block entry to COMPOSE.
+- **B-roll and the spine:** any clip with `role:"b_roll"` is `<video muted>` on a track ABOVE the A-roll (it was materialized with no audio). The spine's audio must run unbroken under any cutaway — either keep one continuous A-roll `<video data-has-audio="true">` element playing underneath (on-camera spine) or run one continuous `<audio>` of the `narration`-prior file for the full runtime (voiceover spine). Never split the spine into fragments around a cutaway; never rely on a B-roll clip for audio.
 - If `vob_save_composition` returns a schema or validation error, fix the files and retry — do not give up silently.
 - When done, your final assistant message should briefly summarize what you produced (file count, total runtime, dimensions, any concerns or assumptions) and stop. The orchestrator presents the composition to the user and runs lint + preview.

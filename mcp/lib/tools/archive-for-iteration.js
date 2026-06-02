@@ -55,7 +55,7 @@ function archiveForIterationTool(args) {
 
 module.exports = Object.freeze({
   name: "vob_archive_for_iteration",
-  description: "Standalone archival of the current iteration's renders/ and package/ into archive/v<N>/. Normally invoked automatically by phase transitions out of RENDER/PACKAGE/ITERATE; this tool exists for tests and recovery. Bumps iteration.current_version and clears state.preview, state.render, state.package. Throws NOT_FOUND if there is nothing to archive.",
+  description: "Standalone archival of the current iteration into archive/v<N>/: moves renders/ + package/ (outputs) and copies brief.md + storyboard.json + compose/ (intent, so versions are diffable). Normally invoked automatically by phase transitions out of RENDER/PACKAGE/ITERATE; this tool exists for tests and recovery. Bumps iteration.current_version and clears state.preview, state.render, state.package. Throws NOT_FOUND if there is nothing to archive.",
   inputSchema: {
     type: "object",
     properties: {
@@ -71,6 +71,6 @@ module.exports = Object.freeze({
   browser_access: false,
   scope_required: false,
   sensitive_output: false,
-  session_artifacts_written: ["archive/v*/renders", "archive/v*/package", "archive/v*/snapshot.json", "state.json"],
+  session_artifacts_written: ["archive/v*/renders", "archive/v*/package", "archive/v*/brief.md", "archive/v*/storyboard.json", "archive/v*/compose", "archive/v*/snapshot.json", "state.json"],
   hook_required: false,
 });

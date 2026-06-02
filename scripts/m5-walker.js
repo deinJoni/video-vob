@@ -11,7 +11,17 @@ const path = require("path");
 const { TOOL_HANDLERS } = require("../mcp/lib/tool-registry.js");
 
 const PROJECT_ID = "dji-aerial";
-const SOURCE = "/Users/jonas/Documents/mushanghai/video-vob/DJI_20260525133020_0405_D.MP4";
+// No bundled fixture (this is a template repo). Point the walker at any local
+// video file or directory via VOB_WALKER_SOURCE:
+//   VOB_WALKER_SOURCE=/path/to/clip.mp4 node scripts/m5-walker.js [phase]
+const SOURCE = process.env.VOB_WALKER_SOURCE || "";
+if (!SOURCE) {
+  console.error(
+    "m5-walker: set VOB_WALKER_SOURCE to a video file or directory, e.g.\n" +
+    "  VOB_WALKER_SOURCE=/path/to/clip.mp4 node scripts/m5-walker.js [phase]",
+  );
+  process.exit(1);
+}
 
 async function step(label, fn) {
   const t = Date.now();
@@ -236,11 +246,11 @@ async function main() {
         TOOL_HANDLERS.vob_record_intent_answer({ project_id: PROJECT_ID, key: k, value: v }),
       );
     }
-    await step("transition INTENT→BRIEF", () =>
-      TOOL_HANDLERS.vob_transition_phase({ project_id: PROJECT_ID, to_phase: "BRIEF" }),
+    await step("transition INTENT→PLAN", () =>
+      TOOL_HANDLERS.vob_transition_phase({ project_id: PROJECT_ID, to_phase: "PLAN" }),
     );
 
-    // 4. brief
+    // 4. PLAN: brief + storyboard, both authored and confirmed within one phase
     const state1 = TOOL_HANDLERS.vob_read_state({ project_id: PROJECT_ID });
     const briefText = brief({ ingestSummary: ingest.files[0], intent });
     await step("save brief", () =>
@@ -249,11 +259,8 @@ async function main() {
     await step("confirm brief", () =>
       TOOL_HANDLERS.vob_confirm_brief({ project_id: PROJECT_ID }),
     );
-    await step("transition BRIEF→STORYBOARD", () =>
-      TOOL_HANDLERS.vob_transition_phase({ project_id: PROJECT_ID, to_phase: "STORYBOARD" }),
-    );
 
-    // 5. storyboard (acting as storyboarder)
+    // 5. storyboard (acting as storyboarder), still inside PLAN
     await step("log storyboarder invocation", () =>
       TOOL_HANDLERS.vob_log_storyboarder_invocation({ project_id: PROJECT_ID }),
     );
@@ -269,7 +276,7 @@ async function main() {
     await step("confirm storyboard", () =>
       TOOL_HANDLERS.vob_confirm_storyboard({ project_id: PROJECT_ID }),
     );
-    await step("transition STORYBOARD→COMPOSE", () =>
+    await step("transition PLAN→COMPOSE", () =>
       TOOL_HANDLERS.vob_transition_phase({ project_id: PROJECT_ID, to_phase: "COMPOSE" }),
     );
 

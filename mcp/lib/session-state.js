@@ -1,7 +1,7 @@
 "use strict";
 
 const fs = require("fs");
-const { PHASE_VALUES } = require("./constants.js");
+const { PHASE_VALUES, LEGACY_PHASE_ALIASES } = require("./constants.js");
 const { ERROR_CODES, ToolError } = require("./envelope.js");
 const { sessionDir, statePath, assertSafeProjectId } = require("./paths.js");
 const { acquireSessionLock, withSessionLock, writeFileAtomic, readJsonFile } = require("./storage.js");
@@ -9,17 +9,20 @@ const { getGate } = require("./phase-gates.js");
 const { archiveForIteration, isArchivalTransition } = require("./archival.js");
 const { materializeSceneClips } = require("./clip-materialize.js");
 
+// INTENT -> PLAN -> COMPOSE: the former BRIEF and STORYBOARD phases are merged
+// into a single PLAN phase (one human gate that presents intent summary +
+// A-roll order + chosen takes + B-roll placements together). Back-edges that
+// used to target STORYBOARD now target PLAN.
 const ALLOWED_TRANSITIONS = Object.freeze({
-  INGEST:     ["INSPECT"],
-  INSPECT:    ["INTENT"],
-  INTENT:     ["BRIEF"],
-  BRIEF:      ["STORYBOARD", "INTENT"],
-  STORYBOARD: ["COMPOSE", "BRIEF"],
-  COMPOSE:    ["PREVIEW", "STORYBOARD"],
-  PREVIEW:    ["RENDER", "COMPOSE", "STORYBOARD"],
-  RENDER:     ["PACKAGE", "COMPOSE", "STORYBOARD"],
-  PACKAGE:    ["ITERATE", "COMPOSE", "STORYBOARD"],
-  ITERATE:    ["COMPOSE", "STORYBOARD"],
+  INGEST:   ["INSPECT"],
+  INSPECT:  ["INTENT"],
+  INTENT:   ["PLAN"],
+  PLAN:     ["COMPOSE", "INTENT"],
+  COMPOSE:  ["PREVIEW", "PLAN"],
+  PREVIEW:  ["RENDER", "COMPOSE", "PLAN"],
+  RENDER:   ["PACKAGE", "COMPOSE", "PLAN"],
+  PACKAGE:  ["ITERATE", "COMPOSE", "PLAN"],
+  ITERATE:  ["COMPOSE", "PLAN"],
 });
 
 function nowIso() {
@@ -80,6 +83,13 @@ function readSessionStateStrict(projectId) {
   }
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
     throw new ToolError(ERROR_CODES.INTERNAL_ERROR, `malformed state.json for ${id}: expected object`);
+  }
+  // Normalize legacy phase names (BRIEF/STORYBOARD -> PLAN) from sessions
+  // created before the PLAN-gate merge. Read-time only; the next mutating tool
+  // persists the normalized phase. Done before the validity check so an old
+  // session never trips the "invalid phase" guard.
+  if (Object.prototype.hasOwnProperty.call(LEGACY_PHASE_ALIASES, parsed.phase)) {
+    parsed.phase = LEGACY_PHASE_ALIASES[parsed.phase];
   }
   if (!PHASE_VALUES.includes(parsed.phase)) {
     throw new ToolError(ERROR_CODES.INTERNAL_ERROR, `state.json for ${id} has invalid phase: ${parsed.phase}`);
@@ -149,7 +159,7 @@ async function transitionPhase(args) {
     }
 
     // Pre-cut every storyboard scene to its own H.264 clip when entering COMPOSE
-    // (forward edge from STORYBOARD, or any back-edge from a downstream phase).
+    // (forward edge from PLAN, or any back-edge from a downstream phase).
     // Sidecar caching makes back-edge re-entry a no-op when the storyboard hasn't
     // changed. Cutting before the state write means the user is never advanced
     // into COMPOSE with a half-prepared compose/source/ tree.
@@ -163,7 +173,7 @@ async function transitionPhase(args) {
 
     const ts = nowIso();
     // Versioned archival on back-edges out of {RENDER, PACKAGE, ITERATE} into
-    // {COMPOSE, STORYBOARD}. The user never loses prior iterations: the
+    // {COMPOSE, PLAN}. The user never loses prior iterations: the
     // current renders/ and package/ are moved into archive/v<N>/ before the
     // transition state is committed. Archival is a no-op (returns null) if
     // there's nothing to move.

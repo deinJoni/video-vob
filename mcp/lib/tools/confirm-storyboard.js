@@ -59,7 +59,7 @@ function confirmStoryboard(args) {
 
 module.exports = Object.freeze({
   name: "vob_confirm_storyboard",
-  description: "Mark the saved storyboard as user-confirmed. Required before STORYBOARD -> COMPOSE will unlock. Errors if no storyboard has been saved. A subsequent vob_save_storyboard call resets confirmation to false.",
+  description: "Mark the saved storyboard as user-confirmed (the structural half of the PLAN gate). The PLAN -> COMPOSE gate also requires a confirmed brief. Errors if no storyboard has been saved. A subsequent vob_save_storyboard call resets confirmation to false.",
   inputSchema: {
     type: "object",
     properties: {

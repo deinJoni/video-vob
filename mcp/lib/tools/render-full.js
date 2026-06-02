@@ -7,7 +7,7 @@ const { ERROR_CODES, ToolError } = require("../envelope.js");
 const { assertSafeProjectId, composeDir, rendersDir, statePath } = require("../paths.js");
 const { withSessionLock, writeFileAtomic } = require("../storage.js");
 const { readSessionStateStrict } = require("../session-state.js");
-const { runHyperframesBlocking, FULL_RENDER_TIMEOUT_MS } = require("../hyperframes-runner.js");
+const { runHyperframesWithRetry, buildRenderArgv, FULL_RENDER_TIMEOUT_MS } = require("../hyperframes-runner.js");
 
 function nowIso() {
   return new Date().toISOString();
@@ -25,8 +25,23 @@ function fileSizeBytes(absPath) {
   }
 }
 
+const RENDER_QUALITIES = new Set(["standard", "high"]);
+
 async function renderFull(args) {
   const id = assertSafeProjectId(args && args.project_id);
+  // Quality: omit the flag (hyperframes default = "standard") unless a caller
+  // asks for a level explicitly. The final deliverable can be bumped to "high",
+  // but it is not forced — "high" can multiply render time, so it stays opt-in
+  // to avoid surprising existing environments. Rendering is ALWAYS native on the
+  // host — Docker is intentionally not an option (project policy: never use
+  // Docker; always render natively on the machine).
+  const quality = args && args.quality != null ? String(args.quality) : null;
+  if (quality !== null && !RENDER_QUALITIES.has(quality)) {
+    throw new ToolError(
+      ERROR_CODES.INVALID_ARGUMENTS,
+      `quality must be one of: ${[...RENDER_QUALITIES].join(", ")} (preview uses draft; full render defaults to standard)`,
+    );
+  }
   const composeRoot = composeDir(id);
   const indexPath = path.join(composeRoot, "index.html");
   if (!fs.existsSync(indexPath)) {
@@ -93,15 +108,15 @@ async function renderFull(args) {
   });
 
   const start = Date.now();
-  const result = await runHyperframesBlocking(
-    ["render", "--output", outPath, composeRoot],
-    { cwd: composeRoot, timeoutMs: FULL_RENDER_TIMEOUT_MS, stderrLogPath },
+  const result = await runHyperframesWithRetry(
+    buildRenderArgv({ composeRoot, outPath, quality }),
+    { timeoutMs: FULL_RENDER_TIMEOUT_MS, stderrLogPath, maxAttempts: 2 },
   );
 
   if (result.timed_out) {
     throw new ToolError(
       ERROR_CODES.INTERNAL_ERROR,
-      `npx hyperframes render timed out after ${Math.round(FULL_RENDER_TIMEOUT_MS / 1000)}s — partial log at ${stderrLogPath}`,
+      `hyperframes render timed out after ${Math.round(FULL_RENDER_TIMEOUT_MS / 1000)}s — partial log at ${stderrLogPath}`,
       { stderr_log_path: stderrLogPath, stderr_preview: (result.stderr || "").trim().slice(0, 1000) || null },
     );
   }
@@ -109,7 +124,7 @@ async function renderFull(args) {
     const stderrPreview = (result.stderr || "").trim().slice(0, 2000) || null;
     throw new ToolError(
       ERROR_CODES.INTERNAL_ERROR,
-      `npx hyperframes render failed (exit ${result.exit_code}) — see ${stderrLogPath} for full output: ${stderrPreview || "no stderr"}`,
+      `hyperframes render failed (exit ${result.exit_code}) — see ${stderrLogPath} for full output: ${stderrPreview || "no stderr"}`,
       { exit_code: result.exit_code, signal: result.signal, stderr_log_path: stderrLogPath, stderr_preview: stderrPreview },
     );
   }
@@ -176,11 +191,12 @@ async function renderFull(args) {
 
 module.exports = Object.freeze({
   name: "vob_render_full",
-  description: "Run `npx hyperframes render` (full quality, no --quality flag) against the session's compose/ directory, producing a final MP4 in renders/final-<timestamp>.mp4 and teeing stderr to renders/render-<timestamp>.log so the user can `tail -f` for progress. BLOCKING — typically 5 to 30 minutes depending on composition length and complexity. Inform the user the render is starting and point them at the log file before the call returns. Requires preview.confirmed === true. On success: writes state.render with mp4_path, rendered_at, render_duration_seconds, file_size_bytes, stderr_log_path, confirmed:false, and bumps render.revision_count; appends 'render_started' + 'render_completed' to history. On failure (non-zero exit, timeout, missing output): the 'render_started' event remains in history; render state is not promoted — prior successful render survives a failed re-render. Re-rendering always resets render.confirmed to false; the user must re-approve via vob_confirm_render before RENDER -> PACKAGE will unlock.",
+  description: "Run `hyperframes render` against the session's compose/ directory, producing a final MP4 in renders/final-<timestamp>.mp4 and teeing stderr to renders/render-<timestamp>.log so the user can `tail -f` for progress. Optional `quality` ('standard' default | 'high' for the shippable cut) maps to `--quality`. Always renders natively on the host — Docker is not supported by design. BLOCKING — typically 5 to 30 minutes depending on composition length, quality, and complexity. Inform the user the render is starting and point them at the log file before the call returns. Requires preview.confirmed === true. On success: writes state.render with mp4_path, rendered_at, render_duration_seconds, file_size_bytes, stderr_log_path, confirmed:false, and bumps render.revision_count; appends 'render_started' + 'render_completed' to history. On failure (non-zero exit, timeout, missing output): the 'render_started' event remains in history; render state is not promoted — prior successful render survives a failed re-render. Re-rendering always resets render.confirmed to false; the user must re-approve via vob_confirm_render before RENDER -> PACKAGE will unlock.",
   inputSchema: {
     type: "object",
     properties: {
       project_id: { type: "string" },
+      quality: { type: "string", enum: ["standard", "high"] },
     },
     required: ["project_id"],
   },

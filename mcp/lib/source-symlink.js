@@ -156,7 +156,7 @@ function recreateSourceSymlinks(projectId, composeRoot) {
   // The composer references these directly (./source/s001.mp4) instead of seeking
   // into the original source with #t= fragments or `currentTime`, both of which
   // are unreliable in headless Chrome on large or HEVC sources. Materialization
-  // happens at STORYBOARD -> COMPOSE; if a scene's clip is missing here we warn
+  // happens at PLAN -> COMPOSE; if a scene's clip is missing here we warn
   // (don't fail) because save-composition is also called on raw compose authoring
   // and the gate already blocks PREVIEW until clips resolve.
   const sceneClipsCreated = [];

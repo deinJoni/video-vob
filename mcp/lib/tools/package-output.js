@@ -19,7 +19,7 @@ const {
 const { readJsonFile, withSessionLock, writeFileAtomic } = require("../storage.js");
 const { readSessionStateStrict } = require("../session-state.js");
 const { probeFile, summarizeProbe } = require("../ffprobe.js");
-const { runFfmpegBlocking } = require("../ffmpeg-runner.js");
+const { runFfmpegBlocking, checkFfmpegAvailable } = require("../ffmpeg-runner.js");
 const { renderPackageReadme } = require("../package-readme.js");
 
 const PROJECT_ROOT = path.resolve(__dirname, "..", "..", "..");
@@ -97,10 +97,16 @@ async function packageOutput(args) {
   const dependencies = state.dependencies && typeof state.dependencies === "object" ? state.dependencies : {};
   const ffmpegInfo = dependencies.ffmpeg && typeof dependencies.ffmpeg === "object" ? dependencies.ffmpeg : null;
   if (ffmpegInfo && ffmpegInfo.ok === false) {
-    throw new ToolError(
-      ERROR_CODES.INTERNAL_ERROR,
-      `ffmpeg is required to package the output but was not available at INGEST time: ${ffmpegInfo.error || "unknown error"}. Install ffmpeg and re-run INGEST (or run vob_package_output again — it will retry the spawn).`,
-    );
+    // The INGEST preflight is a stale snapshot — re-check ffmpeg live before
+    // blocking, so a transient flake at INGEST (an npx/launch hiccup) doesn't
+    // wedge PACKAGE when ffmpeg is actually present. Only block if STILL missing.
+    const live = checkFfmpegAvailable();
+    if (live.ok !== true) {
+      throw new ToolError(
+        ERROR_CODES.INTERNAL_ERROR,
+        `ffmpeg is required to package the output but is not available: ${live.error || ffmpegInfo.error || "unknown error"}. Install ffmpeg and retry.`,
+      );
+    }
   }
 
   const pkgRoot = packageDir(id);

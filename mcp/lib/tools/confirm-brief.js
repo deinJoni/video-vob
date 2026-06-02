@@ -57,7 +57,7 @@ function confirmBrief(args) {
 
 module.exports = Object.freeze({
   name: "vob_confirm_brief",
-  description: "Mark the saved brief as user-confirmed. Required before BRIEF -> STORYBOARD will unlock. Errors if no brief has been saved. A subsequent vob_save_brief call resets confirmation to false.",
+  description: "Mark the saved brief as user-confirmed (the creative-direction half of the PLAN gate). The PLAN -> COMPOSE gate also requires a confirmed storyboard. Errors if no brief has been saved. A subsequent vob_save_brief call resets confirmation to false.",
   inputSchema: {
     type: "object",
     properties: {

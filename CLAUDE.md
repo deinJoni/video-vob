@@ -1,0 +1,73 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## What this is
+
+An agent-driven video pipeline. A human drops in raw footage and a rough idea; an FSM walks them through `INGEST → INSPECT → INTENT → PLAN → COMPOSE → PREVIEW → RENDER → PACKAGE → ITERATE`, producing a packaged short-form video. (`PLAN` is the merged former `BRIEF` + `STORYBOARD`: one gate that produces the brief and the storyboard together for a single human sign-off.) Rendering is done by [hyperframes](https://github.com/heygen-com/hyperframes) (invoked as `npx hyperframes`); probing/thumbnailing/packaging by `ffmpeg`/`ffprobe`.
+
+This repo is a *template* you install into a target project. `mcp/` is the engine; `adapters/<cli>/` binds it to a specific agentic CLI (only `claude-code` ships today).
+
+## Commands
+
+```bash
+npm run mcp                          # start the MCP server (stdio) — node mcp/server.js
+node scripts/m5-walker.js [phase]    # end-to-end FSM walker; phase ∈ setup|preview|render|package|all
+./install.sh <target_dir> [adapter]  # copy mcp/ + adapter config + .vob/ into a project (adapter defaults to claude-code)
+```
+
+In an installed project, the user runs the `/vob <project_id> <source_path>` skill inside Claude Code to drive the pipeline.
+
+- **No test suite, no linter, no typecheck, no CI.** `scripts/m5-walker.js` is the de-facto integration test: it calls `TOOL_HANDLERS` directly (bypassing the adapter) against a real video to exercise every phase. Note it requires `ffmpeg` + `npx hyperframes` and a hardcoded `SOURCE` path, and its inline composition predates the scene-clip pre-cut change (it still references `source.mp4` with non-zero `data-media-start`) — treat it as a transport/FSM smoke test, not a model of current COMPOSE conventions.
+- **The MCP server has zero npm dependencies** — pure Node stdlib, CommonJS, Node ≥20. There is no `node_modules`. `package.json` declares no `dependencies`.
+
+## Architecture: two layers
+
+**`mcp/` — the engine (adapter-agnostic).** Owns all durable FSM state, the transition rules, the gate preconditions, the tool registry, and the runners for hyperframes/ffmpeg. This is the single source of truth. Adapters must never duplicate or reimplement logic from here (see `adapters/README.md`).
+
+**`adapters/claude-code/` — the binding.** A `/vob` skill (the *orchestrator*), two subagents, settings, and hooks. The skill drives the human conversation and calls MCP tools; it never invents state.
+
+The contract between the layers is deliberately narrow: **the MCP server enforces structure (required intent keys, confirmation semantics, gate preconditions); the skill owns wording and UX.** The five required intent keys (`target_platform`, `target_duration`, `tone`, `key_moments`, `music_vo` — see `mcp/lib/intent-schema.js`) are a hard contract — do not rename them. Question phrasing, brief structure, etc. are skill-layer concerns.
+
+### State lives outside the repo
+
+All session state is under `~/video-vob-sessions/<project_id>/` (see `mcp/lib/paths.js`), **not** in the working tree. `state.json` is the only authoritative FSM state; markdown/JSON artifacts (`brief.md`, `storyboard.json`, `compose/`, `renders/`, `package/`) are derived. **Never write `state.json`, `manifest.json`, or `brief.md` by hand — only the `vob_*` MCP tools may.** All state writes go through `writeFileAtomic` (temp + rename) under a per-session exclusive lock (`acquireSessionLock` / `withSessionLock` in `mcp/lib/storage.js`; lock at `.session.lock`, stale after 5 min).
+
+### The FSM is defined in two files that must agree
+
+- **`mcp/lib/session-state.js` → `ALLOWED_TRANSITIONS`**: which edges exist (forward + explicit back-edges). `transitionPhase` is the heart of the engine.
+- **`mcp/lib/phase-gates.js` → `GATES`**: one pure function per edge `"FROM->TO"`, returning `{ allowed, blockers }`. Gates check disk artifacts, not just the state summary (the disk is the source of truth — a stale state slot can't fake out a gate).
+
+`transitionPhase` validates the edge against `ALLOWED_TRANSITIONS`, runs the matching gate, and refuses unless `allowed` or an `override_reason` is supplied (overrides are recorded in `state.history` for audit). **Changing or adding an FSM edge means editing both files.** Never skip forward; use the explicit back-edges. Acknowledge-inspect can never be overridden.
+
+### Tool layer
+
+Every tool is a self-describing frozen module (`mcp/lib/tools/<name>.js`) exporting `{ name, description, inputSchema, handler, ...metadata }`. The metadata block (`role_bundles`, `mutating`, `network_access`, `session_artifacts_written`, etc.) is **required** — `defineTool` in `mcp/lib/tool-registry.js` validates every field at registry-build time and throws on a missing/mistyped field or duplicate name.
+
+Request flow: `transport.js` (stdio) → `dispatch.js::executeTool` → validate args (`tool-validation.js`) → run `handler` → wrap result in an envelope. **Handlers return plain data or throw `ToolError`; they never build envelopes themselves.** `envelope.js` wraps success as `{ ok:true, data, meta }` and failure as `{ ok:false, error:{code,message,details}, meta }`, classifying errors into `ERROR_CODES` (`STATE_CONFLICT`, `INVALID_ARGUMENTS`, `NOT_FOUND`, …).
+
+**To add a tool:** create the module with the full metadata block → register it in `mcp/lib/tools/index.js` (`TOOL_MODULES`) → set its `role_bundles` → expose it to the orchestrator in **both** `adapters/claude-code/.claude/skills/vob/SKILL.md` (`allowed-tools`) **and** `adapters/claude-code/.claude/settings.json` (`permissions.allow`). Both lists are maintained by hand and must stay in sync.
+
+### Subagents
+
+The orchestrator delegates two phases to subagents with deliberately narrow tool access (read-only upstream + a single write tool each):
+
+- **`storyboarder`** (`mcp/lib/tools/save-storyboard.js`, schema in `storyboard-schema.js`) — turns brief + manifest into `storyboard.json`. Its only write is `vob_save_storyboard`.
+- **`composer`** (`save-composition.js`, validation in `composition-files.js`) — turns the storyboard into hyperframes HTML/CSS/JS. Its only write is `vob_save_composition`.
+
+Subagents never lint, render, confirm, or transition — the orchestrator owns all of that. **Adding a subagent requires registering its `name` in `VALID_ROLE_BUNDLES` (`tool-registry.js`)**: a boot-time integrity check (`registry-integrity.js`, run from `server.js`) cross-checks every `agents/*.md` against that list and **exits 1** if an agent file has no matching bundle. This encodes the "M3 lesson" — a subagent without a role-bundle registration silently fails to be invokable.
+
+## Invariants worth knowing before editing
+
+- **Confirm-then-transition, with resets.** Phases that need human sign-off follow save → confirm → transition. The merged `PLAN` gate requires BOTH `confirm-brief` AND `confirm-storyboard` (presented to the human as one "approve the plan" moment); `confirm-preview` and `confirm-render` gate their phases; COMPOSE→PREVIEW is gated by lint+approval rather than an explicit confirm tool. Re-saving a composition resets `lint_status:"unknown"`; re-rendering resets `confirmed:false`. These resets are enforced server-side — don't try to work around them, and never `override_reason` past preview/render confirmation. Re-saving a composition resets `lint_status:"unknown"`; re-rendering resets `confirmed:false`. These resets are enforced server-side — don't try to work around them, and never `override_reason` past preview/render confirmation.
+- **COMPOSE entry has a heavy side effect.** `transitionPhase(... to_phase:"COMPOSE")` is `async`/blocking: before committing state it pre-cuts every storyboard `source_clips[i]` into its own H.264 clip at `transcoded/clips/<scene_id>-<clip_index>.mp4` via ffmpeg (`clip-materialize.js`; cached by content-hash sidecar, so back-edge re-entry is a no-op). Every `vob_save_composition` then wipes `compose/` and recreates `compose/source/` symlinks (`source-symlink.js`). Compositions reference scene clips as `./source/<scene_id>-<clip_index>.mp4` with `data-media-start="0"` — never absolute paths, never seeking into the original source.
+- **Back-edges auto-archive.** Any back-edge out of `RENDER`/`PACKAGE`/`ITERATE` into `COMPOSE`/`PLAN` moves the current `renders/` + `package/` into `archive/v<N>/` before the transition commits (`archival.js`) and bumps the iteration version. The user never loses a prior cut.
+- **Lint gates COMPOSE → PREVIEW.** Errors block; warnings are accept-or-fix at the user's discretion. The orchestrator auto-retries the composer on errors (up to 3×) before surfacing them.
+- **hyperframes/ffmpeg failures surface with install hints.** Runners (`hyperframes-runner.js`, `ffmpeg-runner.js`, `spawn-with-shutdown.js`) classify missing binaries and return actionable errors rather than crashing. Render tools are long-blocking (preview ≤15 min, full ≤30 min) and tee stderr to a log file for `tail -f`.
+- **One hyperframes runner — resolved once, no npx, no auto-update.** Every hyperframes call (render/snapshot/lint/transcribe + the `--version` preflight) flows through ONE chokepoint in `hyperframes-runner.js`. `resolveHyperframesCmd()` resolves the installed `hyperframes` **once per process** and runs it under the MCP server's own Node (`node <…>/dist/cli.js`) — **not** `npx --yes hyperframes`, which re-resolved the package on every call (a transient ESM `Cannot find package` race under memory pressure), floated the version, and let the engine **auto-upgrade mid-pipeline** (observed 0.6.64→0.6.69 in a single session, after which BeginFrame capture began timing out). Resolution order: `VOB_HYPERFRAMES_BIN` (explicit `dist/cli.js`) → `hyperframes` on PATH (realpath'd) → `npm root -g` → `npx --yes` fallback. `hyperframesChildEnv()` is the single env policy and pins the engine (`HYPERFRAMES_NO_UPDATE_CHECK`/`HYPERFRAMES_NO_AUTO_INSTALL=1`) and raises Chrome's CDP/readiness timeouts (`PRODUCER_PUPPETEER_PROTOCOL_TIMEOUT_MS=300000`, `PRODUCER_{PLAYER,RENDER}_READY_TIMEOUT_MS=120000` — the 30s/45s defaults cut off the first multi-video frame seek on a low-RAM Mac, failing an otherwise-progressing render). Every default is overridable by exporting the underlying var.
+- **Transient hyperframes failures are retried; deterministic ones are not.** `runHyperframesWithRetry()` wraps the spawn and re-runs (bounded, short backoff) on infra/transient errors — `Target closed`, `Protocol error`, `Runtime.callFunctionOn timed out`, browser-launch flakes, the ESM `Cannot find package` race — the exact failures that "work on a re-run" and made wrapped runs flakier than direct ones (the wrapper had **zero** retry; a human just re-ran). It NEVER retries deterministic aborts (`Aborting render`, `--strict` lint, bad args) and NEVER retries a render that **timed out** mid-capture (a 15–30 min job isn't blindly re-run). Budgets: render-full ≤2 attempts, preview/snapshot ≤3, lint retries only an ESM launch flake (a found-errors report is not a transient).
+- **Chrome GL backend defaults to software on macOS — now a perf choice, not a hang workaround.** `PRODUCER_BROWSER_GPU_MODE` selects the backend; on `darwin` `resolveBrowserGpuMode()` defaults to `software` (SwiftShader). In current hyperframes (≥0.6.69) `auto` self-falls-back to software (2s BeginFrame race + flag-strip relaunch), so the old Metal/BeginFrame *hang* is moot; software stays the darwin default because the hardware/Metal capture path is the *slow* one that drives the worker clamp on an 8 GB Mac. Set centrally in the runner so it covers `render` **and** `snapshot` (`snapshot` has no `--no-browser-gpu` flag). Override with **`VOB_BROWSER_GPU`** (`off`/`software` force software anywhere, `on`/`hardware` re-enable host GPU, `auto` defers to the probe); **`VOB_FORCE_SCREENSHOT`** forces the screenshot capture path `snapshot` uses (an escape hatch if BeginFrame capture stalls). (`resolveBrowserGpuMode` / `hyperframesChildEnv` in `hyperframes-runner.js`.)
+- **Clean-cut: filler/dead-air removal for the A-roll.** `clean-cut.js::computeCleanSpans(words, silences, durationSeconds)` turns a word-level transcript + an ffmpeg `silencedetect` map into filler/dead-air-free **keep-spans**. It trusts the silence map for cut *locations* (Whisper word timings are unreliable across pauses — it timestamps a single "word" across a 2.5s gap) but gates each silence by **word density**: a silence is cut only if ≤1 transcribed word overlaps it (dead air = one loose word bridging a pause; quiet speech is densely worded → kept). It also drops a filler lexicon and detects/removes flubbed retakes. INSPECT runs it (`-40dB` silence pass) and writes `inspect/clean_speech.json {keep_spans, removed, stats}`. The storyboarder builds the `a_roll` spine from `keep_spans`; the composer should **concatenate the keep-spans into ONE spine clip** (a render with ~14 video elements overwhelms low-RAM headless Chrome; ~6 is fine). `buildTimeline()` maps source→compressed time so captions/B-roll re-time. (`mcp/lib/clean-cut.js`.)
+- **Render worker count — default 1 on low-RAM, and `auto` does NOT skip calibration.** hyperframes auto-calibrates worker count by timing sample frames (a ~30s/frame BeginFrame probe) whenever `--workers` is unset **or set to the literal `auto`** (the CLI treats `auto` as undefined); on a low-RAM/software-GPU Mac that probe times out, falls back to a screenshot probe that also fails, then clamps to 1 worker anyway (older hyperframes aborted the render outright). A **positive integer** `--workers` SKIPS calibration. `renderWorkerArgs()` therefore defaults to `--workers 1` on hosts with <10 GB total RAM (and `[]` — defer to hyperframes — on roomier hosts). Override with **`VOB_RENDER_WORKERS`**: a positive int forces that count and skips calibration; `auto` defers to hyperframes (re-enabling calibration). NB: only a positive integer skips calibration — `auto` does not. (`renderWorkerArgs` in `hyperframes-runner.js`.)
+
+Historical note: comments reference milestones `M1`–`M5` (e.g. "M5 walker", "M5 load-bearing gate", "M3 lesson"). These are development-phase markers, not a versioning scheme.

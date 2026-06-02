@@ -59,6 +59,10 @@ function inspectTranscriptPath(projectId) {
   return path.join(inspectDir(projectId), "transcript.json");
 }
 
+function inspectCleanSpeechPath(projectId) {
+  return path.join(inspectDir(projectId), "clean_speech.json");
+}
+
 function inspectSummaryPath(projectId) {
   return path.join(inspectDir(projectId), "inspect.json");
 }
@@ -75,6 +79,54 @@ function inspectTranscriptParagraphsPath(projectId) {
   return path.join(inspectDir(projectId), "transcript_paragraphs.json");
 }
 
+// Segment artifacts produced by INSPECT. segments.json is the authoritative
+// per-file segment list (the unit of classification/editing); keyframes are the
+// representative frames the inspector subagent reads. Both live under inspect/
+// and are regenerated each run (clearInspectDir wipes the tree).
+function segmentsPath(projectId) {
+  return path.join(inspectDir(projectId), "segments.json");
+}
+
+// The three classification pools written by the inspector subagent (via
+// vob_save_classification) from segments.json: A-roll spine, B-roll index,
+// and the ambiguous-segment review bucket.
+function arollPoolPath(projectId) {
+  return path.join(inspectDir(projectId), "aroll_pool.json");
+}
+
+function brollIndexPath(projectId) {
+  return path.join(inspectDir(projectId), "broll_index.json");
+}
+
+function reviewPoolPath(projectId) {
+  return path.join(inspectDir(projectId), "review.json");
+}
+
+function segmentKeyframesDir(projectId) {
+  return path.join(inspectDir(projectId), "segment_keyframes");
+}
+
+function segmentKeyframePath(projectId, fileIndex, segmentIndex) {
+  const fi = assertNonNegativeInt(fileIndex, "file_index");
+  const si = assertNonNegativeInt(segmentIndex, "segment_index");
+  return path.join(segmentKeyframesDir(projectId), `file_${fi}`, `seg_${si}.jpg`);
+}
+
+// Detection cache lives at the SESSION ROOT (NOT under inspect/) so it survives
+// clearInspectDir between INSPECT runs. Keyed by manifest file content hash +
+// detector params, mirroring the clip-materialize sidecar pattern, so a
+// re-dropped/unchanged file skips re-running ffmpeg scene+silence detection.
+function segmentCacheDir(projectId) {
+  return path.join(sessionDir(projectId), "segment_cache");
+}
+
+function segmentCachePath(projectId, fileHash) {
+  if (typeof fileHash !== "string" || !/^[A-Za-z0-9_-]+$/.test(fileHash)) {
+    throw new Error(`segmentCachePath requires a safe hash string, got ${fileHash}`);
+  }
+  return path.join(segmentCacheDir(projectId), `${fileHash}.json`);
+}
+
 function storyboardPath(projectId) {
   return path.join(sessionDir(projectId), "storyboard.json");
 }
@@ -89,6 +141,11 @@ function composeDir(projectId) {
 
 function composeSourceDir(projectId) {
   return path.join(composeDir(projectId), "source");
+}
+
+// Where `hyperframes snapshot` writes key-frame PNGs (cwd-relative `snapshots/`).
+function snapshotsDir(projectId) {
+  return path.join(composeDir(projectId), "snapshots");
 }
 
 function transcodedDir(projectId) {
@@ -176,13 +233,17 @@ module.exports = {
   archiveDir,
   archiveSnapshotPath,
   archiveVersionDir,
+  arollPoolPath,
   assertSafeProjectId,
   assertSafeSceneId,
   briefPath,
+  brollIndexPath,
+  reviewPoolPath,
   composeDir,
   composeSourceDir,
   ingestDir,
   inspectAudioPath,
+  inspectCleanSpeechPath,
   inspectContactSheetPath,
   inspectDir,
   inspectSummaryPath,
@@ -198,9 +259,15 @@ module.exports = {
   packageThumbnailPath,
   previewDir,
   rendersDir,
+  segmentCacheDir,
+  segmentCachePath,
+  segmentKeyframePath,
+  segmentKeyframesDir,
+  segmentsPath,
   sessionDir,
   sessionLockPath,
   sessionsRoot,
+  snapshotsDir,
   statePath,
   storyboardMarkdownPath,
   storyboardPath,

@@ -3,6 +3,8 @@ node_modules/
 .env
 .env.*
 
-# Test fixtures (large binaries; keep out of git)
-DJI_*.MP4
-DJI_*.mp4
+# Source/render media — never commit large binaries to the template
+*.mp4
+*.MP4
+*.mov
+*.MOV

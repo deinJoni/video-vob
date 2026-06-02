@@ -7,14 +7,18 @@ const {
   archiveDir,
   archiveSnapshotPath,
   archiveVersionDir,
+  briefPath,
+  composeDir,
+  composeSourceDir,
   packageDir,
   rendersDir,
   sessionDir,
+  storyboardPath,
 } = require("./paths.js");
 const { writeFileAtomic } = require("./storage.js");
 
 const ARCHIVE_FROM = new Set(["RENDER", "PACKAGE", "ITERATE"]);
-const ARCHIVE_TO = new Set(["COMPOSE", "STORYBOARD"]);
+const ARCHIVE_TO = new Set(["COMPOSE", "PLAN"]);
 
 function nowIso() {
   return new Date().toISOString();
@@ -47,6 +51,18 @@ function moveIfExists(srcAbs, dstAbs) {
   if (!fs.existsSync(srcAbs)) return false;
   fs.mkdirSync(path.dirname(dstAbs), { recursive: true });
   fs.renameSync(srcAbs, dstAbs);
+  return true;
+}
+
+// Copy (not move) an artifact into the archive. Used for the intent artifacts
+// (brief.md, storyboard.json, compose/) that the NEXT iteration still reads and
+// mutates in place — moving them would strand the live working copy. Outputs
+// (renders/, package/) are still moved, since the next iteration regenerates
+// them from scratch.
+function copyIfExists(srcAbs, dstAbs, { filter } = {}) {
+  if (!fs.existsSync(srcAbs)) return false;
+  fs.mkdirSync(path.dirname(dstAbs), { recursive: true });
+  fs.cpSync(srcAbs, dstAbs, { recursive: true, ...(filter ? { filter } : {}) });
   return true;
 }
 
@@ -98,10 +114,26 @@ function archiveForIteration(state, { from = state && state.phase, to = null } =
 
   const archivedRendersAbs = path.join(versionRoot, "renders");
   const archivedPackageAbs = path.join(versionRoot, "package");
+  const archivedBriefAbs = path.join(versionRoot, "brief.md");
+  const archivedStoryboardAbs = path.join(versionRoot, "storyboard.json");
+  const archivedComposeAbs = path.join(versionRoot, "compose");
   const archivedSnapshotAbs = archiveSnapshotPath(projectId, version);
 
+  // Outputs: move (the next iteration regenerates them).
   const movedRenders = moveIfExists(rendersSrc, archivedRendersAbs);
   const movedPackage = moveIfExists(packageSrc, archivedPackageAbs);
+
+  // Intent: copy (the next iteration reads/mutates these in place). This is
+  // what makes versions diffable — brief + storyboard + the authored
+  // composition, not just the output MP4. The compose/source/ tree is excluded
+  // from the snapshot: it's just symlinks to transcoded clips + original
+  // sources, not authored intent, and would leave dangling links in the archive.
+  const composeSourceAbs = composeSourceDir(projectId);
+  const copiedBrief = copyIfExists(briefPath(projectId), archivedBriefAbs);
+  const copiedStoryboard = copyIfExists(storyboardPath(projectId), archivedStoryboardAbs);
+  const copiedCompose = copyIfExists(composeDir(projectId), archivedComposeAbs, {
+    filter: (src) => src !== composeSourceAbs && !src.startsWith(composeSourceAbs + path.sep),
+  });
 
   const sessionRoot = sessionDir(projectId);
   function relToSession(absPath) {
@@ -117,6 +149,9 @@ function archiveForIteration(state, { from = state && state.phase, to = null } =
     paths: {
       renders: movedRenders ? relToSession(archivedRendersAbs) : null,
       package: movedPackage ? relToSession(archivedPackageAbs) : null,
+      brief: copiedBrief ? relToSession(archivedBriefAbs) : null,
+      storyboard: copiedStoryboard ? relToSession(archivedStoryboardAbs) : null,
+      compose: copiedCompose ? relToSession(archivedComposeAbs) : null,
       snapshot: relToSession(archivedSnapshotAbs),
     },
   };

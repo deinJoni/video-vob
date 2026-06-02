@@ -7,7 +7,7 @@ const { ERROR_CODES, ToolError } = require("../envelope.js");
 const { assertSafeProjectId, composeDir, rendersDir, statePath } = require("../paths.js");
 const { withSessionLock, writeFileAtomic } = require("../storage.js");
 const { readSessionStateStrict } = require("../session-state.js");
-const { runHyperframesBlocking, RENDER_TIMEOUT_MS } = require("../hyperframes-runner.js");
+const { runHyperframesWithRetry, buildRenderArgv, RENDER_TIMEOUT_MS } = require("../hyperframes-runner.js");
 
 function nowIso() {
   return new Date().toISOString();
@@ -48,15 +48,15 @@ async function renderPreview(args) {
   const outPath = path.join(rendersRoot, outName);
   const start = Date.now();
 
-  const result = await runHyperframesBlocking(
-    ["render", "--quality", "draft", "--output", outPath, composeRoot],
-    { cwd: composeRoot, timeoutMs: RENDER_TIMEOUT_MS },
+  const result = await runHyperframesWithRetry(
+    buildRenderArgv({ composeRoot, outPath, quality: "draft" }),
+    { timeoutMs: RENDER_TIMEOUT_MS, maxAttempts: 3 },
   );
 
   if (result.timed_out) {
     throw new ToolError(
       ERROR_CODES.INTERNAL_ERROR,
-      `npx hyperframes render timed out after ${Math.round(RENDER_TIMEOUT_MS / 1000)}s`,
+      `hyperframes render timed out after ${Math.round(RENDER_TIMEOUT_MS / 1000)}s`,
       { stderr_preview: (result.stderr || "").trim().slice(0, 1000) || null },
     );
   }
@@ -64,7 +64,7 @@ async function renderPreview(args) {
     const stderrPreview = (result.stderr || "").trim().slice(0, 2000) || null;
     throw new ToolError(
       ERROR_CODES.INTERNAL_ERROR,
-      `npx hyperframes render failed (exit ${result.exit_code}): ${stderrPreview || "no stderr"}`,
+      `hyperframes render failed (exit ${result.exit_code}): ${stderrPreview || "no stderr"}`,
       { exit_code: result.exit_code, signal: result.signal, stderr_preview: stderrPreview },
     );
   }
@@ -125,7 +125,7 @@ async function renderPreview(args) {
 
 module.exports = Object.freeze({
   name: "vob_render_preview",
-  description: "Run `npx hyperframes render --quality draft` against the session's compose/ directory, producing a low-resolution MP4 in renders/preview-<timestamp>.mp4. BLOCKING — typically 30s to a few minutes. Inform the user a render is starting before calling. On success, writes state.preview with render_path, rendered_at, render_duration_seconds, confirmed:false, and bumps preview.revision_count; appends 'preview_rendered' to history. On failure (non-zero exit, timeout, missing output): throws WITHOUT mutating state — prior successful preview survives a failed re-render. Re-rendering always resets preview.confirmed to false; the user must re-approve via vob_confirm_preview before PREVIEW -> RENDER will unlock.",
+  description: "Run `hyperframes render --quality draft` against the session's compose/ directory, producing a low-resolution MP4 in renders/preview-<timestamp>.mp4. BLOCKING — typically 30s to a few minutes. Inform the user a render is starting before calling. On success, writes state.preview with render_path, rendered_at, render_duration_seconds, confirmed:false, and bumps preview.revision_count; appends 'preview_rendered' to history. On failure (non-zero exit, timeout, missing output): throws WITHOUT mutating state — prior successful preview survives a failed re-render. Re-rendering always resets preview.confirmed to false; the user must re-approve via vob_confirm_preview before PREVIEW -> RENDER will unlock.",
   inputSchema: {
     type: "object",
     properties: {

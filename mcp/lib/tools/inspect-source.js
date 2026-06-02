@@ -7,6 +7,7 @@ const {
   inspectSummaryPath,
   inspectThumbsDir,
   inspectTranscriptPath,
+  segmentsPath,
   statePath,
 } = require("../paths.js");
 const { readJsonFile, withSessionLock, writeFileAtomic } = require("../storage.js");
@@ -86,6 +87,9 @@ async function inspectSource(args) {
         transcript_paragraphs_path: summary.transcript_paragraphs_path || null,
         paragraph_count: summary.paragraph_count || 0,
         word_count: summary.word_count,
+        segments_path: summary.segment_count > 0 ? segmentsPath(id) : null,
+        segment_count: summary.segment_count || 0,
+        segment_keyframe_count: summary.segment_keyframe_count || 0,
         skipped_reason: summary.skipped_reason,
         completed_at: ts,
         user_acknowledged: false,
@@ -122,6 +126,9 @@ async function inspectSource(args) {
       transcript_paragraphs_path: next.inspect.transcript_paragraphs_path,
       paragraph_count: next.inspect.paragraph_count,
       word_count: summary.word_count,
+      segments_path: next.inspect.segments_path,
+      segment_count: next.inspect.segment_count,
+      segment_keyframe_count: next.inspect.segment_keyframe_count,
       skipped_reason: summary.skipped_reason,
       completed_at: ts,
       user_acknowledged: false,
@@ -131,7 +138,7 @@ async function inspectSource(args) {
 
 module.exports = Object.freeze({
   name: "vob_inspect_source",
-  description: "Extract thumbnail grid (every N seconds via ffmpeg), audio (mono 16kHz wav if manifest has audio streams), and word-level transcript (via npx hyperframes transcribe) from the ingested source. Writes inspect/{thumbs/, audio.wav, transcript.json, inspect.json} and sets state.inspect with user_acknowledged:false. Re-running overwrites artifacts and resets the acknowledgement flag. Requires phase INSPECT. Long-running (up to ~12 minutes including transcription); transcription can be skipped with skip_transcription:true.",
+  description: "Extract thumbnail grid (every N seconds via ffmpeg), audio (mono 16kHz wav if manifest has audio streams), word-level transcript (via hyperframes transcribe), AND per-file segments (scene-cut + silence detection -> inspect/segments.json, with a representative keyframe per non-silence segment). Segments are the unit downstream classification/storyboard consume. Writes inspect/{thumbs/, audio.wav, transcript.json, inspect.json, segments.json, segment_keyframes/} and sets state.inspect (incl. segments_path, segment_count) with user_acknowledged:false. Detection is cached by file content hash at segment_cache/ so re-runs are cheap. Re-running overwrites artifacts and resets the acknowledgement flag. Requires phase INSPECT. Long-running (up to ~12+ minutes including transcription + scene detection); transcription can be skipped with skip_transcription:true.",
   inputSchema: {
     type: "object",
     properties: {
@@ -164,6 +171,9 @@ module.exports = Object.freeze({
     "inspect/transcript_summary.md",
     "inspect/transcript_paragraphs.json",
     "inspect/inspect.json",
+    "inspect/segments.json",
+    "inspect/segment_keyframes/file_*/seg_*.jpg",
+    "segment_cache/*.json",
     "state.json",
   ],
   hook_required: false,

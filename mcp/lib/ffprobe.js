@@ -69,6 +69,20 @@ function probeFile(filePath, { timeoutMs = DEFAULT_TIMEOUT_MS } = {}) {
   return parsed;
 }
 
+// Parse an ffprobe frame-rate string ("30000/1001", "30/1", "29.97") to a
+// number of frames per second, or null if it can't be read.
+function parseFrameRate(rateStr) {
+  if (typeof rateStr !== "string" || !rateStr.trim()) return null;
+  const ratio = rateStr.match(/^\s*(\d+(?:\.\d+)?)\s*\/\s*(\d+(?:\.\d+)?)\s*$/);
+  if (ratio) {
+    const num = Number(ratio[1]);
+    const den = Number(ratio[2]);
+    return den > 0 && Number.isFinite(num) ? num / den : null;
+  }
+  const flat = Number(rateStr);
+  return Number.isFinite(flat) && flat > 0 ? flat : null;
+}
+
 function summarizeProbe(filePath, probe) {
   const streams = Array.isArray(probe.streams) ? probe.streams : [];
   const videoStreams = streams.filter(
@@ -79,19 +93,32 @@ function summarizeProbe(filePath, probe) {
   const format = probe.format && typeof probe.format === "object" ? probe.format : {};
   const durationSeconds = Number(format.duration);
   const primary = videoStreams[0];
+  const formatName = typeof format.format_name === "string" ? format.format_name : null;
+  const width = primary ? Number(primary.width) || null : null;
+  const height = primary ? Number(primary.height) || null : null;
+  const frameRateStr = primary ? (primary.avg_frame_rate || primary.r_frame_rate || null) : null;
 
   return {
     path: filePath,
-    format: typeof format.format_name === "string" ? format.format_name : null,
+    format: formatName,
+    // `container`, `resolution`, `fps`, `has_video`, `has_audio` are the
+    // spec's manifest-entry fields; `format`/`primary_video` are kept for
+    // backward compatibility with the brief/storyboard/composer prose that
+    // already reads them.
+    container: formatName,
     duration_seconds: Number.isFinite(durationSeconds) ? durationSeconds : null,
     video_streams: videoStreams.length,
     audio_streams: audioStreams.length,
+    has_video: videoStreams.length > 0,
+    has_audio: audioStreams.length > 0,
+    resolution: width && height ? `${width}x${height}` : null,
+    fps: parseFrameRate(frameRateStr),
     primary_video: primary
       ? {
           codec: primary.codec_name || null,
-          width: Number(primary.width) || null,
-          height: Number(primary.height) || null,
-          frame_rate: primary.avg_frame_rate || primary.r_frame_rate || null,
+          width,
+          height,
+          frame_rate: frameRateStr,
         }
       : null,
   };

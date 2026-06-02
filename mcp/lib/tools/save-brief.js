@@ -72,7 +72,7 @@ function saveBrief(args) {
 
 module.exports = Object.freeze({
   name: "vob_save_brief",
-  description: "Save (or overwrite) the brief.md artifact for a project. Any save resets confirmed:false — the user must explicitly approve again via vob_confirm_brief before BRIEF -> STORYBOARD will unlock.",
+  description: "Save (or overwrite) the brief.md artifact for a project (the creative-direction half of the PLAN gate). Any save resets confirmed:false — the user must explicitly approve again via vob_confirm_brief before the PLAN -> COMPOSE gate will unlock.",
   inputSchema: {
     type: "object",
     properties: {

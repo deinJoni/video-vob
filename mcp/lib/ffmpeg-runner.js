@@ -93,6 +93,15 @@ function buildClipCutArgv({ src, out, inSeconds, outSeconds, dropAudio }) {
     "-c:v", "libx264",
     "-preset", "fast",
     "-crf", "20",
+    // Dense keyframes (~1 per second at 30fps): every output frame is at most a
+    // few frames from a keyframe, so headless-Chrome seeks during capture are
+    // fast. WITHOUT this the pre-cut defaults to ~8s GOPs; single-track renders
+    // survive (one seek/frame) but a B-roll/multi-track cut seeks the spine AND
+    // an overlapping cutaway per frame, and on a low-RAM host each seek blows
+    // Chrome's 30s protocolTimeout → "BeginFrame auto-worker calibration timed
+    // out" → render aborts. Harmless for single-track (just slightly larger files).
+    "-g", "30",
+    "-keyint_min", "30",
     "-pix_fmt", "yuv420p",
     "-movflags", "+faststart",
   ];
