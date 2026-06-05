@@ -4,7 +4,7 @@ const fs = require("fs");
 const path = require("path");
 
 const { segmentKeyframesDir } = require("./paths.js");
-const { runFfmpegBlocking } = require("./ffmpeg-runner.js");
+const { runFfmpegBlocking, inputAutorotateArgs } = require("./ffmpeg-runner.js");
 
 const KEYFRAME_TIMEOUT_MS = 60 * 1000;
 // Bound the number of ffmpeg single-frame extracts per file. A pathological
@@ -98,7 +98,7 @@ async function extractSegmentKeyframes({
     }
     const outPath = path.join(dir, `seg_${seg.index}.jpg`);
     const result = await runFfmpegBlocking(
-      ["-y", "-ss", String(midpoint(seg)), "-i", sourcePath, "-frames:v", "1", "-q:v", "3", outPath],
+      ["-y", ...inputAutorotateArgs(), "-ss", String(midpoint(seg)), "-i", sourcePath, "-frames:v", "1", "-q:v", "3", outPath],
       { timeoutMs: KEYFRAME_TIMEOUT_MS },
     );
     if (!result.timed_out && result.exit_code === 0 && fs.existsSync(outPath)) {

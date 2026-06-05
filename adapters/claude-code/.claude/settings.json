@@ -2,6 +2,7 @@
   "permissions": {
     "allow": [
       "mcp__vob__vob_init_project",
+      "mcp__vob__vob_doctor",
       "mcp__vob__vob_read_state",
       "mcp__vob__vob_read_state_summary",
       "mcp__vob__vob_transition_phase",
@@ -24,6 +25,7 @@
       "mcp__vob__vob_render_full",
       "mcp__vob__vob_confirm_render",
       "mcp__vob__vob_package_output",
+      "mcp__vob__vob_import_deliverable",
       "mcp__vob__vob_finalize_iteration",
       "Task",
       "Read",

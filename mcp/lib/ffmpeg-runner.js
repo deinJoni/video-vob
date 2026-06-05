@@ -66,6 +66,21 @@ function runFfmpegSync(argv, { cwd, timeoutMs = PREFLIGHT_TIMEOUT_MS } = {}) {
   };
 }
 
+// Some cameras (notably DJI Osmo Pocket / drone clips) write a BOGUS display
+// rotation tag (e.g. rotation=-90) into otherwise display-correct footage, so
+// ffmpeg's default autorotation double-rotates the picture. Setting
+// VOB_DISABLE_AUTOROTATE adds `-noautorotate` to the INPUT side of every video
+// decode (must precede `-i`), turning that tribal gotcha into one knob. Left OFF
+// by default — flipping it unconditionally would mis-orient legitimately rotated
+// phone footage. vob_doctor / INGEST surface a hint when a rotation tag is seen.
+function inputAutorotateArgs() {
+  const knob = (process.env.VOB_DISABLE_AUTOROTATE || "").trim().toLowerCase();
+  if (knob === "1" || knob === "on" || knob === "true" || knob === "yes") {
+    return ["-noautorotate"];
+  }
+  return [];
+}
+
 function runFfmpegBlocking(argv, { cwd, timeoutMs = FFMPEG_TIMEOUT_MS, stderrLogPath = null } = {}) {
   return spawnWithShutdown(
     "ffmpeg",
@@ -87,6 +102,7 @@ function buildClipCutArgv({ src, out, inSeconds, outSeconds, dropAudio }) {
   // headless Chrome can decode it reliably regardless of source codec.
   const argv = [
     "-y",
+    ...inputAutorotateArgs(),
     "-i", src,
     "-ss", String(inSeconds),
     "-to", String(outSeconds),
@@ -165,6 +181,7 @@ module.exports = {
   buildClipCutArgv,
   checkFfmpegAvailable,
   cutClip,
+  inputAutorotateArgs,
   runFfmpegBlocking,
   runFfmpegSync,
 };

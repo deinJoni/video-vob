@@ -4,6 +4,7 @@ disable-model-invocation: true
 argument-hint: "<project_id> <source_path>"
 allowed-tools:
   - mcp__vob__vob_init_project
+  - mcp__vob__vob_doctor
   - mcp__vob__vob_read_state
   - mcp__vob__vob_read_state_summary
   - mcp__vob__vob_transition_phase
@@ -23,6 +24,7 @@ allowed-tools:
   - mcp__vob__vob_render_full
   - mcp__vob__vob_confirm_render
   - mcp__vob__vob_package_output
+  - mcp__vob__vob_import_deliverable
   - mcp__vob__vob_finalize_iteration
   - Read
   - Task
@@ -64,14 +66,25 @@ Back-edges:
 
 Always start by calling `mcp__vob__vob_init_project { project_id }`. If it returns `STATE_CONFLICT`, the project already exists — call `mcp__vob__vob_read_state_summary { project_id }` and pick up at the reported phase using the section below that matches.
 
+## Preflight — run `vob_doctor` once at session start
+
+Before INGEST (especially before a long INSPECT on a big source), call `mcp__vob__vob_doctor {}` once. It checks ffmpeg/ffprobe/hyperframes and — critically — the **ASR/transcription backend**, which is the silent killer of the captioned-shorts workflow: if no ASR engine is installed, INSPECT will produce a bogus "no speech" result and burned captions become inexpressible through the whole FSM.
+
+React to the report:
+- `ok:false` (ffmpeg/ffprobe missing) → surface the blocker and stop; nothing downstream runs.
+- `asr-backend` warning (no local engine) → tell the user transcription will fail and they should `pip install faster-whisper` (or pass `skip_transcription:true` at INSPECT if the source is known-silent). Don't silently proceed into a doomed transcription.
+- `host-capacity` warning (low RAM) → note renders will be slow/blocking and use the reported `render_workers` / `heavy_encode_concurrency` ceilings; run full renders in the background.
+- Relay the `advisories` (DJI rotation, `<video>` render fragility, Docker-banned) if they apply to this source.
+
 ---
 
 ## INGEST
 
 1. Call `mcp__vob__vob_ingest_file { project_id, source_path }`.
 2. Report what was found in plain language. Example: `"ingested 1 file: 12.3s of 1920x1080 h264 + 1 audio track"`. Pull the numbers from the tool's `files[]` summary (`duration_seconds`, `primary_video.width/height/codec`, `audio_streams`).
-3. If the tool errors with `ffprobe not found on PATH`, surface the install hint to the user and stop. They need to install ffmpeg before continuing.
-4. Call `mcp__vob__vob_transition_phase { project_id, to_phase: "INSPECT" }`.
+3. The tool also preflights the toolchain into `state.dependencies`. Check the returned `asr` (transcription backend) — if `asr.ok` is false, warn the user now (same guidance as the doctor step) rather than after INSPECT. If `rotation_warning` is non-null, mention the DJI autorotate gotcha (`VOB_DISABLE_AUTOROTATE=1` if outputs come out sideways).
+4. If the tool errors with `ffprobe not found on PATH`, surface the install hint to the user and stop. They need to install ffmpeg before continuing.
+5. Call `mcp__vob__vob_transition_phase { project_id, to_phase: "INSPECT" }`.
 
 ---
 
@@ -82,8 +95,10 @@ INGEST is a header probe; INSPECT is the comprehension step. It extracts a thumb
 1. Set expectations. Suggested phrasing: "extracting thumbnails and audio for inspection. If the source has speech this will also run a local Whisper transcription (small.en) — for typical short-form footage that's seconds to a couple of minutes. The tool blocks; sit tight."
 
 2. Call `mcp__vob__vob_inspect_source { project_id }`. Optional arguments:
-   - `thumb_interval_seconds` — default 3. Lower for very short sources, higher for very long ones.
-   - `skip_transcription: true` — only if the user explicitly asks to skip (e.g., a known-silent drone clip and they want to move fast). Recorded as `skipped_reason: "user_opt_out"`.
+   - `thumb_interval_seconds` — default 3. Lower for very short sources, higher for very long ones (for a 40-min source use 15–30 so you don't extract thousands of frames).
+   - `skip_scene_detection: true` — **use this for long single-shot sources (podcasts/interviews, 30+ min)**. Scene-cut detection decodes the whole stream and is the slowest pass; on a continuous talking-head it adds almost nothing while costing the most time. Silence + transcript still drive segmentation. (Detection timeouts auto-scale with duration regardless, so long sources no longer guarantee a timeout — but skipping the scene decode is much faster.)
+   - `skip_transcription: true` — only if the user explicitly asks to skip (e.g., a known-silent drone clip and they want to move fast), or if `vob_doctor`/INGEST showed no ASR backend and the user declines to install one. Recorded as `skipped_reason: "user_opt_out"`.
+   - The tool returns `asr_backend` (which engine actually transcribed). If `speech_detected` is false on a source you know has speech, check `asr_attempts` in the inspect return / state — a `no_asr_backend` reason means the transcription engine is missing, not that the audio is silent.
 
 3. On success the tool returns `{ thumbs_dir, thumb_count, thumb_interval_seconds, sample_thumb_paths, contact_sheet_paths, audio_present, speech_detected, transcript_path, transcript_summary_path, transcript_paragraphs_path, paragraph_count, word_count, segments_path, segment_count, segment_keyframe_count, skipped_reason }`. `segments_path` points at `inspect/segments.json` (the per-file segment list the inspector subagent will classify).
 
@@ -360,3 +375,14 @@ ITERATE is the end of the FSM. The user has a packaged video. They can stop here
    - **Revise the plan** → same shape with `to_phase: "PLAN"`. Surface archive paths, re-enter PLAN.
 
 4. **Hard rule:** the user never loses prior iterations. Every back-edge from RENDER, PACKAGE, or ITERATE to COMPOSE or PLAN archives whatever is currently in `renders/` and `package/` before the transition completes. The archive is a directory move (atomic, fast); it cannot be partial. If the user asks where v1 is after iterating to v2, point them at `~/video-vob-sessions/<project_id>/archive/v1/`.
+
+---
+
+## Escape hatch — recording externally-built finals (`vob_import_deliverable`)
+
+The single-timeline FSM above produces ONE assemble-edit final. Some jobs don't fit that shape — most commonly a **clip fan-out** (one long source → N independent vertical shorts) or a cut whose final was built outside vob (e.g. an overlay composited over an ffmpeg-cut base because the hyperframes `<video>` render path was too fragile on this host). For those, do not let `state.json` lie that the project is stuck at INGEST/INSPECT while finished clips exist on disk. Record reality:
+
+- **Register finished files:** `mcp__vob__vob_import_deliverable { project_id, deliverables: [{ path, title?, notes? }, ...] }`. Each file is copied into the session's `deliverables/` dir, ffprobed, and recorded in `state.deliverables[]`; phase advances to PACKAGE (pass `set_phase:false` to record without changing phase). Use this for the fan-out case — call it once with all N shorts (give each a distinct `title` so they don't stem-collide), or incrementally as they're produced. After import you can transition PACKAGE → ITERATE and call `vob_finalize_iteration` to mark the project done — the ITERATE gate accepts external deliverables in lieu of a single-timeline package.
+- **Overlay-over-base (first-class):** `mcp__vob__vob_import_deliverable { project_id, composite: { base, overlay, audio?, scale_to_base? }, title? }`. This composites a transparent `overlay` over an opaque `base` via ffmpeg (muxing the base audio by default) and records the result as a deliverable. This is the supported fallback when continuous `<video>` capture dies mid-render — render the graphics as a transparent overlay (no `<video>` in the composition), cut the base with ffmpeg, then composite here. No Docker, no browser continuous-capture.
+
+This is deliberately out-of-band: it does not touch the single-timeline composition/render/preview slots, and it writes an `external_deliverables_imported` history entry for audit. Prefer the normal FSM when the job fits it; reach for this when it genuinely doesn't.

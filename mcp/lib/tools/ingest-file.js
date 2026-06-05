@@ -18,6 +18,7 @@ const { readSessionStateStrict } = require("../session-state.js");
 const { probeFile, summarizeProbe } = require("../ffprobe.js");
 const { checkHyperframesAvailable } = require("../hyperframes-runner.js");
 const { checkFfmpegAvailable } = require("../ffmpeg-runner.js");
+const { checkAsrAvailable } = require("../asr-backend.js");
 
 const VIDEO_EXTENSIONS = new Set([".mp4", ".mov", ".mkv", ".webm", ".m4v", ".avi"]);
 // Audio-only drops are first-class: a bare voiceover/narration track is a valid
@@ -218,6 +219,19 @@ function ingestFile(args) {
   // RENDER -> PACKAGE gate can surface ffmpeg gaps with a clear blocker.
   const hyperframes = checkHyperframesAvailable();
   const ffmpeg = checkFfmpegAvailable();
+  // ASR preflight: detect the transcription backend NOW (cheap) so a dead ASR
+  // path surfaces at INGEST instead of after INSPECT burns minutes producing a
+  // bogus "no speech" result. A missing backend is a warning, not a hard error
+  // (the user can install one or pass skip_transcription) — recorded for the
+  // orchestrator to relay.
+  const asr = checkAsrAvailable();
+
+  // Footage advisories the orchestrator should relay. A non-zero display
+  // rotation (common DJI bogus tag) can make outputs come out sideways; flag it
+  // so the operator knows about VOB_DISABLE_AUTOROTATE before rendering.
+  const rotatedFiles = manifest.files
+    .filter((f) => f && f.has_rotation === true)
+    .map((f) => ({ path: f.path, rotation: f.rotation }));
 
   return withSessionLock(id, () => {
     const state = readSessionStateStrict(id);
@@ -237,6 +251,7 @@ function ingestFile(args) {
         ...(state.dependencies && typeof state.dependencies === "object" && !Array.isArray(state.dependencies) ? state.dependencies : {}),
         hyperframes,
         ffmpeg,
+        asr,
       },
       last_updated: ts,
       history: [
@@ -264,13 +279,15 @@ function ingestFile(args) {
       files: manifest.files.map(({ probe: _probe, ...summary }) => summary),
       hyperframes,
       ffmpeg,
+      asr,
+      rotation_warning: rotatedFiles.length > 0 ? rotatedFiles : null,
     };
   });
 }
 
 module.exports = Object.freeze({
   name: "vob_ingest_file",
-  description: "Probe a video/audio file (or directory) with ffprobe and write a hash-keyed manifest.json plus a state.json summary. INCREMENTAL + ADDITIVE: re-running merges with the existing manifest — unchanged files (same path+size+mtime) reuse their prior probe+hash, new/changed files are re-probed and re-hashed, and files from earlier drops are preserved. Each entry carries {hash, container, resolution, fps, has_video, has_audio} plus a stream-layout `prior` ('narration' for audio-only, 'broll' for silent video, null for both). Returns new_or_changed_count/reused_count. Errors if ffprobe is missing, the merged manifest has no playable video stream, or the project is uninitialized.",
+  description: "Probe a video/audio file (or directory) with ffprobe and write a hash-keyed manifest.json plus a state.json summary. INCREMENTAL + ADDITIVE: re-running merges with the existing manifest — unchanged files (same path+size+mtime) reuse their prior probe+hash, new/changed files are re-probed and re-hashed, and files from earlier drops are preserved. Each entry carries {hash, container, resolution, fps, has_video, has_audio, rotation} plus a stream-layout `prior` ('narration' for audio-only, 'broll' for silent video, null for both). Preflights the downstream toolchain (ffmpeg, hyperframes, AND the ASR/transcription backend) into state.dependencies so a dead transcription path surfaces here instead of after INSPECT burns minutes; returns `asr` (the backend preflight) and `rotation_warning` (files with a non-zero display rotation — the DJI autorotate gotcha). Returns new_or_changed_count/reused_count. Errors if ffprobe is missing, the merged manifest has no playable video stream, or the project is uninitialized.",
   inputSchema: {
     type: "object",
     properties: {

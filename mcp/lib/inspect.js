@@ -5,8 +5,8 @@ const path = require("path");
 
 const { ERROR_CODES, ToolError } = require("./envelope.js");
 const { writeFileAtomic, readJsonFile } = require("./storage.js");
-const { runFfmpegBlocking } = require("./ffmpeg-runner.js");
-const { runHyperframesWithRetry, buildTranscribeArgv } = require("./hyperframes-runner.js");
+const { runFfmpegBlocking, inputAutorotateArgs } = require("./ffmpeg-runner.js");
+const { asrTranscribe } = require("./asr-backend.js");
 const {
   inspectAudioPath,
   inspectCleanSpeechPath,
@@ -30,7 +30,6 @@ const { attachTranscriptOverlap, extractSegmentKeyframes } = require("./segment-
 
 const THUMB_TIMEOUT_MS = 120 * 1000;
 const AUDIO_TIMEOUT_MS = 180 * 1000;
-const TRANSCRIBE_TIMEOUT_MS = 10 * 60 * 1000;
 const CONTACT_SHEET_TIMEOUT_MS = 120 * 1000;
 const CONTACT_SHEET_COLS = 5;
 const CONTACT_SHEET_CELL_WIDTH = 320;
@@ -51,8 +50,14 @@ const SILENCE_MIN_SECONDS = 0.5;
 const MIN_SEGMENT_SECONDS = 0.4;
 // Scene detection decodes the whole stream, so it is the slowest INSPECT step
 // on long/4K sources; give it room. The content-hash cache makes re-runs free.
+// These are the FLOOR for short clips; durationAwareTimeout() scales them up for
+// long sources (a 44-min HEVC decodes well past a fixed 8-min cap), which is
+// what used to make vob_inspect_source time out on 100% of real podcast inputs.
 const SCENE_DETECT_TIMEOUT_MS = 8 * 60 * 1000;
 const SILENCE_DETECT_TIMEOUT_MS = 5 * 60 * 1000;
+const SCENE_DETECT_CEILING_MS = 60 * 60 * 1000;
+const SILENCE_DETECT_CEILING_MS = 30 * 60 * 1000;
+const AUDIO_EXTRACT_CEILING_MS = 30 * 60 * 1000;
 const DETECT_PARAMS = Object.freeze({
   sceneThreshold: SCENE_THRESHOLD,
   noiseDb: SILENCE_NOISE_DB,
@@ -61,6 +66,18 @@ const DETECT_PARAMS = Object.freeze({
 
 function nowIso() {
   return new Date().toISOString();
+}
+
+// A timeout that grows with source duration. Long sources (31–44 min HEVC, the
+// real inputs) decode far slower than the short-clip baseline, so a fixed cap
+// guarantees a timeout. We scale by `perSecondMs` of source (a generous
+// multiple of expected decode time), floored at `baseMs`, capped at `ceilingMs`,
+// and fully overridable via `envVar` (a positive-int ms value).
+function durationAwareTimeout({ baseMs, durationSeconds, perSecondMs, ceilingMs, envVar }) {
+  const override = Number.parseInt((process.env[envVar] || "").trim(), 10);
+  if (Number.isInteger(override) && override > 0) return override;
+  if (!Number.isFinite(durationSeconds) || durationSeconds <= 0) return baseMs;
+  return Math.min(ceilingMs, Math.max(baseMs, Math.round(durationSeconds * perSecondMs)));
 }
 
 function pickSampleThumbs(thumbPaths, targetCount = DEFAULT_SAMPLE_THUMB_COUNT) {
@@ -90,6 +107,7 @@ async function extractThumbnailsForFile({ projectId, fileIndex, sourcePath, inte
   const result = await runFfmpegBlocking(
     [
       "-y",
+      ...inputAutorotateArgs(),
       "-i", sourcePath,
       "-vf", `fps=1/${intervalSeconds}`,
       "-q:v", "3",
@@ -153,7 +171,14 @@ async function buildContactSheet({ projectId, fileIndex, thumbCount, outPath }) 
   return outPath;
 }
 
-async function extractAudio({ sourcePath, outPath }) {
+async function extractAudio({ sourcePath, outPath, durationSeconds = null }) {
+  const timeoutMs = durationAwareTimeout({
+    baseMs: AUDIO_TIMEOUT_MS,
+    durationSeconds,
+    perSecondMs: 200,
+    ceilingMs: AUDIO_EXTRACT_CEILING_MS,
+    envVar: "VOB_AUDIO_EXTRACT_TIMEOUT_MS",
+  });
   const result = await runFfmpegBlocking(
     [
       "-y",
@@ -164,7 +189,7 @@ async function extractAudio({ sourcePath, outPath }) {
       "-acodec", "pcm_s16le",
       outPath,
     ],
-    { timeoutMs: AUDIO_TIMEOUT_MS },
+    { timeoutMs },
   );
   if (result.timed_out) {
     throw new ToolError(
@@ -183,56 +208,21 @@ async function extractAudio({ sourcePath, outPath }) {
   }
 }
 
-function parseStdoutJson(stdout) {
-  // hyperframes transcribe --json prints a metadata envelope to stdout
-  // (e.g. { ok, model, wordCount, durationSeconds, transcriptPath }). The
-  // actual transcript file is written separately by hyperframes itself.
-  const trimmed = (stdout || "").trim();
-  if (!trimmed) return null;
-  const firstBrace = trimmed.search(/[{[]/);
-  if (firstBrace === -1) return null;
-  try {
-    return JSON.parse(trimmed.slice(firstBrace));
-  } catch {
-    return null;
+// Transcribe via the pluggable ASR backend (faster-whisper / openai-whisper /
+// hyperframes), which writes the canonical [{text,start,end}] transcript to
+// expectedTranscriptPath and falls through backends on failure. This is what
+// keeps transcription alive on hosts where hyperframes' whisper-cpp is absent.
+async function transcribeAudio({ audioPath, inspectDirAbs, expectedTranscriptPath, durationSeconds = null }) {
+  const res = await asrTranscribe({
+    audioPath,
+    outPath: expectedTranscriptPath,
+    projectDir: inspectDirAbs,
+    durationSeconds,
+  });
+  if (res.ok) {
+    return { ok: true, word_count: res.word_count || 0, backend: res.backend, attempts: res.attempts || [] };
   }
-}
-
-async function transcribeAudio({ audioPath, inspectDirAbs, expectedTranscriptPath }) {
-  // -d <inspectDir> tells hyperframes where the project root is; it writes
-  // transcript.json into that directory (sibling of audio.wav). --json makes
-  // stdout return a metadata envelope rather than the transcript text.
-  const result = await runHyperframesWithRetry(
-    buildTranscribeArgv({ inspectDirAbs, audioPath }),
-    { timeoutMs: TRANSCRIBE_TIMEOUT_MS, captureStdoutViaFile: true, maxAttempts: 2 },
-  );
-  if (result.timed_out) {
-    return { ok: false, reason: "transcription_timeout", stderr: (result.stderr || "").slice(0, 1000) };
-  }
-  if (result.exit_code !== 0) {
-    return {
-      ok: false,
-      reason: "transcription_failed",
-      stderr: (result.stderr || "").slice(0, 2000),
-      exit_code: result.exit_code,
-    };
-  }
-  const meta = parseStdoutJson(result.stdout);
-  if (!meta || meta.ok === false) {
-    return { ok: false, reason: "transcription_unparseable", stdout_preview: (result.stdout || "").slice(0, 500) };
-  }
-  const wordCount = Number.isFinite(meta.wordCount) ? Number(meta.wordCount) : 0;
-  const writtenPath = typeof meta.transcriptPath === "string" && meta.transcriptPath
-    ? meta.transcriptPath
-    : expectedTranscriptPath;
-  if (!fs.existsSync(writtenPath)) {
-    return { ok: false, reason: "transcription_file_missing", expected_path: writtenPath };
-  }
-  if (writtenPath !== expectedTranscriptPath) {
-    // Normalize to the canonical inspect/transcript.json path.
-    fs.copyFileSync(writtenPath, expectedTranscriptPath);
-  }
-  return { ok: true, word_count: wordCount };
+  return { ok: false, reason: res.reason || "transcription_failed", attempts: res.attempts || [] };
 }
 
 // --- Segment detection (cached by manifest file content hash) --------------
@@ -256,10 +246,13 @@ function readDetectionCache(projectId, hash) {
     || p.minSilenceSeconds !== DETECT_PARAMS.minSilenceSeconds
   ) return null;
   if (!Array.isArray(doc.scene_cuts) || !Array.isArray(doc.silences)) return null;
-  return { scene_cuts: doc.scene_cuts, silences: doc.silences };
+  // scene_detected records whether scene_cuts is AUTHORITATIVE (the pass actually
+  // ran) vs. an empty placeholder from a skip_scene_detection run. Old caches
+  // (predating the field) were always full detections -> treat missing as true.
+  return { scene_cuts: doc.scene_cuts, silences: doc.silences, scene_detected: doc.scene_detected !== false };
 }
 
-function writeDetectionCache(projectId, hash, sceneCuts, silences) {
+function writeDetectionCache(projectId, hash, sceneCuts, silences, sceneDetected) {
   if (typeof hash !== "string" || !hash) return;
   let cachePath;
   try { cachePath = segmentCachePath(projectId, hash); } catch { return; }
@@ -269,6 +262,7 @@ function writeDetectionCache(projectId, hash, sceneCuts, silences) {
     file_hash: hash,
     params: DETECT_PARAMS,
     scene_cuts: sceneCuts,
+    scene_detected: sceneDetected === true,
     silences,
     detected_at: nowIso(),
   }, null, 2)}\n`);
@@ -277,7 +271,7 @@ function writeDetectionCache(projectId, hash, sceneCuts, silences) {
 // Split each manifest file into segments (the unit of classification/editing):
 // scene-cut + silence detection (cached) -> buildSegments -> transcript overlap
 // -> representative keyframes. Returns a per-file summary + roll-up counts.
-async function segmentSourceFiles({ projectId, manifest, transcriptWords, transcribedFileIndex }) {
+async function segmentSourceFiles({ projectId, manifest, transcriptWords, transcribedFileIndex, skipSceneDetection = false }) {
   const fileSummaries = [];
   let totalSegments = 0;
   let totalKeyframes = 0;
@@ -299,25 +293,52 @@ async function segmentSourceFiles({ projectId, manifest, transcriptWords, transc
       continue;
     }
 
+    // Scene cuts + silences are cached together by content hash, but tracked
+    // independently: an audio-only file has no scenes (sceneDetected starts
+    // true), and a skip_scene_detection run caches its silences WITHOUT claiming
+    // scene detection happened — so a later full run reuses the cached silences
+    // and only re-runs the (expensive) scene decode, never trusting a skipped
+    // scene_cuts:[] as authoritative.
     let sceneCuts = [];
     let silences = [];
+    let sceneDetected = !hasVideo;
     const cached = readDetectionCache(projectId, file.hash);
     if (cached) {
-      sceneCuts = cached.scene_cuts;
       silences = cached.silences;
-    } else {
-      if (hasVideo) {
-        const sc = await detectSceneChanges(file.path, { threshold: SCENE_THRESHOLD, timeoutMs: SCENE_DETECT_TIMEOUT_MS });
-        sceneCuts = sc.ok ? sc.cuts : [];
+      if (cached.scene_detected) {
+        sceneCuts = cached.scene_cuts;
+        sceneDetected = true;
       }
-      if (hasAudio) {
-        const sd = await detectSilences(file.path, {
-          noiseDb: SILENCE_NOISE_DB, minSilenceSeconds: SILENCE_MIN_SECONDS,
-          durationSeconds: duration, timeoutMs: SILENCE_DETECT_TIMEOUT_MS,
-        });
-        silences = sd.ok ? sd.silences : [];
-      }
-      writeDetectionCache(projectId, file.hash, sceneCuts, silences);
+    }
+
+    if (hasVideo && !skipSceneDetection && !sceneDetected) {
+      const sceneTimeoutMs = durationAwareTimeout({
+        baseMs: SCENE_DETECT_TIMEOUT_MS, durationSeconds: duration,
+        perSecondMs: 500, ceilingMs: SCENE_DETECT_CEILING_MS,
+        envVar: "VOB_SCENE_DETECT_TIMEOUT_MS",
+      });
+      const sc = await detectSceneChanges(file.path, { threshold: SCENE_THRESHOLD, timeoutMs: sceneTimeoutMs });
+      sceneCuts = sc.ok ? sc.cuts : [];
+      sceneDetected = true;
+    }
+
+    if (hasAudio && !cached) {
+      const silenceTimeoutMs = durationAwareTimeout({
+        baseMs: SILENCE_DETECT_TIMEOUT_MS, durationSeconds: duration,
+        perSecondMs: 150, ceilingMs: SILENCE_DETECT_CEILING_MS,
+        envVar: "VOB_SILENCE_DETECT_TIMEOUT_MS",
+      });
+      const sd = await detectSilences(file.path, {
+        noiseDb: SILENCE_NOISE_DB, minSilenceSeconds: SILENCE_MIN_SECONDS,
+        durationSeconds: duration, timeoutMs: silenceTimeoutMs,
+      });
+      silences = sd.ok ? sd.silences : [];
+    }
+
+    // Persist when there's something new to store: a first detection, or an
+    // upgrade from "scenes skipped" to "scenes detected".
+    if (!cached || (sceneDetected && !cached.scene_detected)) {
+      writeDetectionCache(projectId, file.hash, sceneCuts, silences, sceneDetected);
     }
 
     let segments = buildSegments({
@@ -355,6 +376,7 @@ async function runInspect({ projectId, manifest, options = {} }) {
     ? options.thumb_interval_seconds
     : DEFAULT_THUMB_INTERVAL_SECONDS;
   const skipTranscription = options.skip_transcription === true;
+  const skipSceneDetection = options.skip_scene_detection === true;
 
   if (!manifest || !Array.isArray(manifest.files) || manifest.files.length === 0) {
     throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, "manifest has no files to inspect");
@@ -407,12 +429,18 @@ async function runInspect({ projectId, manifest, options = {} }) {
   let transcriptPathOut = null;
   let wordCount = 0;
   let skippedReason = null;
+  let asrBackend = null;
+  let asrAttempts = null;
 
   if (audioFileIndices.length === 0) {
     skippedReason = "no_audio_stream";
   } else if (skipTranscription) {
     transcribedFileIndex = audioFileIndices[0];
-    await extractAudio({ sourcePath: manifest.files[transcribedFileIndex].path, outPath: audioAbs });
+    await extractAudio({
+      sourcePath: manifest.files[transcribedFileIndex].path,
+      outPath: audioAbs,
+      durationSeconds: Number(manifest.files[transcribedFileIndex].duration_seconds),
+    });
     audioPresent = true;
     audioPathOut = audioAbs;
     skippedReason = "user_opt_out";
@@ -425,14 +453,21 @@ async function runInspect({ projectId, manifest, options = {} }) {
       fs.mkdirSync(tmpDir, { recursive: true });
       const tmpWav = path.join(tmpDir, "audio.wav");
       const tmpTranscript = path.join(tmpDir, "transcript.json");
-      await extractAudio({ sourcePath: manifest.files[idx].path, outPath: tmpWav });
-      const tr = await transcribeAudio({ audioPath: tmpWav, inspectDirAbs: tmpDir, expectedTranscriptPath: tmpTranscript });
+      const fileDuration = Number(manifest.files[idx].duration_seconds);
+      await extractAudio({ sourcePath: manifest.files[idx].path, outPath: tmpWav, durationSeconds: fileDuration });
+      const tr = await transcribeAudio({ audioPath: tmpWav, inspectDirAbs: tmpDir, expectedTranscriptPath: tmpTranscript, durationSeconds: fileDuration });
       const wc = tr.ok ? (tr.word_count || 0) : 0;
       if (!best || wc > best.wordCount) {
-        best = { idx, wordCount: wc, ok: tr.ok, reason: tr.reason || null, wav: tmpWav, transcript: tr.ok ? tmpTranscript : null };
+        best = {
+          idx, wordCount: wc, ok: tr.ok, reason: tr.reason || null,
+          backend: tr.backend || null, attempts: tr.attempts || null,
+          wav: tmpWav, transcript: tr.ok ? tmpTranscript : null,
+        };
       }
     }
     transcribedFileIndex = best.idx;
+    asrBackend = best.backend;
+    asrAttempts = best.attempts;
     try { fs.copyFileSync(best.wav, audioAbs); audioPathOut = audioAbs; } catch { audioPathOut = null; }
     if (best.ok && best.transcript && fs.existsSync(best.transcript)) {
       fs.copyFileSync(best.transcript, transcriptAbs);
@@ -480,7 +515,12 @@ async function runInspect({ projectId, manifest, options = {} }) {
       const words = readJsonFile(transcriptPathOut);
       const spineDur = fileWithAudio && Number.isFinite(fileWithAudio.duration_seconds) ? fileWithAudio.duration_seconds : null;
       if (Array.isArray(words) && words.length > 0) {
-        const det = await detectSilences(audioPathOut, { noiseDb: CLEAN_SPEECH_NOISE_DB, minSilenceSeconds: CLEAN_SPEECH_MIN_SILENCE, durationSeconds: spineDur });
+        const cleanSilenceTimeoutMs = durationAwareTimeout({
+          baseMs: SILENCE_DETECT_TIMEOUT_MS, durationSeconds: spineDur,
+          perSecondMs: 150, ceilingMs: SILENCE_DETECT_CEILING_MS,
+          envVar: "VOB_SILENCE_DETECT_TIMEOUT_MS",
+        });
+        const det = await detectSilences(audioPathOut, { noiseDb: CLEAN_SPEECH_NOISE_DB, minSilenceSeconds: CLEAN_SPEECH_MIN_SILENCE, durationSeconds: spineDur, timeoutMs: cleanSilenceTimeoutMs });
         const clean = computeCleanSpans({ words, durationSeconds: spineDur, silences: (det && det.silences) || [] });
         const outPath = inspectCleanSpeechPath(projectId);
         writeFileAtomic(outPath, `${JSON.stringify({
@@ -513,7 +553,7 @@ async function runInspect({ projectId, manifest, options = {} }) {
     } catch { transcriptWords = null; }
   }
   const segmentation = await segmentSourceFiles({
-    projectId, manifest, transcriptWords, transcribedFileIndex,
+    projectId, manifest, transcriptWords, transcribedFileIndex, skipSceneDetection,
   });
   const segmentsPathOut = segmentsPath(projectId);
   writeFileAtomic(segmentsPathOut, `${JSON.stringify({
@@ -538,6 +578,9 @@ async function runInspect({ projectId, manifest, options = {} }) {
     audio_present: audioPresent,
     audio_path: audioPathOut,
     speech_detected: speechDetected,
+    asr_backend: asrBackend,
+    asr_attempts: asrAttempts,
+    scene_detection_skipped: skipSceneDetection,
     transcript_path: transcriptPathOut,
     transcript_summary_path: transcriptSummaryPathOut,
     transcript_paragraphs_path: transcriptParagraphsPathOut,

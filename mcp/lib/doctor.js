@@ -1,0 +1,160 @@
+"use strict";
+
+// vob doctor — a single up-front preflight of everything a real job depends on,
+// so the tribal knowledge that used to live in memory files becomes a guard
+// rail you run before burning 10 minutes on a doomed INSPECT.
+//
+// Checks: ffmpeg, ffprobe, hyperframes, and the ASR backend (the silent killer
+// of the captioned-shorts workflow); plus host RAM and the derived render-worker
+// / heavy-encode-concurrency ceilings, the GPU backend, and advisories for the
+// known footage/render gotchas (DJI bogus rotation, <video> render fragility,
+// Docker-is-banned).
+
+const os = require("os");
+
+const { checkFfmpegAvailable } = require("./ffmpeg-runner.js");
+const { checkHyperframesAvailable, resolveBrowserGpuMode, renderWorkerArgs } = require("./hyperframes-runner.js");
+const { checkAsrAvailable } = require("./asr-backend.js");
+const { recommendedHeavyEncodeConcurrency } = require("./concurrency.js");
+
+const GIB = 1024 * 1024 * 1024;
+
+function checkFfprobe() {
+  // ffprobe ships with ffmpeg; probe it via a trivial spawn.
+  const { spawnSync } = require("child_process");
+  try {
+    const out = spawnSync("ffprobe", ["-version"], { encoding: "utf8", timeout: 15000 });
+    if (out.status === 0) {
+      const m = (out.stdout || "").match(/ffprobe version\s+(\S+)/i);
+      return { ok: true, version: m ? m[1] : null, error: null };
+    }
+    return { ok: false, version: null, error: (out.stderr || "").slice(0, 200) || `exit ${out.status}` };
+  } catch (error) {
+    return { ok: false, version: null, error: error.message || String(error) };
+  }
+}
+
+function level(ok, warnOnly = false) {
+  if (ok) return "ok";
+  return warnOnly ? "warn" : "error";
+}
+
+// Run all checks and return a structured report. `ok` is true only when there
+// are no hard blockers (a missing ASR engine is a WARNING, not a blocker — the
+// user can pass skip_transcription or install one — but ffmpeg/ffprobe missing
+// is a blocker because nothing downstream runs).
+function runDoctor() {
+  const platform = process.platform;
+  const totalmem = (() => { try { return os.totalmem(); } catch { return 0; } })();
+  const freemem = (() => { try { return os.freemem(); } catch { return 0; } })();
+  const cpus = (() => { try { return os.cpus().length; } catch { return 0; } })();
+  const lowRam = totalmem > 0 && totalmem < 10 * GIB;
+
+  const ffmpeg = checkFfmpegAvailable();
+  const ffprobe = checkFfprobe();
+  const hyperframes = checkHyperframesAvailable();
+  const asr = checkAsrAvailable();
+
+  const workerArgs = renderWorkerArgs();
+  const renderWorkers = workerArgs.length === 2 ? workerArgs[1] : "auto (hyperframes calibrates)";
+  const encodeCap = recommendedHeavyEncodeConcurrency();
+  const gpuMode = resolveBrowserGpuMode();
+
+  const checks = [];
+
+  checks.push({
+    name: "ffmpeg",
+    level: level(ffmpeg.ok),
+    detail: ffmpeg.ok ? `present (${ffmpeg.version || "version?"})` : (ffmpeg.error || "not found"),
+    recommendation: ffmpeg.ok ? null : "Install ffmpeg (Debian/Ubuntu: apt-get install ffmpeg). REQUIRED — INSPECT/COMPOSE/PACKAGE all use it.",
+    blocker: !ffmpeg.ok,
+  });
+
+  checks.push({
+    name: "ffprobe",
+    level: level(ffprobe.ok),
+    detail: ffprobe.ok ? `present (${ffprobe.version || "version?"})` : (ffprobe.error || "not found"),
+    recommendation: ffprobe.ok ? null : "ffprobe ships with ffmpeg — installing ffmpeg provides it. REQUIRED for INGEST.",
+    blocker: !ffprobe.ok,
+  });
+
+  checks.push({
+    name: "hyperframes",
+    level: level(hyperframes.ok, true),
+    detail: hyperframes.ok ? `present (${hyperframes.version || "version?"})` : (hyperframes.error || "not found"),
+    recommendation: hyperframes.ok ? null : "Install hyperframes (`npm i -g hyperframes`) — required to render compositions. Not needed for overlay-over-base/import-only flows.",
+    blocker: false,
+  });
+
+  checks.push({
+    name: "asr-backend",
+    level: level(asr.ok, true),
+    detail: asr.ok
+      ? `usable: ${asr.available_backends.length ? asr.available_backends.join(", ") : "(hyperframes/whisper-cpp only — unverified)"}; selected=${asr.selected || "?"}`
+      : (asr.error || "no ASR backend"),
+    recommendation: asr.available_backends.length
+      ? null
+      : "No local ASR engine detected. `pip install faster-whisper` (recommended) so INSPECT can transcribe — without it captions/transcripts are unavailable and you must pass skip_transcription. hyperframes transcribe needs whisper-cpp.",
+    blocker: false,
+    backends: asr.all_backends || [],
+    python: asr.python || null,
+  });
+
+  // Host capacity + derived ceilings.
+  checks.push({
+    name: "host-capacity",
+    level: lowRam ? "warn" : "ok",
+    detail: `platform=${platform}, ram=${totalmem ? (totalmem / GIB).toFixed(1) : "?"}GiB total / ${freemem ? (freemem / GIB).toFixed(1) : "?"}GiB free, cpus=${cpus}`,
+    recommendation: lowRam
+      ? `Low-RAM host: render pinned to ${renderWorkers} worker(s); cap heavy concurrent encodes at ${encodeCap}. Run full renders in the background and expect long, blocking jobs.`
+      : null,
+    blocker: false,
+    render_workers: renderWorkers,
+    heavy_encode_concurrency: encodeCap,
+    gpu_mode: gpuMode || "(hyperframes default)",
+  });
+
+  // Static advisories — known footage / render gotchas, surfaced as guard rails.
+  const advisories = [
+    {
+      name: "dji-rotation",
+      detail: "DJI Osmo/drone clips can carry a bogus display-rotation tag that ffmpeg double-rotates. If a deliverable comes out sideways, set VOB_DISABLE_AUTOROTATE=1 (adds -noautorotate to decodes). INGEST flags sources whose probe reports a non-zero rotation.",
+    },
+    {
+      name: "video-render-fragility",
+      detail: "On constrained hosts, hyperframes continuous capture of compositions containing <video> can die mid-render (Target closed / BeginFrame timeout). Fallbacks: VOB_FORCE_SCREENSHOT=1 (discrete capture), or render graphics as a transparent overlay and composite over an ffmpeg-cut base (overlay-over-base mode; see vob_import_deliverable composite).",
+    },
+    {
+      name: "docker-banned",
+      detail: "Rendering is ALWAYS native on the host. Docker is intentionally unsupported across the pipeline — never enable it.",
+    },
+  ];
+
+  const blockers = checks.filter((c) => c.blocker).map((c) => c.name);
+  const warnings = checks.filter((c) => c.level === "warn").map((c) => c.name);
+  const ok = blockers.length === 0;
+
+  return {
+    ok,
+    checked_at: new Date().toISOString(),
+    summary: ok
+      ? (warnings.length ? `ready, with ${warnings.length} warning(s): ${warnings.join(", ")}` : "all systems go")
+      : `BLOCKED: ${blockers.join(", ")} missing`,
+    host: {
+      platform,
+      total_ram_gib: totalmem ? Number((totalmem / GIB).toFixed(2)) : null,
+      free_ram_gib: freemem ? Number((freemem / GIB).toFixed(2)) : null,
+      cpus,
+      low_ram: lowRam,
+      render_workers: renderWorkers,
+      heavy_encode_concurrency: encodeCap,
+      gpu_mode: gpuMode || null,
+    },
+    checks,
+    advisories,
+    blockers,
+    warnings,
+  };
+}
+
+module.exports = { runDoctor };

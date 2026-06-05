@@ -31,6 +31,7 @@ async function inspectSource(args) {
     );
   }
   const skipTranscription = args && args.skip_transcription === true;
+  const skipSceneDetection = args && args.skip_scene_detection === true;
 
   // Read state outside the lock since this is a long-running operation
   // (transcription can take minutes). Hold the lock only for the final state
@@ -64,6 +65,7 @@ async function inspectSource(args) {
     options: {
       thumb_interval_seconds: intervalSeconds,
       skip_transcription: skipTranscription,
+      skip_scene_detection: skipSceneDetection,
     },
   });
 
@@ -82,6 +84,8 @@ async function inspectSource(args) {
         audio_present: summary.audio_present,
         audio_path: summary.audio_present ? inspectAudioPath(id) : null,
         speech_detected: summary.speech_detected,
+        asr_backend: summary.asr_backend || null,
+        scene_detection_skipped: summary.scene_detection_skipped === true,
         transcript_path: summary.transcript_path ? inspectTranscriptPath(id) : null,
         transcript_summary_path: summary.transcript_summary_path || null,
         transcript_paragraphs_path: summary.transcript_paragraphs_path || null,
@@ -121,6 +125,9 @@ async function inspectSource(args) {
       audio_present: summary.audio_present,
       audio_path: next.inspect.audio_path,
       speech_detected: summary.speech_detected,
+      asr_backend: summary.asr_backend || null,
+      asr_attempts: summary.asr_attempts || null,
+      scene_detection_skipped: summary.scene_detection_skipped === true,
       transcript_path: next.inspect.transcript_path,
       transcript_summary_path: next.inspect.transcript_summary_path,
       transcript_paragraphs_path: next.inspect.transcript_paragraphs_path,
@@ -138,7 +145,7 @@ async function inspectSource(args) {
 
 module.exports = Object.freeze({
   name: "vob_inspect_source",
-  description: "Extract thumbnail grid (every N seconds via ffmpeg), audio (mono 16kHz wav if manifest has audio streams), word-level transcript (via hyperframes transcribe), AND per-file segments (scene-cut + silence detection -> inspect/segments.json, with a representative keyframe per non-silence segment). Segments are the unit downstream classification/storyboard consume. Writes inspect/{thumbs/, audio.wav, transcript.json, inspect.json, segments.json, segment_keyframes/} and sets state.inspect (incl. segments_path, segment_count) with user_acknowledged:false. Detection is cached by file content hash at segment_cache/ so re-runs are cheap. Re-running overwrites artifacts and resets the acknowledgement flag. Requires phase INSPECT. Long-running (up to ~12+ minutes including transcription + scene detection); transcription can be skipped with skip_transcription:true.",
+  description: "Extract thumbnail grid (every N seconds via ffmpeg), audio (mono 16kHz wav if manifest has audio streams), word-level transcript (via the pluggable ASR backend — faster-whisper / openai-whisper / hyperframes, auto-selected and recorded as asr_backend), AND per-file segments (scene-cut + silence detection -> inspect/segments.json, with a representative keyframe per non-silence segment). Segments are the unit downstream classification/storyboard consume. Writes inspect/{thumbs/, audio.wav, transcript.json, inspect.json, segments.json, segment_keyframes/} and sets state.inspect (incl. segments_path, segment_count, asr_backend) with user_acknowledged:false. Detection is cached by file content hash at segment_cache/ so re-runs are cheap. Re-running overwrites artifacts and resets the acknowledgement flag. Requires phase INSPECT. Long-running; scene/silence/transcribe timeouts auto-scale with source duration so long sources don't guarantee a timeout. Skip the slow whole-stream scene-cut decode with skip_scene_detection:true (recommended for 30+ min single-shot sources); skip transcription with skip_transcription:true. Run vob_doctor first to confirm the ASR backend is alive.",
   inputSchema: {
     type: "object",
     properties: {
@@ -150,7 +157,11 @@ module.exports = Object.freeze({
       },
       skip_transcription: {
         type: "boolean",
-        description: "Skip the hyperframes transcribe step (records skipped_reason: 'user_opt_out'). Default false.",
+        description: "Skip transcription entirely (records skipped_reason: 'user_opt_out'). Default false.",
+      },
+      skip_scene_detection: {
+        type: "boolean",
+        description: "Skip whole-stream scene-cut detection — the slowest INSPECT pass. Strongly recommended for long single-shot sources (podcasts/interviews, 30+ min) where scene cuts add little: it removes the heaviest decode and lets silence + transcript drive segmentation. Default false. (Detection timeouts also auto-scale with source duration, so long sources no longer guarantee a timeout.)",
       },
     },
     required: ["project_id"],

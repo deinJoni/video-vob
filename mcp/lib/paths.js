@@ -214,6 +214,14 @@ function packageReadmePath(projectId) {
   return path.join(packageDir(projectId), "README.md");
 }
 
+// Where externally-produced finals are recorded (the multi-deliverable / clip
+// fan-out escape hatch — vob_import_deliverable). A TOP-LEVEL session dir, NOT
+// under package/, so the single-timeline vob_package_output (which wipes
+// package/ on every run) can never delete imported deliverables.
+function deliverablesDir(projectId) {
+  return path.join(sessionDir(projectId), "deliverables");
+}
+
 function archiveDir(projectId) {
   return path.join(sessionDir(projectId), "archive");
 }
@@ -252,6 +260,7 @@ module.exports = {
   inspectTranscriptPath,
   inspectTranscriptSummaryPath,
   manifestPath,
+  deliverablesDir,
   packageDir,
   packageFinalMp4Path,
   packageManifestPath,

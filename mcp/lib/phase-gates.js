@@ -4,7 +4,20 @@ const fs = require("fs");
 const path = require("path");
 const { readJsonFile } = require("./storage.js");
 const { missingIntentKeys } = require("./intent-schema.js");
-const { composeDir, inspectSummaryPath, packageDir, packageFinalMp4Path, packageManifestPath, packageReadmePath, packageThumbnailPath } = require("./paths.js");
+const { composeDir, deliverablesDir, inspectSummaryPath, packageDir, packageFinalMp4Path, packageManifestPath, packageReadmePath, packageThumbnailPath } = require("./paths.js");
+
+// True when a project carries externally-imported deliverables (the
+// vob_import_deliverable escape hatch) that are on disk — its real output lives
+// outside the single-timeline package/ slot.
+function hasExternalDeliverables(state) {
+  return Boolean(
+    state
+    && state.external_import === true
+    && Array.isArray(state.deliverables)
+    && state.deliverables.length > 0
+    && fs.existsSync(deliverablesDir(state.project_id)),
+  );
+}
 
 function blocker(code, message, fields = {}) {
   return { code, message, ...fields };
@@ -397,8 +410,13 @@ function renderToPlan(state) {
   return composeToPlan(state);
 }
 
-// PACKAGE -> ITERATE: all four package files must exist on disk.
+// PACKAGE -> ITERATE: all four package files must exist on disk — OR the
+// project reached PACKAGE via the import escape hatch with external deliverables
+// on record (those ARE the output; there is no single-timeline package to check).
 function packageToIterate(state) {
+  if (hasExternalDeliverables(state)) {
+    return ALLOWED;
+  }
   const pkg = state && typeof state.package === "object" && !Array.isArray(state.package)
     ? state.package
     : null;

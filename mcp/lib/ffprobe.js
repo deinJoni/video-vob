@@ -83,6 +83,23 @@ function parseFrameRate(rateStr) {
   return Number.isFinite(flat) && flat > 0 ? flat : null;
 }
 
+// Display rotation, in degrees, from either the legacy `tags.rotate` or the
+// newer Display Matrix side data. Cameras like DJI write a bogus rotation tag on
+// already-display-correct footage, so surfacing this lets INGEST/doctor warn
+// about the autorotate gotcha (see inputAutorotateArgs in ffmpeg-runner.js).
+function readRotation(stream) {
+  if (!stream || typeof stream !== "object") return 0;
+  const tagRotate = stream.tags && stream.tags.rotate != null ? Number(stream.tags.rotate) : null;
+  if (Number.isFinite(tagRotate) && tagRotate !== 0) return tagRotate;
+  const sideData = Array.isArray(stream.side_data_list) ? stream.side_data_list : [];
+  for (const sd of sideData) {
+    if (sd && sd.rotation != null && Number.isFinite(Number(sd.rotation)) && Number(sd.rotation) !== 0) {
+      return Number(sd.rotation);
+    }
+  }
+  return 0;
+}
+
 function summarizeProbe(filePath, probe) {
   const streams = Array.isArray(probe.streams) ? probe.streams : [];
   const videoStreams = streams.filter(
@@ -97,6 +114,7 @@ function summarizeProbe(filePath, probe) {
   const width = primary ? Number(primary.width) || null : null;
   const height = primary ? Number(primary.height) || null : null;
   const frameRateStr = primary ? (primary.avg_frame_rate || primary.r_frame_rate || null) : null;
+  const rotation = primary ? readRotation(primary) : 0;
 
   return {
     path: filePath,
@@ -113,6 +131,8 @@ function summarizeProbe(filePath, probe) {
     has_audio: audioStreams.length > 0,
     resolution: width && height ? `${width}x${height}` : null,
     fps: parseFrameRate(frameRateStr),
+    rotation,
+    has_rotation: Number.isFinite(rotation) && rotation !== 0,
     primary_video: primary
       ? {
           codec: primary.codec_name || null,

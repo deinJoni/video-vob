@@ -2,6 +2,7 @@
 
 const TOOL_MODULES = Object.freeze([
   require("./init-project.js"),
+  require("./doctor.js"),
   require("./read-state.js"),
   require("./read-state-summary.js"),
   require("./transition-phase.js"),
@@ -24,6 +25,7 @@ const TOOL_MODULES = Object.freeze([
   require("./render-full.js"),
   require("./confirm-render.js"),
   require("./package-output.js"),
+  require("./import-deliverable.js"),
   require("./finalize-iteration.js"),
   require("./archive-for-iteration.js"),
 ]);

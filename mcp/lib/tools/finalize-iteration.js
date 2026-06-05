@@ -1,8 +1,9 @@
 "use strict";
 
 const fs = require("fs");
+const path = require("path");
 const { ERROR_CODES, ToolError } = require("../envelope.js");
-const { assertSafeProjectId, statePath } = require("../paths.js");
+const { assertSafeProjectId, deliverablesDir, sessionDir, statePath } = require("../paths.js");
 const { withSessionLock, writeFileAtomic } = require("../storage.js");
 const { readSessionStateStrict } = require("../session-state.js");
 const { currentIterationVersion } = require("../archival.js");
@@ -19,10 +20,18 @@ function finalizeIteration(args) {
     const pkg = state.package && typeof state.package === "object" && !Array.isArray(state.package)
       ? state.package
       : null;
-    if (!pkg || typeof pkg.directory_path !== "string" || !pkg.directory_path) {
+    // Import-only (escape-hatch) projects have no single-timeline package — their
+    // externally-recorded deliverables are the output. Accept those too.
+    const externalDeliverables = state.external_import === true
+      && Array.isArray(state.deliverables) && state.deliverables.length > 0
+      && fs.existsSync(deliverablesDir(id));
+    const packageDirectoryPath = pkg && typeof pkg.directory_path === "string" && pkg.directory_path
+      ? pkg.directory_path
+      : (externalDeliverables ? path.relative(sessionDir(id), deliverablesDir(id)) : null);
+    if (!packageDirectoryPath) {
       throw new ToolError(
         ERROR_CODES.NOT_FOUND,
-        "no package recorded in state — call vob_package_output before vob_finalize_iteration",
+        "no package or external deliverables recorded in state — call vob_package_output (or vob_import_deliverable) before vob_finalize_iteration",
       );
     }
 
@@ -51,7 +60,7 @@ function finalizeIteration(args) {
 
     return {
       iteration_version: version,
-      package_directory_path: pkg.directory_path,
+      package_directory_path: packageDirectoryPath,
       finalized_at: ts,
     };
   });
@@ -59,7 +68,7 @@ function finalizeIteration(args) {
 
 module.exports = Object.freeze({
   name: "vob_finalize_iteration",
-  description: "Mark the current iteration as complete (the user reached ITERATE phase with a packaged output). Records iteration.current_version and a 'iteration_finalized' history event. Idempotent — re-calling without an intervening back-edge is a no-op in terms of version numbering. Requires state.package to exist.",
+  description: "Mark the current iteration as complete (the user reached ITERATE phase with a packaged output). Records iteration.current_version and a 'iteration_finalized' history event. Idempotent — re-calling without an intervening back-edge is a no-op in terms of version numbering. Requires state.package OR externally-imported deliverables (vob_import_deliverable) to exist.",
   inputSchema: {
     type: "object",
     properties: {

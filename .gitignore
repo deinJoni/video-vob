@@ -8,3 +8,7 @@ node_modules/
 *.MP4
 *.mov
 *.MOV
+
+# Python bytecode (ASR driver compile artifacts)
+__pycache__/
+*.pyc
