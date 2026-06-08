@@ -16,7 +16,7 @@ node scripts/m5-walker.js [phase]    # end-to-end FSM walker; phase ∈ setup|pr
 ./install.sh <target_dir> [adapter]  # copy mcp/ + adapter config + .vob/ into a project (adapter defaults to claude-code)
 ```
 
-In an installed project, the user runs the `/vob <project_id> <source_path>` skill inside Claude Code to drive the pipeline.
+In an installed project, the user runs the `/vob` skill inside Claude Code to drive the pipeline. It accepts both the positional form (`/vob <project_id> <source_path>`) and a conversational form where the args are partial, omitted, or carry a freeform "rough idea" (the skill derives the project_id from the source basename and feeds the idea into INTENT) — see the skill's *Argument parsing* section.
 
 - **No test suite, no linter, no typecheck, no CI.** `scripts/m5-walker.js` is the de-facto integration test: it calls `TOOL_HANDLERS` directly (bypassing the adapter) against a real video to exercise every phase. Note it requires `ffmpeg` + `npx hyperframes` and a hardcoded `SOURCE` path, and its inline composition predates the scene-clip pre-cut change (it still references `source.mp4` with non-zero `data-media-start`) — treat it as a transport/FSM smoke test, not a model of current COMPOSE conventions.
 - **The MCP server has zero npm dependencies** — pure Node stdlib, CommonJS, Node ≥20. There is no `node_modules`. `package.json` declares no `dependencies`.

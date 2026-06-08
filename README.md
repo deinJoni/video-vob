@@ -28,8 +28,31 @@ If either dependency is missing when relevant, the MCP tools fail with a clear i
 ## Quickstart (Claude Code adapter)
 
 1. Clone this repo.
-2. In Claude Code, invoke `/vob <project_id> <source_path>`. The skill walks you through the pipeline.
+2. In Claude Code, invoke `/vob` (see **Invoking** below). The skill walks you through the pipeline.
 3. When ITERATE completes, your output is at `~/video-vob-sessions/<project_id>/package/`.
+
+### Invoking
+
+`/vob` goes from raw footage to a packaged short. Launch it two ways — both land in the same flow.
+
+**With arguments (positional):**
+
+```
+/vob <project_id> <source_path>
+```
+
+- `/vob leon-talk ~/footage/leon.mov` — names the project `leon-talk`, ingests one file.
+- `/vob promo ~/footage/shoot/` — a **folder**: every media file in it is ingested into one timeline (A-roll + B-roll). Re-running `/vob` later with another path adds to the same project.
+
+**Conversationally (args optional):**
+
+Drop the project id, the path, or both — the skill derives what it can and asks for the rest. You can also tack on a rough idea of what you want; it's carried into the INTENT step so you aren't re-interrogated.
+
+- `/vob ~/footage/leon.mov` — project id derived from the filename (→ `leon`).
+- `/vob ~/footage/leon.mov punchy 30s TikTok, open on the bbq reveal` — path + rough idea.
+- `/vob` — no args: the skill asks what footage to start from, then proceeds.
+
+A single `source_path` may be a **file or a directory**. Supported media: `.mp4 .mov .mkv .webm .m4v .avi` (video) and `.m4a .mp3 .wav .aac .flac .ogg .opus .wma` (audio — a bare voiceover is ingested as a narration spine).
 
 ## Architecture
 

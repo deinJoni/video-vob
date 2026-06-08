@@ -1,7 +1,7 @@
 ---
 name: vob
 disable-model-invocation: true
-argument-hint: "<project_id> <source_path>"
+argument-hint: "[project_id] [source_path] [rough idea] — all optional; or just /vob and describe it"
 allowed-tools:
   - mcp__vob__vob_init_project
   - mcp__vob__vob_doctor
@@ -58,13 +58,35 @@ Back-edges:
 - `RENDER → COMPOSE`, `RENDER → PLAN`
 - `ITERATE → COMPOSE`, `ITERATE → PLAN` (post-package revision)
 
-## Argument parsing
+## Argument parsing — accept args OR conversation
 
-`$ARGUMENTS` is `<project_id> <source_path>`. If either is missing, ask the user before doing anything.
+`/vob` supports two entry styles that land in the same flow: positional args, or conversational (partial/empty/freeform). Parse `$ARGUMENTS` into three things — a **project_id**, a **source_path**, and an optional **rough idea** (freeform creative direction). `$ARGUMENTS` may be empty, partial, classic-positional, or prose.
+
+**Classify the tokens / spans:**
+- **source_path** — the token that looks like a filesystem path: contains `/`, starts with `~`, is quoted, or ends in a supported media extension (`.mp4 .mov .mkv .webm .m4v .avi .m4a .mp3 .wav .aac .flac .ogg .opus .wma`). There is at most one. A directory is valid — INGEST enumerates every media file in it into one timeline.
+- **project_id** — a bare token (no path characters) that appears BEFORE the source_path. This is the classic positional slot. Optional.
+- **rough idea** — any remaining freeform prose, in any position. Optional.
+
+**Resolve the three:**
+
+1. **source_path.** If you found one, use it. If not, ASK: "What footage should I start from? Paste a file or folder path." Do not init the project until you have it. Don't stat the path yourself — pass your best guess to `vob_ingest_file`; if it returns `NOT_FOUND`, show the resolved path and re-ask.
+
+2. **project_id.** If a positional id was given, use it verbatim. Otherwise DERIVE one from the source basename: take the file/dir stem, lowercase it, replace any run of disallowed characters with `-`, trim leading/trailing `-`, and strip any `/`, `\`, or `..` (e.g. `~/Footage/Leon Talk.mov` → `leon-talk`). Tell the user the derived id and let them rename it before you proceed: "I'll call this project `leon-talk` — ok, or give it another name?" A bare "ok"/"go" is enough. Never silently pick an id the user hasn't seen.
+
+3. **rough idea.** If the user gave any freeform direction (inline, or in reply to the prompt in step 1), KEEP IT for INTENT — this is the "drop footage + a rough idea" entry point. Do not record it as state now (no intent key is set until INTENT). At INTENT, use it as the primary signal to PROPOSE the five required answers, so a user who already said "punchy 30s TikTok, open on the bbq reveal" is not re-interrogated. If no idea was given, INTENT infers from the source as it does today.
+
+**Examples (all valid):**
+- `/vob leon-talk ~/footage/leon.mov` — classic positional: id + path.
+- `/vob ~/footage/leon.mov` — path only; id derived → `leon`.
+- `/vob ~/footage/leon.mov punchy 30s TikTok, open on the bbq reveal` — path + rough idea carried to INTENT.
+- `/vob ~/clips/` — a folder; every media file ingested into one timeline.
+- `/vob` — no args: ask for the footage (step 1), then proceed.
+
+If anything is genuinely ambiguous (two path-like tokens, or you can't separate the id from the idea), ask one short clarifying question rather than guessing.
 
 ## Resume behavior
 
-Always start by calling `mcp__vob__vob_init_project { project_id }`. If it returns `STATE_CONFLICT`, the project already exists — call `mcp__vob__vob_read_state_summary { project_id }` and pick up at the reported phase using the section below that matches.
+Once you've resolved the `project_id` per **Argument parsing** (given, or derived-and-confirmed), call `mcp__vob__vob_init_project { project_id }` — this is your first MCP call. If it returns `STATE_CONFLICT`, the project already exists — call `mcp__vob__vob_read_state_summary { project_id }` and pick up at the reported phase using the section below that matches. (For a resume, the user may pass just the existing `project_id` with no path; you don't need a source_path until INGEST.)
 
 ## Preflight — run `vob_doctor` once at session start
 
@@ -132,9 +154,9 @@ INGEST is a header probe; INSPECT is the comprehension step. It extracts a thumb
 
 ## INTENT — propose from the source, confirm the gaps
 
-Intent is **infer-then-confirm**, not an interrogation. You have just classified the source at INSPECT (A-roll/B-roll/review pools, take groups, transcript, the visual notes you took from the sample thumbs). Use all of it to PROPOSE the five required answers, pre-record the ones you're confident about, and ask the human only what you genuinely can't infer — batched into as few messages as possible.
+Intent is **infer-then-confirm**, not an interrogation. You have just classified the source at INSPECT (A-roll/B-roll/review pools, take groups, transcript, the visual notes you took from the sample thumbs), and you may also have the **rough idea the user gave at invocation** (see Argument parsing). Use all of it to PROPOSE the five required answers, pre-record the ones you're confident about, and ask the human only what you genuinely can't infer — batched into as few messages as possible.
 
-1. **Propose.** From the classification + transcript + your visual read, draft a proposed value for each of the five required keys (`target_platform`, `target_duration`, `tone`, `key_moments`, `music_vo`). Examples of confident inference: a 6-spine + 14-B-roll workshop drop with speech → `key_moments` from the best-take A-roll spans; an audio-only `narration`-prior file → `music_vo: "voiceover"`. `target_platform` and exact `target_duration` are usually genuine unknowns unless the user already said.
+1. **Propose.** From the rough idea (if any) + the classification + transcript + your visual read, draft a proposed value for each of the five required keys (`target_platform`, `target_duration`, `tone`, `key_moments`, `music_vo`). The invocation idea is the strongest signal — if the user already stated platform/duration/tone/key moments there, pre-record those directly and don't re-ask them. Examples of confident inference: a 6-spine + 14-B-roll workshop drop with speech → `key_moments` from the best-take A-roll spans; an audio-only `narration`-prior file → `music_vo: "voiceover"`. `target_platform` and exact `target_duration` are usually genuine unknowns unless the user already said.
 
 2. **Pre-record the confident ones** with `mcp__vob__vob_record_intent_answer { project_id, key, value }` and tell the user what you inferred so they can correct it ("I'm assuming voiceover-driven, ~45s, energetic — say the word if any of that's wrong").
 
