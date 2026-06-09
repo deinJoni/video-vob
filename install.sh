@@ -26,9 +26,17 @@ fi
 
 mkdir -p "$TARGET"
 
+# The engine is adapter-agnostic and shared by every adapter.
 cp -R "$SCRIPT_DIR/mcp" "$TARGET/"
-cp -R "$SCRIPT_DIR/adapters/$ADAPTER/.claude" "$TARGET/"
-cp "$SCRIPT_DIR/adapters/$ADAPTER/.mcp.json" "$TARGET/"
+
+# Copy the adapter's config wholesale. Each adapter directory contains exactly
+# the files that CLI expects, in that CLI's own layout — claude-code ships
+# `.claude/` + `.mcp.json`; opencode ships `.opencode/` + `opencode.json`. The
+# trailing `/.` copies all contents (including dotfiles) into the target, so
+# install.sh never has to hardcode a single CLI's filenames.
+cp -R "$SCRIPT_DIR/adapters/$ADAPTER/." "$TARGET/"
+
+# Shared, adapter-independent runtime config.
 cp -R "$SCRIPT_DIR/.vob" "$TARGET/"
 cp -R "$SCRIPT_DIR/.vob-config" "$TARGET/"
 

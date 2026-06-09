@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 An agent-driven video pipeline. A human drops in raw footage and a rough idea; an FSM walks them through `INGEST → INSPECT → INTENT → PLAN → COMPOSE → PREVIEW → RENDER → PACKAGE → ITERATE`, producing a packaged short-form video. (`PLAN` is the merged former `BRIEF` + `STORYBOARD`: one gate that produces the brief and the storyboard together for a single human sign-off.) Rendering is done by [hyperframes](https://github.com/heygen-com/hyperframes) (invoked as `npx hyperframes`); probing/thumbnailing/packaging by `ffmpeg`/`ffprobe`.
 
-This repo is a *template* you install into a target project. `mcp/` is the engine; `adapters/<cli>/` binds it to a specific agentic CLI (only `claude-code` ships today).
+This repo is a *template* you install into a target project. `mcp/` is the engine; `adapters/<cli>/` binds it to a specific agentic CLI (`claude-code` and `opencode` ship today). Both bind the *same* engine in each CLI's idioms — see `adapters/README.md` for the contract mapping. OpenCode specifics: the orchestrator is a `vob` **primary agent** (`.opencode/agents/vob.md`) reached via a thin `/vob` **command**; the three subagents are `mode: subagent` files; MCP registration + permissions live in `opencode.json`; a session write-guard **plugin** blocks direct writes under `~/video-vob-sessions/`. Because OpenCode prefixes MCP tool names with the server key (`vob`), the engine's `vob_*` tools are referenced there as `vob_vob_*`.
 
 ## Commands
 
