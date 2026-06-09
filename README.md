@@ -67,6 +67,14 @@ Drop the project id, the path, or both — the skill derives what it can and ask
 - `/vob ~/footage/leon.mov punchy 30s TikTok, open on the bbq reveal` — path + rough idea.
 - `/vob` — no args: the skill asks what footage to start from, then proceeds.
 
+**Inherit a past project's style:**
+
+Add `--like <past_project>` (or just say "same style as <past_project>") to start a new project from a previous one's design. Its tone, platform, duration, and caption/visual treatment carry over; the new footage's content (key moments, cuts) is derived fresh. Handy for a recurring series or a consistent brand look — instead of re-describing the style each time, point at the project you liked.
+
+- `/vob promo ~/footage/new.mov --like bbq-talk` — new project `promo`, styled after the existing `bbq-talk`.
+
+The named project must already exist; the new project records the lineage (you'll see `Styled after: bbq-talk` in its package manifest/README). `--like` only applies when creating a **new** project — resuming an existing project keeps its original lineage (you can't change the inherited style retroactively).
+
 A single `source_path` may be a **file or a directory**. Supported media: `.mp4 .mov .mkv .webm .m4v .avi` (video) and `.m4a .mp3 .wav .aac .flac .ogg .opus .wma` (audio — a bare voiceover is ingested as a narration spine).
 
 ## Architecture

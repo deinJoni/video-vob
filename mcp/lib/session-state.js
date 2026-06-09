@@ -29,10 +29,10 @@ function nowIso() {
   return new Date().toISOString();
 }
 
-function buildInitialSessionState({ project_id, target }) {
+function buildInitialSessionState({ project_id, target, derived_from }) {
   const id = assertSafeProjectId(project_id);
   const ts = nowIso();
-  return {
+  const state = {
     project_id: id,
     target: target == null ? null : target,
     phase: "INGEST",
@@ -40,6 +40,16 @@ function buildInitialSessionState({ project_id, target }) {
     last_updated: ts,
     history: [],
   };
+  // Optional style lineage: when a project is started "--like" a prior one
+  // (vob_init_project { derived_from }), stamp the source project_id so the
+  // orchestrator can inherit its design — the source's intent answers, brief
+  // tone, and composition look. Advisory only: no gate reads it, and it rides
+  // through every transition because all state writes spread ...state. Omitted
+  // entirely when not deriving, to keep a baseline state.json lean.
+  if (derived_from != null) {
+    state.style = { derived_from, applied_at: ts };
+  }
+  return state;
 }
 
 function initProject(args) {
@@ -47,6 +57,21 @@ function initProject(args) {
   const target = args && args.target != null ? args.target : null;
   if (target !== null && (typeof target !== "object" || Array.isArray(target))) {
     throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, "target must be an object if provided");
+  }
+
+  // Optional "--like <project>" style inheritance. Validate the source project
+  // BEFORE creating the new one, so we never leave a new project pointing at a
+  // source that doesn't exist. We only check the source's state.json existence
+  // (a read); we never take the source's session lock.
+  const derivedFrom = args && args.derived_from != null ? String(args.derived_from).trim() : null;
+  if (derivedFrom) {
+    const sourceId = assertSafeProjectId(derivedFrom);
+    if (!fs.existsSync(statePath(sourceId))) {
+      throw new ToolError(
+        ERROR_CODES.NOT_FOUND,
+        `cannot derive from '${sourceId}': no such project (state.json not found). Use an existing project_id to inherit its style.`,
+      );
+    }
   }
 
   return withSessionLock(id, () => {
@@ -59,7 +84,7 @@ function initProject(args) {
         `state.json already exists for project ${id} (already initialized)`,
       );
     }
-    const state = buildInitialSessionState({ project_id: id, target });
+    const state = buildInitialSessionState({ project_id: id, target, derived_from: derivedFrom });
     writeFileAtomic(file, `${JSON.stringify(state, null, 2)}\n`);
     return {
       created: true,

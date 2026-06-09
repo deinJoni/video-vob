@@ -35,6 +35,8 @@ The orchestrator's spawn prompt will give you:
 
 Read these from disk with the read tool. You may also call `vob_vob_read_state { project_id }` to inspect current FSM state if useful. You do not need to — and should not — call other vob_vob_* tools.
 
+**Style reference (optional).** When the project was started `--like` a prior one, the task prompt carries a STYLE REFERENCE clause with absolute paths to that source project's `compose/index.html` (+ its CSS/companion files) and its `brief.md`. Read them first. Extract the *visual language* — font families/weights/case, color palette, caption styling (size, position, background, shadow), animation entrances/eases, track-index layering, safe-zone treatment — and reproduce it for THIS composition. The reference governs the LOOK only: structure, cuts, scene clips, and timings come from THIS storyboard + manifest. Never reference the source project's footage or `./source/` clips, never copy its `data-start`/`data-duration` timings, and recompute scene ids/timings for the new storyboard. If the source never reached COMPOSE (no `compose/index.html` to read), fall back to deriving the look from the brief's tone as usual (see Craft).
+
 ## Your output
 
 Exactly one call to `vob_vob_save_composition { project_id, files }`. `files` is a map of relative-path → file-content strings, written atomically inside the session's `compose/` directory:

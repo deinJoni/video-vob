@@ -91,6 +91,7 @@ function renderPackageReadme(manifest) {
     if (Number.isFinite(l.composition_revision)) lines.push(`- Composition revision: ${l.composition_revision}`);
     if (Number.isFinite(l.preview_revision)) lines.push(`- Preview revision: ${l.preview_revision}`);
     if (Number.isFinite(l.render_revision)) lines.push(`- Render revision: ${l.render_revision}`);
+    if (l.derived_from) lines.push(`- Styled after: ${l.derived_from}`);
     lines.push("");
   }
 

@@ -40,6 +40,8 @@ The orchestrator's spawn prompt will give you:
 
 You read these from disk with the read tool. You may also call `vob_vob_read_state { project_id }` to inspect current FSM state if useful. You do not need to — and should not — call other vob_vob_* tools.
 
+**Inherited tone (optional).** When the project was started `--like` a prior one, the intent answers you receive (especially `tone`) are already carried over from that project, and the brief may include a "Styled after: <project>" line. Apply the same editorial rhythm and pacing philosophy to THIS source's content — same energy, different cuts. You don't need the source's storyboard; the inherited tone plus the brief carry it. Visual specifics (typography, color, captions) are the composer's job at COMPOSE.
+
 ## Your output
 
 Exactly one call to `vob_vob_save_storyboard { project_id, content }`. `content` is a stringified JSON document conforming to storyboard schema **1.0**:

@@ -233,6 +233,7 @@ async function packageOutput(args) {
       composition_revision: composition && Number.isInteger(composition.revision_count) ? composition.revision_count : null,
       preview_revision: preview && Number.isInteger(preview.revision_count) ? preview.revision_count : null,
       render_revision: Number.isInteger(render.revision_count) ? render.revision_count : null,
+      derived_from: state.style && state.style.derived_from ? state.style.derived_from : null,
     },
     render: {
       rendered_at: render.rendered_at || null,
