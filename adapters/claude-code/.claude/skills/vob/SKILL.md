@@ -60,14 +60,15 @@ Back-edges:
 
 ## Argument parsing — accept args OR conversation
 
-`/vob` supports two entry styles that land in the same flow: positional args, or conversational (partial/empty/freeform). Parse `$ARGUMENTS` into three things — a **project_id**, a **source_path**, and an optional **rough idea** (freeform creative direction). `$ARGUMENTS` may be empty, partial, classic-positional, or prose.
+`/vob` supports two entry styles that land in the same flow: positional args, or conversational (partial/empty/freeform). Parse `$ARGUMENTS` into up to four things — a **project_id**, a **source_path**, an optional **rough idea** (freeform creative direction), and an optional **style source** (a prior project whose design to inherit). `$ARGUMENTS` may be empty, partial, classic-positional, or prose.
 
 **Classify the tokens / spans:**
 - **source_path** — the token that looks like a filesystem path: contains `/`, starts with `~`, is quoted, or ends in a supported media extension (`.mp4 .mov .mkv .webm .m4v .avi .m4a .mp3 .wav .aac .flac .ogg .opus .wma`). There is at most one. A directory is valid — INGEST enumerates every media file in it into one timeline.
 - **project_id** — a bare token (no path characters) that appears BEFORE the source_path. This is the classic positional slot. Optional.
 - **rough idea** — any remaining freeform prose, in any position. Optional.
+- **style source** — an optional `--like <project_id>` flag, or a conversational equivalent ("like leon-talk", "same style as bbq-talk", "in the style of <project>", "styled after <project>"). The token after `--like` (or named by the phrase) is an EXISTING prior project whose design you'll inherit. At most one. Optional. Don't confuse it with the **project_id** (the NEW project's name) or the **rough idea** (which describes the new *content*, not where to borrow *style*) — `--like` is unambiguous; for the conversational forms, if it's unclear which project is meant, ask.
 
-**Resolve the three:**
+**Resolve them:**
 
 1. **source_path.** If you found one, use it. If not, ASK: "What footage should I start from? Paste a file or folder path." Do not init the project until you have it. Don't stat the path yourself — pass your best guess to `vob_ingest_file`; if it returns `NOT_FOUND`, show the resolved path and re-ask.
 
@@ -75,18 +76,22 @@ Back-edges:
 
 3. **rough idea.** If the user gave any freeform direction (inline, or in reply to the prompt in step 1), KEEP IT for INTENT — this is the "drop footage + a rough idea" entry point. Do not record it as state now (no intent key is set until INTENT). At INTENT, use it as the primary signal to PROPOSE the five required answers, so a user who already said "punchy 30s TikTok, open on the bbq reveal" is not re-interrogated. If no idea was given, INTENT infers from the source as it does today.
 
+4. **style source.** If a `--like <project>` flag or a "same style as <project>" phrase was given, hold the named project_id aside as your `style_source`. You pass it to `vob_init_project` as `derived_from` (see **Resume behavior**), which makes the new project inherit that project's design — its intent answers, brief tone, and composition look. If none was given, this is a normal fresh project.
+
 **Examples (all valid):**
 - `/vob leon-talk ~/footage/leon.mov` — classic positional: id + path.
 - `/vob ~/footage/leon.mov` — path only; id derived → `leon`.
 - `/vob ~/footage/leon.mov punchy 30s TikTok, open on the bbq reveal` — path + rough idea carried to INTENT.
 - `/vob ~/clips/` — a folder; every media file ingested into one timeline.
+- `/vob promo ~/footage/new.mov --like bbq-talk` — new project `promo`, inheriting the design of the existing `bbq-talk`.
+- `/vob ~/footage/new.mov same style as bbq-talk, punchy 20s` — style source + rough idea (the idea is the new content; the style is borrowed).
 - `/vob` — no args: ask for the footage (step 1), then proceed.
 
 If anything is genuinely ambiguous (two path-like tokens, or you can't separate the id from the idea), ask one short clarifying question rather than guessing.
 
 ## Resume behavior
 
-Once you've resolved the `project_id` per **Argument parsing** (given, or derived-and-confirmed), call `mcp__vob__vob_init_project { project_id }` — this is your first MCP call. If it returns `STATE_CONFLICT`, the project already exists — call `mcp__vob__vob_read_state_summary { project_id }` and pick up at the reported phase using the section below that matches. (For a resume, the user may pass just the existing `project_id` with no path; you don't need a source_path until INGEST.)
+Once you've resolved the `project_id` per **Argument parsing** (given, or derived-and-confirmed) and any `style_source`, call `mcp__vob__vob_init_project { project_id, derived_from: <style_source> }` (omit `derived_from` when no style source was given) — this is your first MCP call. A `NOT_FOUND` error means the named `style_source` project doesn't exist — tell the user, optionally list what's there (`ls ~/video-vob-sessions/`), and re-run with a corrected name or without `derived_from`. If it returns `STATE_CONFLICT`, the project already exists — call `mcp__vob__vob_read_state_summary { project_id }` and pick up at the reported phase using the section below that matches. (`--like` only takes effect when creating a NEW project; on a resume the original style lineage stands. For a resume, the user may pass just the existing `project_id` with no path; you don't need a source_path until INGEST.)
 
 ## Preflight — run `vob_doctor` once at session start
 
@@ -155,6 +160,8 @@ INGEST is a header probe; INSPECT is the comprehension step. It extracts a thumb
 ## INTENT — propose from the source, confirm the gaps
 
 Intent is **infer-then-confirm**, not an interrogation. You have just classified the source at INSPECT (A-roll/B-roll/review pools, take groups, transcript, the visual notes you took from the sample thumbs), and you may also have the **rough idea the user gave at invocation** (see Argument parsing). Use all of it to PROPOSE the five required answers, pre-record the ones you're confident about, and ask the human only what you genuinely can't infer — batched into as few messages as possible.
+
+**Inherited style (when `--like` was used).** If `state.style.derived_from` is set, that prior project is your strongest signal for the *stylistic* keys. Before you propose, read its choices: `mcp__vob__vob_read_state { project_id: <state.style.derived_from> }` (a cross-project read) for its `intent.answers`, and `Read` its brief at `~/video-vob-sessions/<derived_from>/brief.md`. Pre-record `tone`, `target_platform`, `target_duration`, `music_vo`, and — when this source's audio makes them applicable (`audio_treatment` only when audio is present; `captions_style` only when `audio_treatment` is `keep_audio` or `transcribe_captions`) — `audio_treatment` and `captions_style`, carried from the source. Do NOT inherit `key_moments`: those are specific to THIS footage — derive them fresh from this source's classification/transcript/your visual read. Tell the user what you carried over and that all of it is overridable (e.g. "inheriting bbq-talk's look: energetic, TikTok, ~20s, bold-caps captions — key moments are fresh from this footage; say the word to change any inherited choice"). If the source project has since been deleted (the read fails), tell the user the styled-after project is no longer available, then fall back to inferring from this source as usual — the lineage stays stamped in `state.style` regardless.
 
 1. **Propose.** From the rough idea (if any) + the classification + transcript + your visual read, draft a proposed value for each of the five required keys (`target_platform`, `target_duration`, `tone`, `key_moments`, `music_vo`). The invocation idea is the strongest signal — if the user already stated platform/duration/tone/key moments there, pre-record those directly and don't re-ask them. Examples of confident inference: a 6-spine + 14-B-roll workshop drop with speech → `key_moments` from the best-take A-roll spans; an audio-only `narration`-prior file → `music_vo: "voiceover"`. `target_platform` and exact `target_duration` are usually genuine unknowns unless the user already said.
 
@@ -232,6 +239,7 @@ PLAN is the single planning gate (the former BRIEF and STORYBOARD phases, merged
    - Platform: <answers.target_platform>
    - Duration: <answers.target_duration>
    - Source: <manifest.file_count> file(s), <total source duration>s, <primary aspect ratio>
+   - Styled after: <state.style.derived_from>   (include ONLY when state.style is set — the inherited-design lineage)
 
    ## Hook
    <one or two sentences for the opening>
@@ -260,7 +268,7 @@ PLAN is the single planning gate (the former BRIEF and STORYBOARD phases, merged
    ```
    Task(subagent_type: "storyboarder",
         description: "Storyboard scene plan",
-        prompt: "Project: <project_id>. Manifest: <state.manifest.path>. Brief: <state.brief.path>. Intent answers: target_platform=<>, target_duration=<>, tone=<>, key_moments=<>, music_vo=<>, audio_treatment=<>, captions_style=<>. Classification pools: aroll=<state.inspect.classification.aroll_pool_path or 'none'>, broll=<state.inspect.classification.broll_index_path or 'none'>, segments=<state.inspect.segments_path or 'none'>. Inspect artifacts: thumbs_dir=<state.inspect.thumbs_dir>, thumb_interval_seconds=<state.inspect.thumb_interval_seconds>, thumb_count=<state.inspect.thumb_count>, transcript=<state.inspect.transcript_path or 'none'>. Thumbnails are at <thumbs_dir>/file_<manifest_file_index>/frame_NNNN.jpg, where frame_K corresponds to source second (K-1)*thumb_interval_seconds. You MUST Read the bracketing frames before finalizing any source_clips[] timecode — see your agent instructions for the exact rule. <If revising: 'Prior storyboard at <state.storyboard.artifact_path>. Revision notes: <user notes>.'> Call mcp__vob__vob_save_storyboard once with the JSON. Do not call any other vob_* tool.")
+        prompt: "Project: <project_id>. Manifest: <state.manifest.path>. Brief: <state.brief.path>. Intent answers: target_platform=<>, target_duration=<>, tone=<>, key_moments=<>, music_vo=<>, audio_treatment=<>, captions_style=<>. Classification pools: aroll=<state.inspect.classification.aroll_pool_path or 'none'>, broll=<state.inspect.classification.broll_index_path or 'none'>, segments=<state.inspect.segments_path or 'none'>. Inspect artifacts: thumbs_dir=<state.inspect.thumbs_dir>, thumb_interval_seconds=<state.inspect.thumb_interval_seconds>, thumb_count=<state.inspect.thumb_count>, transcript=<state.inspect.transcript_path or 'none'>. Thumbnails are at <thumbs_dir>/file_<manifest_file_index>/frame_NNNN.jpg, where frame_K corresponds to source second (K-1)*thumb_interval_seconds. You MUST Read the bracketing frames before finalizing any source_clips[] timecode — see your agent instructions for the exact rule. <If styled-after (state.style.derived_from set): 'This cut inherits its look from <state.style.derived_from> — its brief is at ~/video-vob-sessions/<derived_from>/brief.md. Apply the same editorial rhythm/pacing to THIS source content; do not copy its cuts or scene structure.'> <If revising: 'Prior storyboard at <state.storyboard.artifact_path>. Revision notes: <user notes>.'> Call mcp__vob__vob_save_storyboard once with the JSON. Do not call any other vob_* tool.")
    ```
 
 6. If the storyboarder errors (e.g., `INVALID_ARGUMENTS` from `vob_save_storyboard` schema validation), report the error and re-invoke the storyboarder once with the validator's error list appended to the spawn prompt. If it fails again, surface the blocker and stop — do not fabricate a storyboard yourself.
@@ -293,7 +301,7 @@ The composition is hyperframes-compatible HTML/CSS/JS that the renderer can turn
    ```
    Task(subagent_type: "composer",
         description: "Hyperframes composition",
-        prompt: "Project: <project_id>. Session dir (hyperframes project root): ~/video-vob-sessions/<project_id>/. Storyboard JSON: <state.storyboard.artifact_path>. Brief: <state.brief.path>. Manifest: <state.manifest.path>. Inspect transcript (for caption timing if needed): <state.inspect.transcript_path or 'none'>. <If revising: 'Prior composition files (under compose/): <state.composition.files[]>. Revision notes: <user notes or lint findings>. Lint report (if rejecting due to errors): <state.composition.lint_report_path>.'> Produce hyperframes-compatible composition files. Source clips in your HTML MUST reference scene clips by `./source/<scene_id>-<clip_index>.mp4` with `data-media-start=\"0\"` — MCP pre-cut and symlinked one clip per storyboard `source_clips[]` entry on entry to COMPOSE. Original-source basename symlinks exist as a fallback but should not be used for storyboard scenes (they re-introduce the HEVC + seek-timeout failure mode). Call mcp__vob__vob_save_composition exactly once with the file map, then return. Do not call any other vob_* tool. Do not run hyperframes lint or render — the orchestrator will.")
+        prompt: "Project: <project_id>. Session dir (hyperframes project root): ~/video-vob-sessions/<project_id>/. Storyboard JSON: <state.storyboard.artifact_path>. Brief: <state.brief.path>. Manifest: <state.manifest.path>. Inspect transcript (for caption timing if needed): <state.inspect.transcript_path or 'none'>. <If styled-after (state.style.derived_from set): 'STYLE REFERENCE — mirror the LOOK of a prior project, not its content. Source composition: ~/video-vob-sessions/<derived_from>/compose/index.html (+ its CSS/companion files); source brief: ~/video-vob-sessions/<derived_from>/brief.md. Read only those files from the source (its compose/ files + brief.md, nothing else) and reproduce the same visual language — typography, color palette, caption styling, animation feel, layout/safe-zone treatment — applied to THIS storyboard. Do NOT copy its clips, timecodes, or scene structure. If that project never reached COMPOSE (no compose/index.html), inherit only the brief tone and derive the look from tone as usual.'> <If revising: 'Prior composition files (under compose/): <state.composition.files[]>. Revision notes: <user notes or lint findings>. Lint report (if rejecting due to errors): <state.composition.lint_report_path>.'> Produce hyperframes-compatible composition files. Source clips in your HTML MUST reference scene clips by `./source/<scene_id>-<clip_index>.mp4` with `data-media-start=\"0\"` — MCP pre-cut and symlinked one clip per storyboard `source_clips[]` entry on entry to COMPOSE. Original-source basename symlinks exist as a fallback but should not be used for storyboard scenes (they re-introduce the HEVC + seek-timeout failure mode). Call mcp__vob__vob_save_composition exactly once with the file map, then return. Do not call any other vob_* tool. Do not run hyperframes lint or render — the orchestrator will.")
    ```
 
 4. After the subagent returns, re-read state with `mcp__vob__vob_read_state` and confirm `state.composition.files` is populated. Then call `mcp__vob__vob_lint_composition { project_id }`. Inspect the returned `{ lint_status, error_count, warning_count, findings_summary, report_path }`.
