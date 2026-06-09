@@ -1,0 +1,17 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "vob": {
+      "type": "local",
+      "command": ["node", "./mcp/server.js"],
+      "enabled": true,
+      "timeout": 1800000
+    }
+  },
+  "permission": {
+    "external_directory": {
+      "~/video-vob-sessions/**": "allow"
+    }
+  },
+  "instructions": [".opencode/rules/vob-editing.md"]
+}

@@ -1,6 +1,6 @@
 # video-vob
 
-An open-source, agent-driven video pipeline. Users drop raw video plus a rough idea of what they want, and an interactive FSM walks them through ingest → inspect → intent → plan → composition → preview → render → package → iterate, producing a finished short-form video. The render engine is [hyperframes](https://github.com/heygen-com/hyperframes) (Apache 2.0). The orchestrator runs inside an agentic CLI (Claude Code today; Kimi-CLI, Codex CLI, and Cursor planned) via a thin CLI-specific adapter on top of a shared MCP server.
+An open-source, agent-driven video pipeline. Users drop raw video plus a rough idea of what they want, and an interactive FSM walks them through ingest → inspect → intent → plan → composition → preview → render → package → iterate, producing a finished short-form video. The render engine is [hyperframes](https://github.com/heygen-com/hyperframes) (Apache 2.0). The orchestrator runs inside an agentic CLI (Claude Code and OpenCode today; Kimi-CLI, Codex CLI, and Cursor planned) via a thin CLI-specific adapter on top of a shared MCP server.
 
 **Version 1.0.** The full pipeline is implemented end-to-end:
 
@@ -25,11 +25,26 @@ An open-source, agent-driven video pipeline. Users drop raw video plus a rough i
 
 If either dependency is missing when relevant, the MCP tools fail with a clear install hint pointing back here.
 
-## Quickstart (Claude Code adapter)
+## Install
 
-1. Clone this repo.
-2. In Claude Code, invoke `/vob` (see **Invoking** below). The skill walks you through the pipeline.
+video-vob is a *template* you install into a target project with `install.sh`. It copies the shared `mcp/` engine plus your chosen adapter's CLI config into the target:
+
+```bash
+./install.sh <target_dir> [adapter]   # adapter defaults to claude-code
+```
+
+- `./install.sh ~/my-video-project` — Claude Code adapter (drops `.claude/` + `.mcp.json`).
+- `./install.sh ~/my-video-project opencode` — OpenCode adapter (drops `.opencode/` + `opencode.json`).
+
+Run `./install.sh` with no arguments to list the available adapters. Then `cd <target_dir>` and launch your CLI.
+
+## Quickstart
+
+1. Install into a target directory (above), or work directly in this repo.
+2. Launch your CLI and invoke `/vob` (see **Invoking** below). The orchestrator walks you through the pipeline.
 3. When ITERATE completes, your output is at `~/video-vob-sessions/<project_id>/package/`.
+
+**Claude Code:** `/vob` is a skill. **OpenCode:** `/vob` is a command that runs the `vob` primary agent — you can also just select the `vob` agent (Tab) and describe your footage. Both share the identical pipeline and the same MCP engine.
 
 ### Invoking
 
@@ -57,8 +72,13 @@ A single `source_path` may be a **file or a directory**. Supported media: `.mp4 
 ## Architecture
 
 - **`mcp/`** — shared MCP server. FSM state, gates, transitions, tool registry, runners for hyperframes and ffmpeg. Adapter-agnostic.
-- **`adapters/claude-code/`** — Claude Code-specific skill, subagents, and settings. Other CLIs will get their own adapter directory.
+- **`adapters/claude-code/`** — Claude Code adapter: a `/vob` skill (orchestrator), three subagents, settings, and hooks.
+- **`adapters/opencode/`** — OpenCode adapter: a `vob` primary agent (orchestrator), three `mode: subagent` workers, a `/vob` command, `opencode.json` (MCP registration + permissions), and a session write-guard plugin.
+
+Both adapters bind the *same* engine; the MCP server is the single source of truth for the FSM. Adapters never duplicate engine logic — see [`adapters/README.md`](./adapters/README.md).
 
 Session state lives at `~/video-vob-sessions/<project_id>/`. The MCP server owns `state.json` and all derived artifacts; never edit them by hand.
+
+> **OpenCode + long renders:** OpenCode caps how long a single MCP tool call may run, and that ceiling can be shorter than a full render (≤30 min). If a render is killed by OpenCode (not by hyperframes) before finishing, it's still progressing in the log — point at the `stderr_log_path`, retry, or record an out-of-band-completed render with `vob_import_deliverable`. `opencode.json` sets a high `mcp.vob.timeout`, but some OpenCode versions cap tool execution separately.
 
 Licensed under [Apache 2.0](./LICENSE).

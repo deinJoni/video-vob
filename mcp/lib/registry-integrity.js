@@ -3,10 +3,8 @@
 const fs = require("fs");
 const path = require("path");
 
-// Parse the YAML frontmatter `name:` field from an agent definition file.
-// Lightweight scanner — avoids pulling a YAML dep for one field. Returns
-// the name string or null if not found.
-function parseAgentName(filePath) {
+// Read the raw YAML frontmatter block from a markdown agent file, or null.
+function readFrontmatter(filePath) {
   let raw;
   try {
     raw = fs.readFileSync(filePath, "utf8");
@@ -16,9 +14,16 @@ function parseAgentName(filePath) {
   if (!raw.startsWith("---")) return null;
   const closingIdx = raw.indexOf("\n---", 3);
   if (closingIdx === -1) return null;
-  const fm = raw.slice(3, closingIdx);
+  return raw.slice(3, closingIdx);
+}
+
+// Pull a single scalar `field:` value out of a frontmatter block. Lightweight
+// scanner — avoids pulling a YAML dep for one field.
+function frontmatterField(fm, field) {
+  if (!fm) return null;
+  const re = new RegExp(`^\\s*${field}\\s*:\\s*(\\S.*?)\\s*$`);
   for (const line of fm.split("\n")) {
-    const m = line.match(/^\s*name\s*:\s*(\S.*?)\s*$/);
+    const m = line.match(re);
     if (m) {
       let value = m[1];
       if ((value.startsWith("\"") && value.endsWith("\"")) || (value.startsWith("'") && value.endsWith("'"))) {
@@ -28,6 +33,22 @@ function parseAgentName(filePath) {
     }
   }
   return null;
+}
+
+// The agent's role-bundle name. Claude Code agent files declare it as a `name:`
+// frontmatter field; OpenCode agent files have no `name:` (the agent name is the
+// FILENAME), so we fall back to the file stem. Both adapters resolve to the same
+// bundle identifier (e.g. "storyboarder").
+function parseAgentName(filePath) {
+  const name = frontmatterField(readFrontmatter(filePath), "name");
+  if (name) return name;
+  return path.basename(filePath, ".md");
+}
+
+// The agent's mode (OpenCode: primary | subagent | all). Claude Code agent files
+// omit it — they are all subagents; the orchestrator is a skill with no file.
+function parseAgentMode(filePath) {
+  return frontmatterField(readFrontmatter(filePath), "mode");
 }
 
 function listAgentFiles(agentsDir) {
@@ -58,23 +79,17 @@ function verifyAgentRegistrations({ agentsDir, validRoleBundles }) {
   }
   const files = listAgentFiles(agentsDir);
   const missingRegistrations = [];
-  const unnamedFiles = [];
   for (const file of files) {
+    // Primary agents are orchestrators, not subagents: they hold the
+    // conversation and call subagents, so they are not role-bundle workers and
+    // need no bundle. Claude Code has no orchestrator file (it's a skill);
+    // OpenCode's orchestrator is a `mode: primary` agent file. Skip both.
+    if (parseAgentMode(file) === "primary") continue;
     const name = parseAgentName(file);
-    if (!name) {
-      unnamedFiles.push(file);
-      continue;
-    }
-    // The orchestrator does not need a file; only subagents do. Skip the
-    // "orchestrator" entry — there's no orchestrator.md file by design.
+    if (name === "orchestrator") continue;
     if (!validRoleBundles.includes(name)) {
       missingRegistrations.push({ file, name });
     }
-  }
-  if (unnamedFiles.length > 0) {
-    throw new Error(
-      `agent definition file(s) missing a 'name:' frontmatter field: ${unnamedFiles.join(", ")}`,
-    );
   }
   if (missingRegistrations.length > 0) {
     const lines = missingRegistrations.map(
