@@ -150,12 +150,22 @@ A media `src` uses an absolute filesystem path. Make it relative (`./source/...`
 paths break the hyperframes file server.
 
 ### `vob/master_duration_short` (error)
-The root `data-duration` is shorter than the storyboard scene-duration sum. Set it ≥ the scene
-sum or the timeline tail is silently truncated.
+The root `data-duration` is shorter than the storyboard scene-duration sum (in fan-out: the
+ACTIVE short's scene sum). Set it ≥ the sum or the timeline tail is silently truncated.
 
 ### `vob/scene_missing_clip` (error) / `vob/overlay_scene_missing_clip` (warning)
-Every storyboard scene needs ≥1 clip element referencing `./source/<scene_id>-*.mp4`. Zero-video
-overlay compositions get the warning form only — confirm the overlay-over-base path is intended.
+Every storyboard scene (in fan-out: every scene of the ACTIVE short) needs ≥1 clip element
+referencing `./source/<scene_id>-*.mp4`. Zero-video overlay compositions get the warning form
+only — confirm the overlay-over-base path is intended.
+
+### `vob/cross_short_clip_ref` (warning)
+Fan-out: a `./source/` ref resolves to ANOTHER short's clip. A fan-out composition implements
+exactly one short — use only the active short's `<scene_id>-<clip_index>.mp4` names (the
+rejection/expected lists carry them).
+
+### `vob/active_short_unresolved` (warning)
+Fan-out storyboard but the composition's `short_id` matched no short (or was absent) — the scoped
+storyboard checks were skipped. Re-save the composition with the correct `short_id`.
 
 ### `vob/video_count_exceeds_hard_cap` (error, >8) / `vob/video_count_over_budget` (warning, >6)
 Merge or remove `<video>` elements to ≤6 — concatenate the A-roll spine into one clip rather

@@ -9,6 +9,13 @@ can ship as-is.
 |---|---|---|
 | 1–2 | `vob_package_output` result | `directory_path, final_mp4_path, thumbnail_path, manifest_path, readme_path, packaged_at, iteration_version` |
 
+> **Fan-out (the storyboard has `shorts[]`): skip steps 1–3.** The deliverables set IS the
+> package — `vob_package_output` refuses on a fan-out project. Instead: read
+> `deliverables/manifest.json` (regenerated on every import) and present the set — one line per
+> short: title, duration, loudnorm applied/skipped, path under `deliverables/`. Then go to step 4
+> (the PACKAGE → ITERATE gate passes on the recorded set; it blocks with
+> `shorts_missing_deliverables` if any short lacks a record).
+
 1. Call `vob_vob_package_output { project_id }`. On failure (ffmpeg missing, thumbnail
    extraction failed, render file missing) it throws — show the error and ask whether to retry,
    revise, or abort.
@@ -35,22 +42,30 @@ can ship as-is.
 
 ## Escape hatch — recording externally-built finals (`vob_import_deliverable`)
 
-The single-timeline FSM produces ONE assemble-edit final. Some jobs don't fit that shape — most
-commonly a **clip fan-out** (one long source → N independent vertical shorts) or a cut whose
-final was built outside vob (e.g. an overlay composited over an ffmpeg-cut base because the
-hyperframes `<video>` render path was too fragile on this host, or a render that ran to
-completion out-of-band after OpenCode timed out the in-FSM render call). For those, do not let
+(The PLANNED multi-short case is first-class now — see the **Fan-out** sections of the spine and
+the COMPOSE/RENDER phase files; it uses this same tool with `short_id` per record. THIS section
+is for work whose heavy lifting genuinely ran outside the FSM.)
+
+Some jobs don't fit the single-timeline shape — most commonly a cut whose final was built outside
+vob (e.g. an overlay composited over an ffmpeg-cut base because the hyperframes `<video>` render
+path was too fragile on this host), shorts produced by a bespoke pipeline, or a render that ran
+to completion out-of-band after OpenCode timed out the in-FSM render call. For those, do not let
 `state.json` lie that the project is stuck at INGEST/INSPECT while finished clips exist on disk.
 Record reality:
 
+- **Scratch space:** bespoke ffmpeg/hyperframes work (cut/concat/speed-ramp bases, transparent
+  overlay renders) is sanctioned ONLY under `~/video-vob-sessions/<project_id>/work/` — the
+  session-guard plugin allows exactly that subtree (spine rule 8). Get the user's go-ahead before
+  leaving the rails, and record every resulting final immediately below.
 - **Register finished files:** `vob_vob_import_deliverable { project_id, deliverables:
-  [{ path, title?, notes? }, ...] }`. Each file is copied into the session's `deliverables/`
-  dir, ffprobed, and recorded in `state.deliverables[]`; phase advances to PACKAGE (pass
-  `set_phase:false` to record without changing phase). Use this for the fan-out case — call it
-  once with all N shorts (give each a distinct `title` so they don't stem-collide), or
-  incrementally as they're produced. After import you can transition PACKAGE → ITERATE and call
-  `vob_finalize_iteration` to mark the project done — the ITERATE gate accepts external
-  deliverables in lieu of a single-timeline package.
+  [{ path, title?, notes?, short_id? }, ...], normalize?: true }`. Each file is copied into the
+  session's `deliverables/` dir, optionally loudness-normalized to −14 LUFS (`normalize:true` —
+  the same pass `vob_package_output` runs; skip reasons are recorded per file), ffprobed, and
+  recorded in `state.deliverables[]`; `deliverables/manifest.json` is regenerated as the set's
+  manifest. Phase advances to PACKAGE (pass `set_phase:false` to record without changing phase).
+  Give each file a distinct `title` so they don't stem-collide. After import you can transition
+  PACKAGE → ITERATE and call `vob_finalize_iteration` to mark the project done — the ITERATE
+  gate accepts external deliverables in lieu of a single-timeline package.
 - **Overlay-over-base (first-class):** `vob_vob_import_deliverable { project_id,
   composite: { base, overlay, audio?, scale_to_base?, title?, notes? } }`. This composites a transparent
   `overlay` over an opaque `base` via ffmpeg (muxing the base audio by default) and records the

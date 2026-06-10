@@ -9,6 +9,7 @@ const { withSessionLock, writeFileAtomic } = require("../storage.js");
 const { readSessionStateStrict } = require("../session-state.js");
 const { runHyperframesWithRetry, buildSnapshotArgv } = require("../hyperframes-runner.js");
 const { stderrTail } = require("../spawn-with-shutdown.js");
+const { findTimeline } = require("../storyboard-schema.js");
 
 const SNAPSHOT_TIMEOUT_MS = 5 * 60 * 1000;
 const MAX_FRAMES = 16;
@@ -23,17 +24,21 @@ function nowIso() {
 // (either scene may render); 0.5s inside shows the scene's settled state
 // including entrance-animated captions, and the hook frame lands at ≈0.5s —
 // the cold-open moment the self-QC checklist inspects.
-function storyboardDefaultTimecodes(projectId) {
+function storyboardDefaultTimecodes(projectId, shortId) {
   let sb = null;
   try {
     sb = JSON.parse(fs.readFileSync(storyboardPath(projectId), "utf8"));
   } catch {
     return null;
   }
-  if (!sb || !Array.isArray(sb.scenes) || sb.scenes.length === 0) return null;
+  // Fan-out: the composition implements ONE short — default frames come from
+  // that short's scenes (the singleton form resolves via findTimeline too).
+  const timeline = findTimeline(sb, shortId);
+  const scenes = timeline ? timeline.scenes : null;
+  if (!Array.isArray(scenes) || scenes.length === 0) return null;
   const out = [];
   let cursor = 0;
-  for (const scene of sb.scenes) {
+  for (const scene of scenes) {
     const d = Number(scene && scene.target_duration_seconds);
     if (!Number.isFinite(d) || d <= 0) return null; // malformed -> no defaults
     out.push(Math.round((cursor + Math.min(0.5, d / 2)) * 1000) / 1000);
@@ -84,7 +89,10 @@ async function snapshotKeyframes(args) {
     }
     timecodeSource = "explicit";
   } else {
-    const defaults = storyboardDefaultTimecodes(id);
+    const activeShortId = typeof composition.short_id === "string" && composition.short_id !== ""
+      ? composition.short_id
+      : null;
+    const defaults = storyboardDefaultTimecodes(id, activeShortId);
     if (defaults && defaults.length > 0) {
       timecodes = defaults;
       timecodeSource = "storyboard_scenes";

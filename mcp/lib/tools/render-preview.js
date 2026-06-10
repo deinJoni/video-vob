@@ -10,6 +10,7 @@ const { readSessionStateStrict } = require("../session-state.js");
 const { runHyperframesWithRetry, buildRenderArgv, renderTimeoutMs } = require("../hyperframes-runner.js");
 const { stderrTail } = require("../spawn-with-shutdown.js");
 const { verifyRenderedMp4 } = require("../render-verify.js");
+const { expectedTimelineDurationSeconds, findTimeline } = require("../storyboard-schema.js");
 
 function nowIso() {
   return new Date().toISOString();
@@ -53,11 +54,24 @@ async function renderPreview(args) {
   const rendersRoot = rendersDir(id);
   fs.mkdirSync(rendersRoot, { recursive: true });
 
-  // Timeout scales with the storyboard total (floored at the fixed 15-min cap);
-  // sbTotal also feeds the post-render duration-drift verification.
+  // Timeout scales with the ACTIVE timeline's total (the composition's short
+  // in fan-out; the document total otherwise), floored at the fixed 15-min
+  // cap. Drift verification only gets an expectation when the active timeline
+  // actually RESOLVED — the longest-short timeout fallback must never become a
+  // false silent-truncation flag.
   let sbTotal = null;
+  let expectedDurationSeconds = null;
   try {
-    sbTotal = Number(JSON.parse(fs.readFileSync(storyboardPath(id), "utf8")).total_target_duration_seconds) || null;
+    const sb = JSON.parse(fs.readFileSync(storyboardPath(id), "utf8"));
+    const shortId = typeof composition.short_id === "string" && composition.short_id !== ""
+      ? composition.short_id
+      : null;
+    sbTotal = expectedTimelineDurationSeconds(sb, shortId);
+    const timeline = findTimeline(sb, shortId);
+    expectedDurationSeconds = timeline
+      && Number.isFinite(timeline.total_target_duration_seconds) && timeline.total_target_duration_seconds > 0
+      ? timeline.total_target_duration_seconds
+      : null;
   } catch {}
   const timeoutMs = renderTimeoutMs("preview", sbTotal);
 
@@ -96,7 +110,7 @@ async function renderPreview(args) {
 
   const renderDurationSeconds = (Date.now() - start) / 1000;
   // Silent-truncation detector: ffprobe the MP4 vs the storyboard expectation.
-  const verification = verifyRenderedMp4({ mp4Path: outPath, expectedDurationSeconds: sbTotal });
+  const verification = verifyRenderedMp4({ mp4Path: outPath, expectedDurationSeconds });
   const ts = nowIso();
 
   return withSessionLock(id, () => {

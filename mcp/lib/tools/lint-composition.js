@@ -173,12 +173,19 @@ async function lintComposition(args) {
     storyboard = null;
   }
   if (storyboard && (typeof storyboard !== "object" || Array.isArray(storyboard))) storyboard = null;
+  // Fan-out: scope the QC re-run to the short this composition implements
+  // (stamped at save time) — otherwise the gate-feeding lint would silently
+  // lose scene-coverage/master-duration on a shorts[] storyboard.
+  const activeShortId = typeof composition.short_id === "string" && composition.short_id !== ""
+    ? composition.short_id
+    : null;
   const qc = runCompositionQc({
     files: qcFiles,
     storyboard,
     sourceLinks: resolveSourceLinks(id),
     sceneClipLinks: resolveSceneClipLinks(id),
     checkTargetsOnDisk: true,
+    activeShortId,
   });
 
   // Dedupe: vob QC deliberately pre-empts a few hyperframes rules — drop the

@@ -35,6 +35,12 @@ moment.
    section is BINDING for the composer — fill it from the tone table, adjusted only where the
    user's `captions_style` / rough idea / `--like` source brief say otherwise.
 
+   **Fan-out:** when the job is N shorts, the brief's Target section MUST name the deliverable
+   count and per-short duration (e.g. `- Deliverables: 3 shorts, 20–35s each`) — the brief is the
+   DURABLE record of the fan-out ask (the summary's `target_duration_range` carries the duration
+   shape, but N lives only here). On a resume into PLAN before a storyboard exists, derive the
+   `fan_out` spawn lines from the brief.
+
    **Hook guidance:** Pick the verbal hook from `digest_path`'s `hook_candidates[]` (read the
    digest if it isn't in context). Prefer a mid-action, high-energy line that makes a claim or
    asks a question; NEVER a greeting or wind-up. If the inspector tagged `hook_candidate`
@@ -53,6 +59,9 @@ moment.
 5. Invoke the storyboarder. Spawn prompt is DATA-ONLY (no behavioral clauses — the agent .md owns
    behavior; if you are tempted to add an instruction, it belongs in the agent file). Fields with
    no value are passed as the literal string `none`; values come from the read-sites table.
+   **Fan-out:** when the job is N shorts from this source (the user asked for multiple, and/or
+   `target_duration_range.per_deliverable` is set in the summary), add the two `fan_out` lines —
+   the storyboarder then emits the schema-1.1 `shorts[]` form.
    Invoke the `storyboarder` subagent with the `task` tool, passing:
    ```
    DATA
@@ -62,6 +71,8 @@ moment.
    intent.target_platform: <canonical>            (raw: "<raw>")
    intent.platform_profile: width=<w> height=<h> fps=<fps> safe_top_px=<t> safe_bottom_px=<b> ideal_duration_s=<min>-<max> max_duration_s=<m>
    intent.target_duration_seconds: <seconds>
+   fan_out: <N> shorts                            (omit the two fan_out lines entirely for a single video)
+   fan_out.per_short_duration: <min>-<max>s       (from target_duration_range; or the single per-short figure)
    intent.tone: <tone>
    intent.key_moments: <key_moments>
    intent.music_vo: <music_vo>
@@ -96,8 +107,10 @@ moment.
    `storyboard.markdown_path` — show it, don't paraphrase. Present BOTH halves together: the
    brief, then the storyboard markdown. Call out the editorial decisions the user is most likely
    to override: which **best take** was auto-picked per retake group (alternates available), and
-   any **B-roll placements**. Ask one question: "Approve the plan, revise the brief, revise the
-   storyboard, or re-clarify intent?"
+   any **B-roll placements**. Fan-out: the markdown has one `## Short k of N` section per short —
+   this ONE sign-off approves the whole set, so say so explicitly ("approving covers all N
+   shorts"). Ask one question: "Approve the plan, revise the brief, revise the storyboard, or
+   re-clarify intent?"
 
 7b. If the save result carried plan-lint `warnings[]`, present them with the plan as
    `⚠ plan-lint:` lines — they are exactly the drift/hook/B-roll problems the user should rule

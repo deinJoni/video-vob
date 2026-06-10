@@ -13,6 +13,10 @@ path, and wait for the user to open it in an external player — you cannot disp
 1. Tell the user a render is starting. Expect minutes, not seconds: a 20–30s vertical typically
    takes 2–10 minutes on the reference 8GB host (software GPU, 1 worker); the call blocks up to
    the duration-scaled timeout. Point the user at `stderr_log_path` for `tail -f` progress.
+   **Fan-out:** before rendering, verify the summary's `composition.short_id` equals the active
+   short (COMPOSE.md defines the rule) — if it doesn't, you're about to render the WRONG short:
+   back-edge to COMPOSE and compose the active short first. Tell the user which short this
+   preview is ("previewing short k of N: <short_id>").
 
 2. Call `vob_vob_render_preview { project_id }`. On failure it throws — show a
    one-paragraph summary of the stderr (the error message includes the relevant tail) and ask

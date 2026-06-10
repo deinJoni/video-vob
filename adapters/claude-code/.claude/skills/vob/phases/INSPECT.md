@@ -71,9 +71,11 @@ acknowledge.
    - Mention the top 1–2 `hook_candidates` from the digest — they anchor the INTENT proposal.
 
 5b. **Classify the segments via the `inspector` subagent.** When `segment_count > 0`, delegate —
-   you do not classify yourself. Spawn prompt is DATA-ONLY (no behavioral clauses — the agent .md
-   owns behavior; if you are tempted to add an instruction, it belongs in the agent file). Fields
-   with no value are passed as the literal string `none`:
+   you do not classify yourself. This holds even for a single-segment source where the pass looks
+   trivial: it's quick, and the classification record (pools + visual fields + hook tags) is what
+   the storyboarder grounds on — skipping it starves PLAN. Spawn prompt is DATA-ONLY (no
+   behavioral clauses — the agent .md owns behavior; if you are tempted to add an instruction, it
+   belongs in the agent file). Fields with no value are passed as the literal string `none`:
    ```
    Task(subagent_type: "inspector",
         description: "Classify segments",

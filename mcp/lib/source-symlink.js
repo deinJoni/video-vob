@@ -3,6 +3,7 @@
 const fs = require("fs");
 const path = require("path");
 
+const { allStoryboardScenes } = require("./storyboard-schema.js");
 const {
   assertSafeProjectId,
   assertSafeSceneId,
@@ -46,10 +47,14 @@ function readStoryboardSafe(projectId) {
 function resolveSceneClipLinks(projectId) {
   const id = assertSafeProjectId(projectId);
   const sb = readStoryboardSafe(id);
-  if (!sb || !Array.isArray(sb.scenes)) return [];
+  if (!sb) return [];
+  // Union across timelines: in fan-out every short's clips are materialized,
+  // so every short's clips get a ./source/ symlink.
+  const scenes = allStoryboardScenes(sb);
+  if (scenes.length === 0) return [];
   const linkDir = composeSourceDir(id);
   const tuples = [];
-  for (const scene of sb.scenes) {
+  for (const scene of scenes) {
     if (!scene || typeof scene.scene_id !== "string") continue;
     let sceneId;
     try {

@@ -9,7 +9,13 @@ const {
 } = require("../paths.js");
 const { withSessionLock, writeFileAtomic } = require("../storage.js");
 const { readSessionStateStrict } = require("../session-state.js");
-const { validateStoryboard, validateStoryboardContent } = require("../storyboard-schema.js");
+const {
+  allStoryboardScenes,
+  storyboardHasShorts,
+  storyboardTimelines,
+  validateStoryboard,
+  validateStoryboardContent,
+} = require("../storyboard-schema.js");
 const { renderStoryboardMarkdown } = require("../storyboard-markdown.js");
 
 const MAX_STORYBOARD_LENGTH = 256 * 1024;
@@ -103,6 +109,23 @@ function saveStoryboard(args) {
       : 0;
     const revisionCount = prevRevisionCount + 1;
 
+    // Mode-agnostic stamps: scenes-form documents keep their exact prior
+    // values; fan-out documents count ALL shorts' scenes and sum their totals.
+    const fanOut = storyboardHasShorts(storyboard);
+    const timelines = storyboardTimelines(storyboard);
+    const sceneCount = allStoryboardScenes(storyboard).length;
+    const totalDurationSeconds = fanOut
+      ? timelines.reduce((acc, t) => acc + (Number.isFinite(t.total_target_duration_seconds) ? t.total_target_duration_seconds : 0), 0)
+      : storyboard.total_target_duration_seconds;
+    const shortsDigest = fanOut
+      ? timelines.map((t) => ({
+        short_id: t.short_id,
+        title: t.title,
+        total_target_duration_seconds: t.total_target_duration_seconds,
+        scene_count: t.scenes.length,
+      }))
+      : null;
+
     const next = {
       ...state,
       storyboard: {
@@ -112,8 +135,9 @@ function saveStoryboard(args) {
         confirmed: false,
         confirmed_at: null,
         revision_count: revisionCount,
-        scene_count: storyboard.scenes.length,
-        total_duration_seconds: storyboard.total_target_duration_seconds,
+        scene_count: sceneCount,
+        total_duration_seconds: totalDurationSeconds,
+        ...(fanOut ? { short_count: timelines.length, shorts: shortsDigest } : {}),
         plan_lint: {
           error_count: 0,
           warning_count: planWarnings.length,
@@ -135,8 +159,9 @@ function saveStoryboard(args) {
       saved_at: ts,
       confirmed: false,
       revision_count: revisionCount,
-      scene_count: storyboard.scenes.length,
-      total_duration_seconds: storyboard.total_target_duration_seconds,
+      scene_count: sceneCount,
+      total_duration_seconds: totalDurationSeconds,
+      ...(fanOut ? { short_count: timelines.length, shorts: shortsDigest } : {}),
       plan_lint: {
         error_count: 0,
         warning_count: planWarnings.length,
@@ -148,7 +173,7 @@ function saveStoryboard(args) {
 
 module.exports = Object.freeze({
   name: "vob_save_storyboard",
-  description: "Save the storyboard (schema 1.0; content may be a JSON object or string). Validates shape, then runs plan lint: errors (out-of-range clips, captions-on-silent, narration-span violations) reject the save; warnings (hook placement/length, duration drift, b_roll holds, key-moment coverage, clean-speech straddles) return in plan_lint, persist to state, and render into storyboard.md for the plan gate. Any save resets confirmed:false and bumps revision_count.",
+  description: "Save the storyboard (content may be a JSON object or string). Schema 1.0 = one timeline (scenes[] + total_target_duration_seconds); schema 1.1 additionally allows the multi-short fan-out form: top-level shorts[] of {short_id, title, sequence, total_target_duration_seconds, scenes[], broll_placements?, notes?} with the top-level timeline fields omitted and scene_ids globally unique. Validates shape, then runs plan lint (per short in fan-out; findings carry short_id): errors (out-of-range clips, captions-on-silent, narration-span violations, duplicate scene_ids) reject the save; warnings (hook placement/length, duration drift or per-short range, b_roll holds, key-moment coverage, clean-speech straddles) return in plan_lint, persist to state, and render into storyboard.md for the plan gate. Any save resets confirmed:false and bumps revision_count.",
   inputSchema: {
     type: "object",
     properties: {
@@ -161,7 +186,7 @@ module.exports = Object.freeze({
           { type: "string", minLength: 1, maxLength: MAX_STORYBOARD_LENGTH },
           { type: "object", additionalProperties: true },
         ],
-        description: "Storyboard document (schema 1.0) as a JSON object or a JSON string.",
+        description: "Storyboard document (schema 1.0, or 1.1 for the shorts[] fan-out form) as a JSON object or a JSON string.",
       },
     },
     required: ["project_id", "content"],

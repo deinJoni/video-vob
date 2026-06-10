@@ -4,7 +4,8 @@ const fs = require("fs");
 const path = require("path");
 const { readJsonFile } = require("./storage.js");
 const { missingIntentKeys } = require("./intent-schema.js");
-const { composeDir, deliverablesDir, inspectSummaryPath, packageDir, packageFinalMp4Path, packageManifestPath, packageReadmePath, packageThumbnailPath } = require("./paths.js");
+const { composeDir, deliverablesDir, inspectSummaryPath, packageDir, packageFinalMp4Path, packageManifestPath, packageReadmePath, packageThumbnailPath, storyboardPath } = require("./paths.js");
+const { storyboardHasShorts, storyboardTimelines } = require("./storyboard-schema.js");
 
 // True when a project carries externally-imported deliverables (the
 // vob_import_deliverable escape hatch) that are on disk — its real output lives
@@ -17,6 +18,27 @@ function hasExternalDeliverables(state) {
     && state.deliverables.length > 0
     && fs.existsSync(deliverablesDir(state.project_id)),
   );
+}
+
+// Fan-out completeness: storyboard shorts with no deliverable record yet.
+// [] for single-timeline storyboards, unreadable storyboards, and import-only
+// projects — exactly the cases where the check must not bite.
+function missingShortDeliverables(state) {
+  let sb = null;
+  try {
+    sb = readJsonFile(storyboardPath(state.project_id));
+  } catch {
+    return [];
+  }
+  if (!sb || typeof sb !== "object" || Array.isArray(sb) || !storyboardHasShorts(sb)) return [];
+  const recorded = new Set(
+    (Array.isArray(state.deliverables) ? state.deliverables : [])
+      .map((d) => (d && typeof d.short_id === "string" && d.short_id !== "" ? d.short_id : null))
+      .filter(Boolean),
+  );
+  return storyboardTimelines(sb)
+    .map((t) => t.short_id)
+    .filter((shortId) => shortId && !recorded.has(shortId));
 }
 
 // Verdict convention: { allowed, blockers: [{ code, message, overridable?, ...fields }] }.
@@ -441,6 +463,19 @@ function renderToPackage(state) {
       ),
     ]);
   }
+  // Fan-out completeness: leaving RENDER for PACKAGE means the SET is done —
+  // every storyboard short needs a deliverable record. Overridable: shipping a
+  // deliberate partial set stays possible (recorded for audit).
+  const missingShorts = missingShortDeliverables(state);
+  if (missingShorts.length > 0) {
+    return block([
+      blocker(
+        "shorts_missing_deliverables",
+        `multi-short fan-out: ${missingShorts.length} short(s) have no deliverable record yet (${missingShorts.join(", ")}) — after vob_confirm_render record the short via vob_import_deliverable {deliverables:[{path, title, short_id}], normalize:true, set_phase:false}, then back-edge RENDER->COMPOSE for the next short. Override only to ship a deliberate partial set.`,
+        { missing_short_ids: missingShorts },
+      ),
+    ]);
+  }
   // Ffmpeg is required for the next phase. Surface the install gap here
   // rather than after a packaging attempt fails.
   const ffmpeg = state.dependencies && state.dependencies.ffmpeg;
@@ -470,6 +505,19 @@ function renderToPlan(state) {
 // project reached PACKAGE via the import escape hatch with external deliverables
 // on record (those ARE the output; there is no single-timeline package to check).
 function packageToIterate(state) {
+  // Fan-out completeness ALSO gates here: import_deliverable's default
+  // set_phase jumps straight to PACKAGE without crossing RENDER->PACKAGE, so
+  // this is the backstop against finalizing 1-of-N shorts. Overridable.
+  const missingShorts = missingShortDeliverables(state);
+  if (missingShorts.length > 0) {
+    return block([
+      blocker(
+        "shorts_missing_deliverables",
+        `multi-short fan-out: ${missingShorts.length} short(s) have no deliverable record yet (${missingShorts.join(", ")}) — produce and record them before finalizing (vob_import_deliverable {deliverables:[{path, title, short_id}], normalize:true}). Override only to finalize a deliberate partial set.`,
+        { missing_short_ids: missingShorts },
+      ),
+    ]);
+  }
   if (hasExternalDeliverables(state)) {
     return ALLOWED;
   }

@@ -29,7 +29,7 @@ at the stderr log they can `tail -f` from another terminal.
 4. Wait for the user's verdict:
    - **Approve** → `vob_vob_confirm_render { project_id }`, then
      `vob_vob_transition_phase { project_id, to_phase: "PACKAGE" }`. Packaging is
-     non-interactive and happens immediately.
+     non-interactive and happens immediately. **Fan-out: do NOT transition yet — go to step 4b.**
    - **Revise the composition** → transition to COMPOSE. The server auto-archives the current
      `renders/` (and any `package/`) into `archive/v<N>/` — surface the `archived.paths` from
      the transition response (spine rule 10). Re-enter COMPOSE with the user's notes.
@@ -37,6 +37,20 @@ at the stderr log they can `tail -f` from another terminal.
      PLAN.
    - **Re-render without changes** → loop to step 2. This resets `render.confirmed:false`; the
      user re-approves before PACKAGE unlocks.
+
+4b. **Fan-out record-then-loop** (the storyboard has `shorts[]`). After `vob_vob_confirm_render`:
+   1. Record the finished short:
+      `vob_vob_import_deliverable { project_id, deliverables: [{ path: <mp4_path>, title:
+      "<short title>", short_id: "<active short_id>" }], normalize: true, set_phase: false }`.
+      `normalize:true` applies the −14 LUFS pass the single-timeline package would have; the
+      record (merged by `short_id`) is what marks this short DONE.
+   2. **More shorts left** (any short without a deliverable record) → transition
+      `RENDER → COMPOSE` (auto-archives `renders/` — the deliverable copy is already safe;
+      surface `archived.paths`) and re-enter COMPOSE for the next active short.
+   3. **All shorts recorded** → `vob_vob_transition_phase { project_id, to_phase: "PACKAGE" }`. The gate blocks
+      with `shorts_missing_deliverables` (listing the missing `short_ids`) if a record is
+      missing — record it or back-edge to produce it; override ONLY when the user explicitly
+      wants to ship a partial set.
 
 5. The RENDER→PACKAGE gate requires `render.confirmed === true`, the file at `mp4_path` on disk,
    AND a render from the current composition revision (`render_stale_composition` blocks a stale

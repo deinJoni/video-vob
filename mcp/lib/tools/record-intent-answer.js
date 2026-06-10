@@ -10,7 +10,7 @@ const {
   missingIntentKeys,
   validateIntentAnswerValue,
 } = require("../intent-schema.js");
-const { parseDurationToSeconds, resolvePlatform } = require("../platform-profiles.js");
+const { parseDurationSpec, resolvePlatform } = require("../platform-profiles.js");
 
 const MAX_ANSWER_LENGTH = 4096;
 
@@ -55,7 +55,15 @@ function canonicalizeAnswer(key, trimmed) {
     return { raw, canonical, profile }; // profile snapshot stored for audit
   }
   if (key === "target_duration") {
-    return { raw: trimmed, seconds: parseDurationToSeconds(trimmed) };
+    // Range and per-deliverable forms ("20–35s per short") canonicalize to
+    // extra keys; plain durations keep the lean {raw,seconds} shape.
+    const spec = parseDurationSpec(trimmed);
+    return {
+      raw: trimmed,
+      seconds: spec.seconds,
+      ...(spec.range ? { range: spec.range } : {}),
+      ...(spec.per_deliverable ? { per_deliverable: true } : {}),
+    };
   }
   return trimmed; // all other keys stay plain strings
 }
@@ -103,7 +111,7 @@ function recordIntentAnswer(args) {
 
 module.exports = Object.freeze({
   name: "vob_record_intent_answer",
-  description: "Record one intent answer (overwrites the key). Five required keys: target_platform, target_duration, tone, key_moments, music_vo; conditional keys (audio_treatment, captions_style) per inspect findings. audio_treatment enum: transcribe_captions | keep_audio | discard_audio | keep_ambient. target_platform/target_duration are canonicalized server-side ({raw,canonical,profile} / {raw,seconds}). Returns {recorded, missing_required_keys}.",
+  description: "Record one intent answer (overwrites the key). Five required keys: target_platform, target_duration, tone, key_moments, music_vo; conditional keys (audio_treatment, captions_style) per inspect findings. audio_treatment enum: transcribe_captions | keep_audio | discard_audio | keep_ambient. target_platform/target_duration are canonicalized server-side ({raw,canonical,profile} / {raw,seconds,range?,per_deliverable?} — ranges like '20-35s' carry {min_seconds,max_seconds} with seconds = midpoint; 'per short'-style qualifiers set per_deliverable:true). Returns {recorded, missing_required_keys}.",
   inputSchema: {
     type: "object",
     properties: {

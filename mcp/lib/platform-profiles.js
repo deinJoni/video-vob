@@ -224,22 +224,63 @@ function clampDuration(value) {
   return rounded > 0 ? rounded : null;
 }
 
-// "90", "1:30", "1m 30s", "90 seconds", "~1m", "30-45s" (midpoint) -> seconds.
-// Unparseable -> null (downstream treats null as "target unknown").
-function parseDurationToSeconds(raw) {
-  let text = null;
-  if (typeof raw === "string") text = raw;
-  else if (typeof raw === "number" && Number.isFinite(raw)) text = String(raw);
-  if (text === null) return null;
-  let norm = text.toLowerCase().trim();
-  norm = norm.replace(/^~\s*/, "").replace(/^(?:about|around|roughly)\s+/, "").trim();
+// Trailing per-deliverable qualifiers ("per short", "each", "apiece", "a clip").
+// Strip-then-parse: only applied AFTER a strict parse fails, and the result only
+// counts when the stripped remainder parses — a false strip is harmless.
+const PER_DELIVERABLE_QUALIFIER_RE = /\s+(?:per|each|apiece|a)\b(?:\s+[a-z]+){0,2}[.!]?$/;
+
+// Range + midpoint on an already-normalized string. Math.round preserved
+// exactly ("30-45s" -> 38, as before parseDurationSpec existed).
+function parseNormalizedDuration(norm) {
   const range = norm.match(/^(.+?)\s*(?:[–—-]|\bto\b)\s*(.+)$/);
   if (range) {
     const a = parseSingleDuration(range[1]);
     const b = parseSingleDuration(range[2]);
-    if (a !== null && b !== null) return clampDuration(Math.round((a + b) / 2));
+    if (a !== null && b !== null) {
+      // The midpoint is kept even when a bound clamps to null ("0-60s" -> 30,
+      // exactly as before ranges existed); the range object is only emitted
+      // when BOTH bounds survive clamping — never half-null.
+      const minS = clampDuration(a);
+      const maxS = clampDuration(b);
+      return {
+        seconds: clampDuration(Math.round((a + b) / 2)),
+        range: minS !== null && maxS !== null ? { min_seconds: minS, max_seconds: maxS } : null,
+      };
+    }
   }
-  return clampDuration(parseSingleDuration(norm));
+  return { seconds: clampDuration(parseSingleDuration(norm)), range: null };
+}
+
+// "90", "1:30", "1m 30s", "90 seconds", "~1m", "30-45s" (midpoint), and
+// per-deliverable forms ("20–35s per short", "30s each") ->
+// { seconds, range: {min_seconds,max_seconds}|null, per_deliverable }.
+// Unparseable -> { seconds:null, range:null, per_deliverable:false }.
+function parseDurationSpec(raw) {
+  let text = null;
+  if (typeof raw === "string") text = raw;
+  else if (typeof raw === "number" && Number.isFinite(raw)) text = String(raw);
+  const empty = { seconds: null, range: null, per_deliverable: false };
+  if (text === null) return empty;
+  let norm = text.toLowerCase().trim();
+  norm = norm.replace(/^~\s*/, "").replace(/^(?:about|around|roughly)\s+/, "").trim();
+
+  const direct = parseNormalizedDuration(norm);
+  if (direct.seconds !== null) return { ...direct, per_deliverable: false };
+
+  // Strict parse failed — try stripping a trailing qualifier ("per short",
+  // "each", "per reel", ...). per_deliverable is only set when the remainder
+  // actually parses.
+  const stripped = norm.replace(PER_DELIVERABLE_QUALIFIER_RE, "").trim();
+  if (stripped !== "" && stripped !== norm) {
+    const after = parseNormalizedDuration(stripped);
+    if (after.seconds !== null) return { ...after, per_deliverable: true };
+  }
+  return empty;
+}
+
+// Back-compat scalar form — every pre-fan-out consumer keeps this signature.
+function parseDurationToSeconds(raw) {
+  return parseDurationSpec(raw).seconds;
 }
 
 module.exports = {
@@ -248,6 +289,7 @@ module.exports = {
   _reloadForTests,
   canonicalizePlatform,
   getPlatformProfile,
+  parseDurationSpec,
   parseDurationToSeconds,
   resolvePlatform,
   thumbnailTimestampPercent,

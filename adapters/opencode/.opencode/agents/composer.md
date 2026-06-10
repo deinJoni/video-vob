@@ -30,6 +30,7 @@ The orchestrator's spawn prompt is DATA-ONLY: a field list of paths and values, 
 
 - `project_id`, `session_dir` — the session directory is the hyperframes project root; your files land under its `compose/`, written by the MCP server.
 - `storyboard_path`, `manifest_path` — the cut plan and per-file ffprobe facts.
+- `short_id` (when present) — the storyboard is a multi-short fan-out (`shorts[]`): compose ONLY the short with this id. Use ITS `scenes` as the timeline, ITS `total_target_duration_seconds` for the master `data-duration`, and reference ONLY its clips (`./source/<scene_id>-<clip_index>.mp4` for its scene_ids — other shorts' clips also resolve in `./source/`, but referencing them warns `vob/cross_short_clip_ref`). The video-element budget applies to this short alone. Pass the same `short_id` to `vob_save_composition` — the save REQUIRES it on a fan-out storyboard.
 - `brief_path` — the brief's **Design language** section is BINDING: implement its fonts, palette, caption look, and motion intensity verbatim. You only derive look from tone when the brief predates v2 and has no Design language section.
 - `intent.target_platform` + `intent.platform_profile` (width/height/fps/safe_top_px/safe_bottom_px) — your output dimensions and safe bands. Use `width`/`height` for the Rule of Three; do not parse the platform string. `intent.caption_defaults` (anchor/offset_px/min_font_px/max_words_per_line, when present) is the platform's caption geometry.
 - `intent.captions_style`, `intent.audio_treatment`, `intent.music_vo` — the user's own words/choices; they reach you directly now; honor them over any inference from tone. `intent.tone` remains the fallback signal.
@@ -43,7 +44,7 @@ The orchestrator's spawn prompt is DATA-ONLY: a field list of paths and values, 
 
 ## Your output
 
-Exactly one call to `vob_vob_save_composition { project_id, files }`. `files` is a map of relative-path → file-content strings, written atomically inside the session's `compose/` directory:
+Exactly one call to `vob_vob_save_composition { project_id, files }` — plus `short_id` when your spawn data carries one. `files` is a map of relative-path → file-content strings, written atomically inside the session's `compose/` directory:
 
 ```json
 {

@@ -11,6 +11,8 @@
 const fs = require("fs");
 const path = require("path");
 
+const { findTimeline, storyboardHasShorts } = require("./storyboard-schema.js");
+
 const QC_VIDEO_HARD_CAP = 8;
 const QC_VIDEO_BUDGET = 6;
 const QC_MASTER_DURATION_TOLERANCE_S = 0.5;
@@ -80,15 +82,18 @@ function isAbsoluteSrc(value) {
   return value.startsWith("/") || /^file:/i.test(value) || /^[A-Za-z]:\\/.test(value);
 }
 
-// runCompositionQc({ files, storyboard, sourceLinks, sceneClipLinks, checkTargetsOnDisk })
+// runCompositionQc({ files, storyboard, sourceLinks, sceneClipLinks, checkTargetsOnDisk, activeShortId })
 //   files            [{ relPath, content }] — only .html/.css entries are inspected
 //   storyboard       parsed storyboard.json object | null (null = unreadable/missing)
 //   sourceLinks      resolveSourceLinks(id) tuples (may be [])
 //   sceneClipLinks   resolveSceneClipLinks(id) tuples (may be [])
 //   checkTargetsOnDisk  fs.existsSync each referenced link target when true
+//   activeShortId    fan-out: the short this composition targets — scopes the
+//                    scene-coverage/master-duration checks to that short's
+//                    scenes and flags refs into OTHER shorts' clips
 // => { findings: [{severity, rule, message, file, line, column, source:"vob"}],
-//      error_count, warning_count }
-function runCompositionQc({ files, storyboard, sourceLinks, sceneClipLinks, checkTargetsOnDisk }) {
+//      error_count, warning_count, expected_source_names, active_short_id }
+function runCompositionQc({ files, storyboard, sourceLinks, sceneClipLinks, checkTargetsOnDisk, activeShortId = null }) {
   const findings = [];
   const fileList = Array.isArray(files)
     ? files.filter((f) => f && typeof f.relPath === "string" && typeof f.content === "string")
@@ -99,8 +104,29 @@ function runCompositionQc({ files, storyboard, sourceLinks, sceneClipLinks, chec
     .map((f) => ({ relPath: f.relPath, content: f.content, tags: extractTags(f.content) }));
 
   const sb = storyboard && typeof storyboard === "object" && !Array.isArray(storyboard) ? storyboard : null;
-  const scenes = sb && Array.isArray(sb.scenes) ? sb.scenes : [];
-  if (sb === null) {
+  // Storyboard-conformance scope: in fan-out the active short's scenes; the
+  // whole document otherwise. activeSceneIdSet non-null marks fan-out scoping.
+  let scenes = [];
+  let activeSceneIdSet = null;
+  if (sb !== null) {
+    if (storyboardHasShorts(sb)) {
+      const timeline = findTimeline(sb, activeShortId);
+      if (timeline) {
+        scenes = timeline.scenes;
+        activeSceneIdSet = new Set(
+          scenes.map((s) => (s && typeof s.scene_id === "string" ? s.scene_id : null)).filter(Boolean),
+        );
+      } else {
+        findings.push(makeFinding(
+          "warning",
+          "vob/active_short_unresolved",
+          `fan-out storyboard but no matching short for short_id ${activeShortId === null ? "(none)" : `"${activeShortId}"`} — skipped the scoped storyboard-conformance checks (master duration, scene coverage)`,
+        ));
+      }
+    } else {
+      scenes = Array.isArray(sb.scenes) ? sb.scenes : [];
+    }
+  } else {
     findings.push(makeFinding(
       "warning",
       "vob/storyboard_unreadable",
@@ -184,6 +210,12 @@ function runCompositionQc({ files, storyboard, sourceLinks, sceneClipLinks, chec
     if (!link || typeof link.scene_id !== "string" || !Number.isInteger(link.clip_index)) continue;
     clipNames.set(`${link.scene_id}-${link.clip_index}.mp4`, link);
   }
+  // Resolution keeps ALL materialized clips (cross-short refs resolve on disk,
+  // so they must not error as unresolved) — but the EXPECTED list handed to
+  // the composer is the active short's clips when fan-out scoping is on.
+  const expectedClipNameList = activeSceneIdSet
+    ? [...clipNames.keys()].filter((n) => activeSceneIdSet.has(clipNames.get(n).scene_id))
+    : [...clipNames.keys()];
 
   // --- Media src scan ---------------------------------------------------------
   let videoCount = 0;
@@ -224,6 +256,15 @@ function runCompositionQc({ files, storyboard, sourceLinks, sceneClipLinks, chec
               tag.line,
             ));
           }
+          if (activeSceneIdSet && !activeSceneIdSet.has(link.scene_id)) {
+            findings.push(makeFinding(
+              "warning",
+              "vob/cross_short_clip_ref",
+              `src "./source/${name}" (${f.relPath}:${tag.line}) references scene clip ${link.scene_id}-${link.clip_index} belonging to ANOTHER short — a fan-out composition should use only the active short's clips (active: ${activeShortId})`,
+              f.relPath,
+              tag.line,
+            ));
+          }
         } else if (sourceNames.has(name)) {
           const sourceAbs = sourceNames.get(name);
           if (checkTargetsOnDisk && typeof sourceAbs === "string" && !fs.existsSync(sourceAbs)) {
@@ -237,8 +278,9 @@ function runCompositionQc({ files, storyboard, sourceLinks, sceneClipLinks, chec
           }
         } else {
           // List the legal names (scene clips first — they're what the composer
-          // almost always meant) so the fix needs no storyboard re-derivation.
-          const expected = [...clipNames.keys(), ...sourceNames.keys()];
+          // almost always meant; the ACTIVE short's clips in fan-out) so the
+          // fix needs no storyboard re-derivation.
+          const expected = [...expectedClipNameList, ...sourceNames.keys()];
           const preview = expected.slice(0, 6).join(", ");
           const moreCount = expected.length - Math.min(6, expected.length);
           findings.push(makeFinding(
@@ -377,10 +419,12 @@ function runCompositionQc({ files, storyboard, sourceLinks, sceneClipLinks, chec
     warning_count: warningCount,
     // Every legal ./source/ name, for callers that want to hand the composer
     // the full list on an unresolved-ref rejection (the findings cap at 6).
+    // In fan-out, scene_clips is the ACTIVE short's clip list.
     expected_source_names: {
-      scene_clips: [...clipNames.keys()],
+      scene_clips: expectedClipNameList,
       sources: [...sourceNames.keys()],
     },
+    active_short_id: activeShortId,
   };
 }
 

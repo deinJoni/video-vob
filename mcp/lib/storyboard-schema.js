@@ -5,10 +5,13 @@ const path = require("path");
 const { removedWithin } = require("./clean-cut.js");
 const { intentAnswerRaw } = require("./intent-schema.js");
 const { inspectCleanSpeechPath } = require("./paths.js");
-const { parseDurationToSeconds } = require("./platform-profiles.js");
+const { parseDurationSpec, parseDurationToSeconds } = require("./platform-profiles.js");
 const { readJsonFile } = require("./storage.js");
 
 const SCHEMA_VERSION = "1.0";
+// 1.1 adds the optional top-level shorts[] (multi-short fan-out). A document
+// with shorts[] MUST declare 1.1; scenes-form documents may use either.
+const SCHEMA_VERSIONS = Object.freeze(["1.0", "1.1"]);
 const PURPOSES = Object.freeze(["hook", "beat", "payoff", "outro"]);
 const PACINGS = Object.freeze(["fast", "medium", "slow"]);
 // Clip role: how the composer should treat a source clip.
@@ -41,8 +44,8 @@ function isFiniteNumber(value) {
   return typeof value === "number" && Number.isFinite(value);
 }
 
-function validateClip(clip, sceneIx, clipIx, errors) {
-  const where = `scenes[${sceneIx}].source_clips[${clipIx}]`;
+function validateClip(clip, sceneIx, clipIx, errors, wherePrefix = "") {
+  const where = `${wherePrefix}scenes[${sceneIx}].source_clips[${clipIx}]`;
   if (!isPlainObject(clip)) {
     errors.push(`${where} must be an object`);
     return;
@@ -75,8 +78,8 @@ function validateClip(clip, sceneIx, clipIx, errors) {
 // Optional per-scene caption_segments (SOURCE-time): the storyboarder's timed
 // caption plan. No cross-check against `captions` — that string stays the
 // human-readable summary.
-function validateCaptionSegment(seg, sceneIx, segIx, errors) {
-  const where = `scenes[${sceneIx}].caption_segments[${segIx}]`;
+function validateCaptionSegment(seg, sceneIx, segIx, errors, wherePrefix = "") {
+  const where = `${wherePrefix}scenes[${sceneIx}].caption_segments[${segIx}]`;
   if (!isPlainObject(seg)) {
     errors.push(`${where} must be an object`);
     return;
@@ -95,8 +98,8 @@ function validateCaptionSegment(seg, sceneIx, segIx, errors) {
   }
 }
 
-function validateScene(scene, ix, errors) {
-  const where = `scenes[${ix}]`;
+function validateScene(scene, ix, errors, wherePrefix = "") {
+  const where = `${wherePrefix}scenes[${ix}]`;
   if (!isPlainObject(scene)) {
     errors.push(`${where} must be an object`);
     return;
@@ -119,7 +122,7 @@ function validateScene(scene, ix, errors) {
   if (!Array.isArray(scene.source_clips)) {
     errors.push(`${where}.source_clips must be an array (may be empty for overlay-only scenes)`);
   } else {
-    scene.source_clips.forEach((clip, clipIx) => validateClip(clip, ix, clipIx, errors));
+    scene.source_clips.forEach((clip, clipIx) => validateClip(clip, ix, clipIx, errors, wherePrefix));
   }
   if (!Array.isArray(scene.overlays)) {
     errors.push(`${where}.overlays must be an array of strings (may be empty)`);
@@ -143,7 +146,7 @@ function validateScene(scene, ix, errors) {
     if (!Array.isArray(scene.caption_segments)) {
       errors.push(`${where}.caption_segments must be an array when present`);
     } else {
-      scene.caption_segments.forEach((seg, segIx) => validateCaptionSegment(seg, ix, segIx, errors));
+      scene.caption_segments.forEach((seg, segIx) => validateCaptionSegment(seg, ix, segIx, errors, wherePrefix));
     }
   }
   for (const field of ["transition_in", "transition_out"]) {
@@ -172,15 +175,15 @@ function buildSceneClipIndex(scenes) {
   return index;
 }
 
-function validateBrollPlacements(input, errors) {
-  if (input.broll_placements === undefined || input.broll_placements === null) return;
-  if (!Array.isArray(input.broll_placements)) {
-    errors.push("broll_placements must be an array when present");
+function validateBrollPlacementsList(placements, scenes, wherePrefix, errors) {
+  if (placements === undefined || placements === null) return;
+  if (!Array.isArray(placements)) {
+    errors.push(`${wherePrefix}broll_placements must be an array when present`);
     return;
   }
-  const sceneClips = buildSceneClipIndex(input.scenes);
-  input.broll_placements.forEach((p, ix) => {
-    const where = `broll_placements[${ix}]`;
+  const sceneClips = buildSceneClipIndex(scenes);
+  placements.forEach((p, ix) => {
+    const where = `${wherePrefix}broll_placements[${ix}]`;
     if (!isPlainObject(p)) {
       errors.push(`${where} must be an object`);
       return;
@@ -216,13 +219,138 @@ function validateBrollPlacements(input, errors) {
   });
 }
 
+function validateBrollPlacements(input, errors) {
+  validateBrollPlacementsList(input.broll_placements, input.scenes, "", errors);
+}
+
+// --- Multi-short fan-out (schema 1.1) ---------------------------------------
+// shorts[]: N independent timelines in one document — one PLAN gate signs off
+// the whole set; COMPOSE/PREVIEW/RENDER then cycle per short (active-short
+// model). Each short carries its own scenes/total/broll_placements; the
+// top-level fields must be ABSENT so there is exactly one source of truth.
+function isSafeIdString(value) {
+  return isNonEmptyString(value)
+    && !/[\/\\]/.test(value)
+    && !/(?:^|\.)\.\.(?:\.|$)/.test(value);
+}
+
+function validateShort(short, ix, seenShortIds, errors) {
+  const where = `shorts[${ix}]`;
+  if (!isPlainObject(short)) {
+    errors.push(`${where} must be an object`);
+    return;
+  }
+  if (!isSafeIdString(short.short_id)) {
+    errors.push(`${where}.short_id must be a non-empty path-safe string`);
+  } else if (seenShortIds.has(short.short_id)) {
+    errors.push(`${where}.short_id "${short.short_id}" duplicates an earlier short — short_ids must be unique`);
+  } else {
+    seenShortIds.add(short.short_id);
+  }
+  if (!isNonEmptyString(short.title)) {
+    errors.push(`${where}.title must be a non-empty string`);
+  }
+  if (!Number.isInteger(short.sequence) || short.sequence !== ix + 1) {
+    errors.push(`${where}.sequence must equal ${ix + 1} (1-based, monotonically increasing)`);
+  }
+  if (!isFiniteNumber(short.total_target_duration_seconds) || short.total_target_duration_seconds <= 0) {
+    errors.push(`${where}.total_target_duration_seconds must be a positive finite number`);
+  }
+  if (short.notes !== undefined && short.notes !== null && typeof short.notes !== "string") {
+    errors.push(`${where}.notes must be a string when present`);
+  }
+  if (!Array.isArray(short.scenes) || short.scenes.length === 0) {
+    errors.push(`${where}.scenes must be a non-empty array`);
+  } else {
+    short.scenes.forEach((scene, sceneIx) => validateScene(scene, sceneIx, errors, `${where}.`));
+  }
+  validateBrollPlacementsList(short.broll_placements, short.scenes, `${where}.`, errors);
+}
+
+// Normalized timeline view — THE accessor for code that must work in both
+// modes. Single-timeline documents project to one entry with short_id:null.
+function storyboardTimelines(parsed) {
+  if (!isPlainObject(parsed)) return [];
+  if (Array.isArray(parsed.shorts) && parsed.shorts.length > 0) {
+    return parsed.shorts.map((short, ix) => {
+      const s = isPlainObject(short) ? short : {};
+      return {
+        short_id: isNonEmptyString(s.short_id) ? s.short_id : null,
+        title: isNonEmptyString(s.title) ? s.title : null,
+        sequence: Number.isInteger(s.sequence) ? s.sequence : ix + 1,
+        scenes: Array.isArray(s.scenes) ? s.scenes : [],
+        total_target_duration_seconds: isFiniteNumber(s.total_target_duration_seconds)
+          ? s.total_target_duration_seconds
+          : null,
+        broll_placements: Array.isArray(s.broll_placements) ? s.broll_placements : [],
+        notes: typeof s.notes === "string" ? s.notes : null,
+      };
+    });
+  }
+  return [{
+    short_id: null,
+    title: null,
+    sequence: 1,
+    scenes: Array.isArray(parsed.scenes) ? parsed.scenes : [],
+    total_target_duration_seconds: isFiniteNumber(parsed.total_target_duration_seconds)
+      ? parsed.total_target_duration_seconds
+      : null,
+    broll_placements: Array.isArray(parsed.broll_placements) ? parsed.broll_placements : [],
+    notes: typeof parsed.notes === "string" ? parsed.notes : null,
+  }];
+}
+
+function storyboardHasShorts(parsed) {
+  return isPlainObject(parsed) && Array.isArray(parsed.shorts) && parsed.shorts.length > 0;
+}
+
+function allStoryboardScenes(parsed) {
+  const scenes = [];
+  for (const timeline of storyboardTimelines(parsed)) scenes.push(...timeline.scenes);
+  return scenes;
+}
+
+// shortId null/undefined resolves the single timeline (and nothing in a
+// fan-out document); a string resolves the matching short.
+function findTimeline(parsed, shortId) {
+  const timelines = storyboardTimelines(parsed);
+  if (shortId === null || shortId === undefined) {
+    return timelines.length === 1 && timelines[0].short_id === null ? timelines[0] : null;
+  }
+  return timelines.find((t) => t.short_id === shortId) || null;
+}
+
+// Duration basis for render TIMEOUTS: the active timeline's total; for a
+// fan-out document with no resolvable short, the LONGEST short (a safe
+// ceiling). Drift verification must NOT use the fallback — the render tools
+// resolve the timeline separately and pass null when it didn't resolve.
+function expectedTimelineDurationSeconds(parsed, shortId) {
+  const timeline = findTimeline(parsed, shortId);
+  if (timeline && isFiniteNumber(timeline.total_target_duration_seconds) && timeline.total_target_duration_seconds > 0) {
+    return timeline.total_target_duration_seconds;
+  }
+  if (storyboardHasShorts(parsed)) {
+    const max = storyboardTimelines(parsed).reduce(
+      (acc, t) => Math.max(acc, isFiniteNumber(t.total_target_duration_seconds) ? t.total_target_duration_seconds : 0),
+      0,
+    );
+    return max > 0 ? max : null;
+  }
+  const total = isPlainObject(parsed) ? Number(parsed.total_target_duration_seconds) : NaN;
+  return Number.isFinite(total) && total > 0 ? total : null;
+}
+
 function validateStoryboard(input) {
   const errors = [];
   if (!isPlainObject(input)) {
     return { ok: false, errors: ["storyboard must be a JSON object"] };
   }
-  if (input.schema_version !== SCHEMA_VERSION) {
-    errors.push(`schema_version must be "${SCHEMA_VERSION}"`);
+  if (!SCHEMA_VERSIONS.includes(input.schema_version)) {
+    errors.push(`schema_version must be one of: ${SCHEMA_VERSIONS.map((v) => `"${v}"`).join(", ")}`);
+  }
+  const hasShorts = input.shorts !== undefined && input.shorts !== null;
+  if (hasShorts && input.schema_version !== "1.1") {
+    errors.push('schema_version must be "1.1" when shorts[] is present');
   }
   if (!isNonEmptyString(input.project_id)) {
     errors.push("project_id must be a non-empty string");
@@ -253,18 +381,34 @@ function validateStoryboard(input) {
       errors.push("target.tone must be a non-empty string");
     }
   }
-  if (!Array.isArray(input.scenes) || input.scenes.length === 0) {
-    errors.push("scenes must be a non-empty array");
+  if (hasShorts) {
+    // Fan-out form: shorts[] carries the timelines; the top-level timeline
+    // fields must be absent (one source of truth).
+    if (!Array.isArray(input.shorts) || input.shorts.length === 0) {
+      errors.push("shorts must be a non-empty array when present");
+    } else {
+      const seenShortIds = new Set();
+      input.shorts.forEach((short, ix) => validateShort(short, ix, seenShortIds, errors));
+    }
+    for (const field of ["scenes", "total_target_duration_seconds", "broll_placements"]) {
+      if (input[field] !== undefined) {
+        errors.push(`${field} must be omitted when shorts[] is present — each short carries its own`);
+      }
+    }
   } else {
-    input.scenes.forEach((scene, ix) => validateScene(scene, ix, errors));
-  }
-  if (!isFiniteNumber(input.total_target_duration_seconds) || input.total_target_duration_seconds <= 0) {
-    errors.push("total_target_duration_seconds must be a positive finite number");
+    if (!Array.isArray(input.scenes) || input.scenes.length === 0) {
+      errors.push("scenes must be a non-empty array");
+    } else {
+      input.scenes.forEach((scene, ix) => validateScene(scene, ix, errors));
+    }
+    if (!isFiniteNumber(input.total_target_duration_seconds) || input.total_target_duration_seconds <= 0) {
+      errors.push("total_target_duration_seconds must be a positive finite number");
+    }
+    validateBrollPlacements(input, errors);
   }
   if (input.notes !== undefined && input.notes !== null && typeof input.notes !== "string") {
     errors.push("notes must be a string when present");
   }
-  validateBrollPlacements(input, errors);
 
   return { ok: errors.length === 0, errors };
 }
@@ -347,6 +491,7 @@ const PLAN_LINT_THRESHOLDS = Object.freeze({
   broll_min_hold_s: 1.5,
   broll_span_tolerance_s: 0.25,
   straddle_removed_min_s: 0.8,
+  short_duration_range_tolerance_s: 0.5,
 });
 
 function round1(value) {
@@ -692,7 +837,11 @@ function lintStoryboardPlan(parsed, context) {
   warnDurations(parsed, scenes, ctx.targetSeconds, warnings);
   warnBrollHolds(scenes, warnings);
   warnBrollRepeats(parsed, sceneById, warnings);
-  warnKeyMomentCoverage(scenes, ctx.state, warnings);
+  // Fan-out runs key-moment coverage ONCE document-globally (a moment covered
+  // by ANY short counts), not per short — see validateStoryboardContent.
+  if (ctx.suppress_key_moment_check !== true) {
+    warnKeyMomentCoverage(scenes, ctx.state, warnings);
+  }
   warnCleanSpeechStraddles(scenes, ctx.cleanSpeech, warnings);
 
   return { errors, warnings };
@@ -747,32 +896,153 @@ function resolveTargetSeconds(state, parsed) {
   return null;
 }
 
+// Intent target-duration spec for fan-out lint: canonical object first, legacy
+// raw-string parse second. { seconds, range, per_deliverable }.
+function resolveIntentDurationSpec(state) {
+  const intent = state && isPlainObject(state.intent) ? state.intent : null;
+  const answers = intent && isPlainObject(intent.answers) ? intent.answers : null;
+  const answer = answers ? answers.target_duration : undefined;
+  if (isPlainObject(answer)) {
+    return {
+      seconds: isFiniteNumber(answer.seconds) ? answer.seconds : null,
+      range: isPlainObject(answer.range)
+        && isFiniteNumber(answer.range.min_seconds) && isFiniteNumber(answer.range.max_seconds)
+        ? { min_seconds: answer.range.min_seconds, max_seconds: answer.range.max_seconds }
+        : null,
+      per_deliverable: answer.per_deliverable === true,
+    };
+  }
+  return parseDurationSpec(intentAnswerRaw(answer));
+}
+
+// Global error: duplicate scene_ids anywhere in the document. Pre-cut clips
+// are named <scene_id>-<clip_index>.mp4 and compose/source/ is one flat
+// namespace, so a duplicate silently overwrites another scene's clip.
+function lintDuplicateSceneIds(parsed) {
+  const errors = [];
+  const seen = new Map(); // scene_id -> first location label
+  for (const timeline of storyboardTimelines(parsed)) {
+    timeline.scenes.forEach((scene, ix) => {
+      if (!isPlainObject(scene) || !isNonEmptyString(scene.scene_id)) return;
+      const at = timeline.short_id !== null
+        ? `shorts["${timeline.short_id}"].scenes[${ix}]`
+        : `scenes[${ix}]`;
+      const prior = seen.get(scene.scene_id);
+      if (prior) {
+        errors.push({
+          code: "PLAN_DUPLICATE_SCENE_ID",
+          message: `scene_id "${scene.scene_id}" at ${at} duplicates ${prior} — scene_ids must be unique across the whole storyboard (pre-cut clips are named <scene_id>-<clip_index>.mp4)`,
+          scene_id: scene.scene_id,
+          ...(timeline.short_id !== null ? { short_id: timeline.short_id } : {}),
+        });
+      } else {
+        seen.set(scene.scene_id, at);
+      }
+    });
+  }
+  return errors;
+}
+
+function warnShortDurationRange(timeline, range, warnings) {
+  const total = timeline.total_target_duration_seconds;
+  if (!isFiniteNumber(total) || !range) return;
+  const tol = PLAN_LINT_THRESHOLDS.short_duration_range_tolerance_s;
+  if (total < range.min_seconds - tol || total > range.max_seconds + tol) {
+    warnings.push({
+      code: "PLAN_SHORT_DURATION_OUT_OF_RANGE",
+      message: `short "${timeline.short_id}" totals ${round1(total)}s — outside the per-short target range ${round1(range.min_seconds)}–${round1(range.max_seconds)}s`,
+      short_id: timeline.short_id,
+      data: {
+        total_target_duration_seconds: total,
+        min_seconds: range.min_seconds,
+        max_seconds: range.max_seconds,
+      },
+    });
+  }
+}
+
+function tagFindingsWithShortId(findings, shortId) {
+  if (shortId === null || shortId === undefined) return findings;
+  return findings.map((f) => ({
+    ...f,
+    short_id: shortId,
+    message: typeof f.message === "string" ? `[${shortId}] ${f.message}` : f.message,
+  }));
+}
+
 function validateStoryboardContent(parsed, state) {
   if (!isPlainObject(parsed)) {
     return { ok: false, errors: ["storyboard must be a JSON object"], warnings: [] };
   }
   const winnerTranscript = loadTranscript(state && state.inspect && state.inspect.transcript_path);
-  const context = {
+  const baseContext = {
     state: isPlainObject(state) ? state : null,
     manifest: loadManifestDocument(state),
     transcript: winnerTranscript,
     transcriptForFileIndex: buildTranscriptResolver(state, winnerTranscript),
     cleanSpeech: loadCleanSpeech(state),
-    targetSeconds: resolveTargetSeconds(state, parsed),
   };
-  const { errors, warnings } = lintStoryboardPlan(parsed, context);
+  const errors = [...lintDuplicateSceneIds(parsed)];
+  const warnings = [];
+
+  if (!storyboardHasShorts(parsed)) {
+    const context = { ...baseContext, targetSeconds: resolveTargetSeconds(state, parsed) };
+    const result = lintStoryboardPlan(parsed, context);
+    errors.push(...result.errors);
+    warnings.push(...result.warnings);
+    return { ok: errors.length === 0, errors, warnings };
+  }
+
+  // Fan-out: every check runs per short on a per-short view; findings carry
+  // short_id and a [short_id] message prefix (codes unchanged, so the fix
+  // recipes keyed on codes stay valid).
+  const spec = resolveIntentDurationSpec(state);
+  // Per-short drift target: the intent figure only when it IS per-short
+  // (per_deliverable without a range); with a range the range check replaces
+  // drift; otherwise target.duration_seconds is the per-short ideal.
+  let perShortTarget = null;
+  if (spec.range) perShortTarget = null;
+  else if (spec.per_deliverable) perShortTarget = spec.seconds;
+  else if (isPlainObject(parsed.target) && isFiniteNumber(parsed.target.duration_seconds)) {
+    perShortTarget = parsed.target.duration_seconds;
+  }
+
+  for (const timeline of storyboardTimelines(parsed)) {
+    const view = {
+      ...parsed,
+      scenes: timeline.scenes,
+      total_target_duration_seconds: timeline.total_target_duration_seconds,
+      broll_placements: timeline.broll_placements,
+    };
+    const result = lintStoryboardPlan(view, {
+      ...baseContext,
+      targetSeconds: perShortTarget,
+      suppress_key_moment_check: true,
+    });
+    errors.push(...tagFindingsWithShortId(result.errors, timeline.short_id));
+    warnings.push(...tagFindingsWithShortId(result.warnings, timeline.short_id));
+    if (spec.range) warnShortDurationRange(timeline, spec.range, warnings);
+  }
+  warnKeyMomentCoverage(allStoryboardScenes(parsed), state, warnings);
+
   return { ok: errors.length === 0, errors, warnings };
 }
 
 module.exports = {
   SCHEMA_VERSION,
+  SCHEMA_VERSIONS,
   PURPOSES,
   PACINGS,
   CLIP_ROLES,
   SCENE_TRANSITIONS,
   PLAN_LINT_THRESHOLDS,
+  allStoryboardScenes,
   clipRoleOf,
+  expectedTimelineDurationSeconds,
+  findTimeline,
   lintStoryboardPlan,
+  storyboardHasShorts,
+  storyboardTimelines,
   validateStoryboard,
   validateStoryboardContent,
 };

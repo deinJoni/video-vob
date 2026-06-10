@@ -10,6 +10,7 @@ const { readSessionStateStrict } = require("../session-state.js");
 const { validateCompositionFiles, htmlAndCssEntries } = require("../composition-files.js");
 const { recreateSourceSymlinks, resolveSceneClipLinks, resolveSourceLinks, injectFontKit } = require("../source-symlink.js");
 const { runCompositionQc } = require("../composition-qc.js");
+const { findTimeline, storyboardHasShorts, storyboardTimelines } = require("../storyboard-schema.js");
 
 function nowIso() {
   return new Date().toISOString();
@@ -52,12 +53,45 @@ function saveComposition(args) {
   }
   if (storyboard && (typeof storyboard !== "object" || Array.isArray(storyboard))) storyboard = null;
 
+  // Fan-out scoping: a shorts[] storyboard requires short_id (the active
+  // short this composition implements); a single-timeline one forbids it.
+  // An unreadable storyboard can't validate either way — the stamp is kept
+  // and QC degrades with its own warning.
+  const shortId = typeof (args && args.short_id) === "string" && args.short_id.trim() !== ""
+    ? args.short_id.trim()
+    : null;
+  if (storyboard) {
+    if (storyboardHasShorts(storyboard)) {
+      const validIds = storyboardTimelines(storyboard).map((t) => t.short_id).filter(Boolean);
+      if (!shortId) {
+        throw new ToolError(
+          ERROR_CODES.INVALID_ARGUMENTS,
+          `the storyboard is a multi-short fan-out — pass short_id for the short this composition implements (one of: ${validIds.join(", ")})`,
+          { valid_short_ids: validIds },
+        );
+      }
+      if (!findTimeline(storyboard, shortId)) {
+        throw new ToolError(
+          ERROR_CODES.INVALID_ARGUMENTS,
+          `unknown short_id "${shortId}" — the storyboard defines: ${validIds.join(", ")}`,
+          { valid_short_ids: validIds },
+        );
+      }
+    } else if (shortId) {
+      throw new ToolError(
+        ERROR_CODES.INVALID_ARGUMENTS,
+        `short_id "${shortId}" given but the storyboard is single-timeline — omit short_id`,
+      );
+    }
+  }
+
   const qc = runCompositionQc({
     files: htmlAndCssEntries(verdict.normalized),
     storyboard,
     sourceLinks: resolveSourceLinks(id),
     sceneClipLinks: resolveSceneClipLinks(id),
     checkTargetsOnDisk: true, // clips were materialized at COMPOSE entry; missing = real problem
+    activeShortId: shortId,
   });
   if (qc.error_count > 0) {
     const hasUnresolvedRef = qc.findings.some((f) => f.rule === "vob/unresolved_source_ref");
@@ -128,6 +162,7 @@ function saveComposition(args) {
         lint_report_path: null,
         lint_ran_at: null,
         revision_count: revisionCount,
+        ...(shortId ? { short_id: shortId } : {}),
         // errors never stored — they reject before the lock
         qc: { error_count: 0, warning_count: qc.warning_count, findings: qc.findings.slice(0, 10) },
         fonts: { linked: fontResult.linked, css_path: fontResult.linked ? "fonts.css" : null },
@@ -151,6 +186,7 @@ function saveComposition(args) {
           kind: "composition_saved",
           at: ts,
           revision_count: revisionCount,
+          ...(shortId ? { short_id: shortId } : {}),
           file_count: writtenRelPaths.length,
           total_bytes: verdict.total_bytes,
           source_link_count: symlinkResult.links.length,
@@ -171,6 +207,7 @@ function saveComposition(args) {
       saved_at: ts,
       lint_status: "unknown",
       revision_count: revisionCount,
+      ...(shortId ? { short_id: shortId } : {}),
       qc: { error_count: 0, warning_count: qc.warning_count, findings: qc.findings.slice(0, 10) },
       fonts_linked: fontResult.linked,
     };
@@ -179,11 +216,16 @@ function saveComposition(args) {
 
 module.exports = Object.freeze({
   name: "vob_save_composition",
-  description: "Save the hyperframes composition: map of relative-path → content (index.html required; .html/.css/.js/.json/.svg; ≤64 files, ≤256KiB each, ≤1MiB total). Fully replacing. The engine recreates ./source/ symlinks and the ./fonts.css font kit, runs static QC (errors reject with details.qc_findings), resets lint_status to 'unknown' and preview/render confirmation, and bumps revision_count.",
+  description: "Save the hyperframes composition: map of relative-path → content (index.html required; .html/.css/.js/.json/.svg; ≤64 files, ≤256KiB each, ≤1MiB total). Fully replacing. The engine recreates ./source/ symlinks and the ./fonts.css font kit, runs static QC (errors reject with details.qc_findings), resets lint_status to 'unknown' and preview/render confirmation, and bumps revision_count. Fan-out: when the storyboard has shorts[], short_id is REQUIRED (the short this composition implements) — QC scopes scene coverage/master duration to that short and warns on refs into other shorts' clips.",
   inputSchema: {
     type: "object",
     properties: {
       project_id: { type: "string" },
+      short_id: {
+        type: "string",
+        minLength: 1,
+        description: "Fan-out only: the storyboard short this composition implements. Required when the storyboard has shorts[]; forbidden otherwise.",
+      },
       files: {
         type: "object",
         minProperties: 1,

@@ -8,9 +8,13 @@
 // kit. Negative fixtures exercise the plan-lint and composition-QC rejection
 // paths (errors AND warnings asserted), so this stays the executable spec.
 //
-// Phases: setup | preview | render | package | all. Heavy steps beyond setup
-// are env-gated by invocation; the in-COMPOSE snapshot QC step is gated by
-// VOB_WALKER_SNAPSHOT=1.
+// Phases: setup | preview | render | package | all | fanout. Heavy steps
+// beyond setup are env-gated by invocation; the in-COMPOSE snapshot QC step is
+// gated by VOB_WALKER_SNAPSHOT=1. `fanout` is standalone (own project
+// <id>-fanout): the multi-short storyboard (schema 1.1 shorts[]), per-short
+// plan lint, union clip materialization, short_id-scoped composition QC, the
+// import-with-normalize deliverable loop, the package_output fan-out guard,
+// and the shorts_missing_deliverables gate — no real renders.
 
 const fs = require("fs");
 const path = require("path");
@@ -423,8 +427,425 @@ function cannedClassification(segmentsDoc) {
   };
 }
 
+// ---------------------------------------------------------------------------
+// Fan-out walker phase — the multi-short executable spec. Drives a 2-short
+// shorts[] storyboard through PLAN/COMPOSE plus the deliverable record loop;
+// asserts the new validation surfaces AND the orchestration bookkeeping
+// (identity merge, completeness gate, package guard) without real renders.
+
+function fanoutStoryboard({ projectId, manifestPath, briefPath, sourcePath, windows }) {
+  const mkScene = (sceneId, sequence, purpose, w, lenS) => ({
+    scene_id: sceneId,
+    sequence,
+    purpose,
+    target_duration_seconds: lenS,
+    summary: `${purpose} window at ${w.in}s`,
+    source_clips: [
+      { manifest_file_index: 0, source_path: sourcePath, in_seconds: w.in, out_seconds: w.out },
+    ],
+    overlays: purpose === "hook" ? ["text overlay: 'WALKER FANOUT'"] : [],
+    captions: null,
+    pacing: purpose === "hook" ? "fast" : "medium",
+  });
+  return {
+    schema_version: "1.1",
+    project_id: projectId,
+    generated_at: new Date().toISOString(),
+    source: { manifest_path: manifestPath, brief_path: briefPath },
+    target: { platform: "tiktok", duration_seconds: 5, tone: "cinematic" },
+    shorts: [
+      {
+        short_id: "short-1",
+        title: "Walker Short One",
+        sequence: 1,
+        total_target_duration_seconds: 5,
+        scenes: [
+          mkScene("s101", 1, "hook", windows.h1, 2),
+          mkScene("s102", 2, "payoff", windows.p1, 3),
+        ],
+      },
+      {
+        short_id: "short-2",
+        title: "Walker Short Two",
+        sequence: 2,
+        total_target_duration_seconds: 5,
+        scenes: [
+          mkScene("s201", 1, "hook", windows.h2, 2),
+          mkScene("s202", 2, "payoff", windows.p2, 3),
+        ],
+      },
+    ],
+    notes: "Walker fan-out fixture — 2 shorts × (hook+payoff), plan-lint-clean.",
+  };
+}
+
+// Per-short composition view: the composition() builder consumes
+// scenes + total, which is exactly the timeline projection.
+function shortView(fanSb, shortId) {
+  const short = fanSb.shorts.find((s) => s.short_id === shortId);
+  return { scenes: short.scenes, total_target_duration_seconds: short.total_target_duration_seconds };
+}
+
+async function runFanout() {
+  const FAN_PROJECT = `${PROJECT_ID}-fanout`;
+  console.log(`=== fan-out walker — project: ${FAN_PROJECT}`);
+
+  // 1. init + ingest + INSPECT (same rails as setup, minimal logging)
+  try {
+    await step("init project", () =>
+      call("vob_init_project", { project_id: FAN_PROJECT, target: { format: "tiktok", duration: "4-6s per short" } }),
+    );
+  } catch (e) {
+    if (/already exists/.test(e.message)) console.log("   (already exists — continuing)");
+    else throw e;
+  }
+  const ingest = await step("ingest (ffprobe)", () =>
+    call("vob_ingest_file", { project_id: FAN_PROJECT, source_path: SOURCE }),
+  );
+  const file0 = ingest.files[0];
+  await step("transition INGEST→INSPECT", () =>
+    call("vob_transition_phase", { project_id: FAN_PROJECT, to_phase: "INSPECT" }),
+  );
+  const inspect = await step("inspect (ffmpeg + ASR)", () =>
+    call("vob_inspect_source", { project_id: FAN_PROJECT }),
+  );
+  if (inspect.segment_count > 0) {
+    const segmentsDoc = JSON.parse(fs.readFileSync(inspect.segments_path, "utf8"));
+    await step("save classification (canned)", () =>
+      call("vob_save_classification", { project_id: FAN_PROJECT, ...cannedClassification(segmentsDoc) }),
+    );
+  }
+  await step("acknowledge inspect", () => call("vob_acknowledge_inspect", { project_id: FAN_PROJECT }));
+  await step("transition INSPECT→INTENT", () =>
+    call("vob_transition_phase", { project_id: FAN_PROJECT, to_phase: "INTENT" }),
+  );
+
+  // 2. intent — the tester's exact per-short duration form must canonicalize
+  //    to { seconds: midpoint, range, per_deliverable:true }.
+  const durationRec = await step("record intent target_duration='4-6s per short'", () =>
+    call("vob_record_intent_answer", { project_id: FAN_PROJECT, key: "target_duration", value: "4-6s per short" }),
+  );
+  {
+    const v = durationRec.recorded.value;
+    assert(v && v.seconds === 5, `expected seconds:5 midpoint, got ${JSON.stringify(v)}`);
+    assert(v.range && v.range.min_seconds === 4 && v.range.max_seconds === 6, `expected range {4,6}, got ${JSON.stringify(v.range)}`);
+    assert(v.per_deliverable === true, "expected per_deliverable:true");
+    console.log(`   canonical: ${JSON.stringify(v)}`);
+  }
+  for (const [k, val] of Object.entries({
+    target_platform: "tiktok",
+    tone: "cinematic",
+    key_moments: "none in particular",
+    music_vo: "neither",
+  })) {
+    await step(`record intent ${k}`, () =>
+      call("vob_record_intent_answer", { project_id: FAN_PROJECT, key: k, value: val }),
+    );
+  }
+  let lastRecord = { missing_required_keys: [] };
+  if (inspect.audio_present) {
+    const audioTreatment = inspect.speech_detected ? "transcribe_captions" : "keep_ambient";
+    lastRecord = await step(`record intent audio_treatment=${audioTreatment}`, () =>
+      call("vob_record_intent_answer", { project_id: FAN_PROJECT, key: "audio_treatment", value: audioTreatment }),
+    );
+    if (audioTreatment === "transcribe_captions") {
+      lastRecord = await step("record intent captions_style", () =>
+        call("vob_record_intent_answer", { project_id: FAN_PROJECT, key: "captions_style", value: "bold sans, white, pill" }),
+      );
+    }
+  }
+  assert(lastRecord.missing_required_keys.length === 0, `intent keys not drained: ${JSON.stringify(lastRecord.missing_required_keys)}`);
+  await step("transition INTENT→PLAN", () =>
+    call("vob_transition_phase", { project_id: FAN_PROJECT, to_phase: "PLAN" }),
+  );
+
+  // 3. brief + fan-out storyboard. Four non-overlapping windows: 2 shorts ×
+  //    (2s hook + 3s payoff), spread across the source.
+  const D = file0.duration_seconds;
+  if (!Number.isFinite(D) || D < 15) throw new Error(`fanout walker needs a source ≥15s (got ${D}s)`);
+  const windows = {
+    h1: placeWindow({ keepSpans: null, len: 2, preferStart: Math.min(1, D * 0.05), durationSeconds: D }),
+    p1: placeWindow({ keepSpans: null, len: 3, preferStart: D * 0.3, durationSeconds: D }),
+    h2: placeWindow({ keepSpans: null, len: 2, preferStart: D * 0.55, durationSeconds: D }),
+    p2: placeWindow({ keepSpans: null, len: 3, preferStart: D * 0.75, durationSeconds: D }),
+  };
+  const savedBrief = await step("save brief", () =>
+    call("vob_save_brief", {
+      project_id: FAN_PROJECT,
+      content: `# Brief: ${FAN_PROJECT}\n\n## Target\n- 2 shorts, 4-6s each, tiktok vertical\n\n## Design language\n- Typography: headline Anton; captions Inter 900\n- Palette: bg #000, text #FFF, accent #FFD60A\n- Motion: fast-snap\n`,
+    }),
+  );
+  await step("confirm brief", () => call("vob_confirm_brief", { project_id: FAN_PROJECT }));
+  await step("log storyboarder invocation", () =>
+    call("vob_log_storyboarder_invocation", { project_id: FAN_PROJECT }),
+  );
+  const summary0 = await call("vob_read_state_summary", { project_id: FAN_PROJECT });
+  assert(
+    summary0.target_duration_range
+      && summary0.target_duration_range.min_seconds === 4
+      && summary0.target_duration_range.per_deliverable === true,
+    `summary target_duration_range missing/wrong: ${JSON.stringify(summary0.target_duration_range)}`,
+  );
+  const fanSb = fanoutStoryboard({
+    projectId: FAN_PROJECT,
+    manifestPath: summary0.manifest.path,
+    briefPath: savedBrief.brief_path,
+    sourcePath: file0.path || SOURCE,
+    windows,
+  });
+
+  // 3a. NEGATIVE: duplicate scene_id across shorts -> coded plan error.
+  await step("save storyboard (duplicate scene_id fixture)", async () => {
+    const dup = JSON.parse(JSON.stringify(fanSb));
+    dup.shorts[1].scenes[0].scene_id = "s101";
+    const err = await expectError("vob_save_storyboard", { project_id: FAN_PROJECT, content: dup }, /INVALID_ARGUMENTS/);
+    const d = err.details || {};
+    assert(
+      Array.isArray(d.plan_errors) && d.plan_errors.some((f) => f && f.code === "PLAN_DUPLICATE_SCENE_ID"),
+      `expected PLAN_DUPLICATE_SCENE_ID, got ${JSON.stringify(d.plan_errors)}`,
+    );
+  });
+
+  // 3b. NEGATIVE: shorts[] + top-level scenes is structurally rejected.
+  await step("save storyboard (shorts+scenes mutual exclusion)", async () => {
+    const both = JSON.parse(JSON.stringify(fanSb));
+    both.scenes = [JSON.parse(JSON.stringify(fanSb.shorts[0].scenes[0]))];
+    const err = await expectError("vob_save_storyboard", { project_id: FAN_PROJECT, content: both }, /INVALID_ARGUMENTS/);
+    const d = err.details || {};
+    assert(
+      Array.isArray(d.schema_errors) && d.schema_errors.some((m) => /omitted when shorts/.test(String(m))),
+      `expected the mutual-exclusion schema error, got ${JSON.stringify(d.schema_errors)}`,
+    );
+  });
+
+  // 3c. WARNINGS fixture: hook-not-first in short-1 (tagged [short-1]) and a
+  //     short total outside the 4-6s intent range — save SUCCEEDS with warnings.
+  await step("save storyboard (per-short warnings fixture)", async () => {
+    const warny = JSON.parse(JSON.stringify(fanSb));
+    const s1 = warny.shorts[0];
+    s1.scenes.reverse();
+    s1.scenes.forEach((scene, ix) => { scene.sequence = ix + 1; });
+    s1.total_target_duration_seconds = 30;
+    s1.scenes[0].target_duration_seconds = 15;
+    s1.scenes[1].target_duration_seconds = 15;
+    const saved = await call("vob_save_storyboard", { project_id: FAN_PROJECT, content: warny });
+    const warnings = saved.plan_lint.warnings || [];
+    const hookWarn = warnings.find((w) => w.code === "PLAN_HOOK_NOT_FIRST");
+    assert(hookWarn && hookWarn.short_id === "short-1" && /^\[short-1\] /.test(hookWarn.message),
+      `expected [short-1]-tagged PLAN_HOOK_NOT_FIRST, got ${JSON.stringify(hookWarn)}`);
+    const rangeWarn = warnings.find((w) => w.code === "PLAN_SHORT_DURATION_OUT_OF_RANGE");
+    assert(rangeWarn && rangeWarn.short_id === "short-1",
+      `expected PLAN_SHORT_DURATION_OUT_OF_RANGE for short-1, got ${JSON.stringify(saved.plan_lint.warnings.map((w) => w.code))}`);
+    console.log(`\n   warnings as expected: ${warnings.map((w) => w.code).join(", ")}`);
+  });
+
+  // 3d. good fan-out storyboard
+  const savedSb = await step("save storyboard (fan-out, plan-lint-clean)", () =>
+    call("vob_save_storyboard", { project_id: FAN_PROJECT, content: fanSb }),
+  );
+  assert(savedSb.plan_lint.error_count === 0, "good fan-out storyboard reported plan-lint errors");
+  assert(savedSb.short_count === 2 && Array.isArray(savedSb.shorts) && savedSb.shorts.length === 2,
+    `expected short_count 2 + shorts digest, got ${JSON.stringify({ short_count: savedSb.short_count, shorts: savedSb.shorts })}`);
+  assert(savedSb.scene_count === 4 && savedSb.total_duration_seconds === 10,
+    `expected scene_count 4 / total 10, got ${savedSb.scene_count}/${savedSb.total_duration_seconds}`);
+  if (savedSb.plan_lint.warning_count > 0) {
+    console.log(`   plan-lint warnings (${savedSb.plan_lint.warning_count}): ${(savedSb.plan_lint.warnings || []).map((w) => w.code).join(", ")}`);
+  }
+  const sbMd = fs.readFileSync(savedSb.markdown_path, "utf8");
+  assert(/## Short 1 of 2: short-1/.test(sbMd) && /### Scene 1: s201/.test(sbMd),
+    "storyboard.md is missing the per-short sections");
+  await step("confirm storyboard", () => call("vob_confirm_storyboard", { project_id: FAN_PROJECT }));
+
+  // 4. COMPOSE entry: the UNION of both shorts' clips materializes.
+  const toCompose = await step("transition PLAN→COMPOSE (union pre-cut)", () =>
+    call("vob_transition_phase", { project_id: FAN_PROJECT, to_phase: "COMPOSE" }),
+  );
+  assert(toCompose.clips && toCompose.clips.clip_count === 4,
+    `expected 4 materialized clips (union of both shorts), got ${JSON.stringify(toCompose.clips)}`);
+  console.log(`   clips: ${toCompose.clips.clip_count}   dir: ${toCompose.clips.clips_dir}`);
+
+  // 5. composition for the active short (short-1)
+  await step("log composer invocation", () =>
+    call("vob_log_composer_invocation", { project_id: FAN_PROJECT }),
+  );
+  const comp1 = composition(shortView(fanSb, "short-1"));
+
+  // 5a. NEGATIVE: fan-out storyboard requires short_id on save.
+  await step("save composition (missing short_id)", async () => {
+    const err = await expectError("vob_save_composition", { project_id: FAN_PROJECT, files: comp1 }, /INVALID_ARGUMENTS/);
+    assert(err.details && Array.isArray(err.details.valid_short_ids) && err.details.valid_short_ids.join(",") === "short-1,short-2",
+      `expected valid_short_ids, got ${JSON.stringify(err.details)}`);
+  });
+  await step("save composition (unknown short_id)", () =>
+    expectError("vob_save_composition", { project_id: FAN_PROJECT, files: comp1, short_id: "short-9" }, /INVALID_ARGUMENTS/),
+  );
+
+  // 5b. NEGATIVE: unresolved ./source/ ref lists the ACTIVE short's clips only.
+  await step("save composition (unresolved ref, active-scoped list)", async () => {
+    const bad = { "index.html": comp1["index.html"].replace("./source/s102-0.mp4", "./source/no-such-9.mp4") };
+    const err = await expectError("vob_save_composition", { project_id: FAN_PROJECT, files: bad, short_id: "short-1" }, /INVALID_ARGUMENTS/);
+    const d = err.details || {};
+    assert(d.valid_source_refs && Array.isArray(d.valid_source_refs.scene_clips), "no valid_source_refs on unresolved rejection");
+    const clips = d.valid_source_refs.scene_clips;
+    assert(clips.includes("s101-0.mp4") && clips.includes("s102-0.mp4") && !clips.includes("s201-0.mp4"),
+      `expected ONLY short-1 clips in valid refs, got ${JSON.stringify(clips)}`);
+    console.log(`\n   active-scoped valid clips: ${clips.join(", ")}`);
+  });
+
+  // 5c. cross-short ref WARNS but does not reject (scenes still covered).
+  await step("save composition (cross-short ref warns)", async () => {
+    const cross = {
+      "index.html": comp1["index.html"].replace(
+        '<div id="hook-overlay"',
+        '<video id="stray" class="clip full-bleed" src="./source/s201-0.mp4" muted data-start="0" data-duration="1" data-track-index="2" data-media-start="0" data-playback-start="0"></video>\n  <div id="hook-overlay"',
+      ),
+    };
+    const saved = await call("vob_save_composition", { project_id: FAN_PROJECT, files: cross, short_id: "short-1" });
+    assert(saved.qc.findings.some((f) => f.rule === "vob/cross_short_clip_ref"),
+      `expected vob/cross_short_clip_ref warning, got ${JSON.stringify(saved.qc.findings.map((f) => f.rule))}`);
+  });
+
+  // 5d. clean short-1 composition + lint (scoped QC re-run) + PREVIEW gate
+  const savedComp = await step("save composition (short-1, QC-clean)", () =>
+    call("vob_save_composition", { project_id: FAN_PROJECT, files: comp1, short_id: "short-1" }),
+  );
+  assert(savedComp.short_id === "short-1", "save result missing short_id");
+  const lint = await step("lint composition (short-scoped QC)", () =>
+    call("vob_lint_composition", { project_id: FAN_PROJECT }),
+  );
+  if (lint.lint_status === "errors") throw new Error("fan-out lint failed — see report");
+  const summary1 = await call("vob_read_state_summary", { project_id: FAN_PROJECT });
+  assert(summary1.composition.short_id === "short-1", "summary composition.short_id missing");
+  assert(summary1.storyboard.short_count === 2, "summary storyboard.short_count missing");
+  await step("transition COMPOSE→PREVIEW", () =>
+    call("vob_transition_phase", { project_id: FAN_PROJECT, to_phase: "PREVIEW" }),
+  );
+
+  // 5e. THE ACTIVE-SHORT CYCLE — the defining fan-out move: back-edge to
+  //     COMPOSE, save the NEXT short's composition, and the short_id stamp +
+  //     scoped lint must rotate with it.
+  await step("back-edge PREVIEW→COMPOSE (next short)", () =>
+    call("vob_transition_phase", { project_id: FAN_PROJECT, to_phase: "COMPOSE" }),
+  );
+  const comp2 = composition(shortView(fanSb, "short-2"));
+  const savedComp2 = await step("save composition (short-2, active-short rotation)", () =>
+    call("vob_save_composition", { project_id: FAN_PROJECT, files: comp2, short_id: "short-2" }),
+  );
+  assert(savedComp2.short_id === "short-2", "short-2 save result missing short_id");
+  const lint2 = await step("lint composition (re-scoped to short-2)", () =>
+    call("vob_lint_composition", { project_id: FAN_PROJECT }),
+  );
+  if (lint2.lint_status === "errors") throw new Error("short-2 lint failed — see report");
+  const summary1b = await call("vob_read_state_summary", { project_id: FAN_PROJECT });
+  assert(summary1b.composition.short_id === "short-2",
+    `composition.short_id did not rotate to short-2, got ${summary1b.composition.short_id}`);
+  await step("transition COMPOSE→PREVIEW (short-2)", () =>
+    call("vob_transition_phase", { project_id: FAN_PROJECT, to_phase: "PREVIEW" }),
+  );
+
+  // 6. deliverable loop without renders: record short-1 from its pre-cut clip
+  //    (stands in for a confirmed render; origin stays "external" since it is
+  //    not under renders/), normalize on.
+  const clipsDir = toCompose.clips.clips_dir;
+  const fakeFinal1 = path.join(clipsDir, "s101-0.mp4");
+  assert(fs.existsSync(fakeFinal1), `expected pre-cut clip at ${fakeFinal1}`);
+
+  await step("import deliverable (missing short_id rejected)", () =>
+    expectError(
+      "vob_import_deliverable",
+      { project_id: FAN_PROJECT, deliverables: [{ path: fakeFinal1, title: "Walker Short One" }] },
+      /INVALID_ARGUMENTS/,
+    ),
+  );
+
+  const imp1 = await step("import deliverable short-1 (normalize)", () =>
+    call("vob_import_deliverable", {
+      project_id: FAN_PROJECT,
+      deliverables: [{ path: fakeFinal1, title: "Walker Short One", short_id: "short-1" }],
+      normalize: true,
+    }),
+  );
+  {
+    const rec = imp1.deliverables[0];
+    assert(rec.short_id === "short-1" && rec.origin === "external", `unexpected record: ${JSON.stringify(rec)}`);
+    // Source-aware loudnorm assert: when the source HAS audio (audio_treatment
+    // keeps it), a no_audio skip would mean a probe/materialization bug.
+    const okSkips = inspect.audio_present
+      ? ["silent_audio", "already_within_tolerance"]
+      : ["no_audio", "silent_audio", "already_within_tolerance"];
+    assert(rec.loudnorm && (rec.loudnorm.applied === true || okSkips.includes(rec.loudnorm.skipped_reason)),
+      `unexpected loudnorm outcome (audio_present=${inspect.audio_present}): ${JSON.stringify(rec.loudnorm)}`);
+    assert(fs.existsSync(imp1.deliverables_manifest_path), "deliverables/manifest.json not written");
+    assert(imp1.phase === "PACKAGE", `expected phase PACKAGE after import, got ${imp1.phase}`);
+    console.log(`   loudnorm: ${rec.loudnorm.applied ? "applied" : `skipped (${rec.loudnorm.skipped_reason})`}   origin: ${rec.origin}`);
+  }
+
+  // 6a. package_output refuses on a fan-out storyboard — BEFORE wiping anything.
+  await step("package_output refused (fan-out guard)", async () => {
+    const err = await expectError("vob_package_output", { project_id: FAN_PROJECT }, /STATE_CONFLICT/);
+    assert(err.details && err.details.fan_out === true, `expected fan_out:true details, got ${JSON.stringify(err.details)}`);
+  });
+
+  // 6b. PACKAGE→ITERATE blocks while short-2 has no record.
+  await step("PACKAGE→ITERATE blocked (shorts_missing_deliverables)", async () => {
+    const err = await expectError(
+      "vob_transition_phase",
+      { project_id: FAN_PROJECT, to_phase: "ITERATE" },
+      /STATE_CONFLICT|GATE/,
+    );
+    const text = JSON.stringify(err.details || {}) + err.message;
+    assert(/shorts_missing_deliverables/.test(text) && /short-2/.test(text),
+      `expected shorts_missing_deliverables naming short-2, got ${text.slice(0, 300)}`);
+  });
+
+  // 6c. revision semantics: re-import short-1 under a NEW title — the record
+  //     is REPLACED (merge by short_id), never duplicated.
+  const imp1b = await step("re-import short-1 (revision replaces record)", () =>
+    call("vob_import_deliverable", {
+      project_id: FAN_PROJECT,
+      deliverables: [{ path: fakeFinal1, title: "Walker Short One v2", short_id: "short-1" }],
+      normalize: false,
+      set_phase: false,
+    }),
+  );
+  assert(imp1b.total_deliverables === 1, `expected 1 total deliverable after revision, got ${imp1b.total_deliverables}`);
+
+  // 6d. record short-2 → completeness satisfied → ITERATE + finalize. The
+  //     fake final sits under the session's renders/ so the provenance branch
+  //     stamps origin:"render" (the on-rails record path).
+  const rendersFakeDir = path.join(path.dirname(clipsDir), "..", "renders");
+  fs.mkdirSync(rendersFakeDir, { recursive: true });
+  const fakeFinal2 = path.join(rendersFakeDir, "final-walker-fanout.mp4");
+  fs.copyFileSync(path.join(clipsDir, "s201-0.mp4"), fakeFinal2);
+  const imp2 = await step("import deliverable short-2 (origin:render)", () =>
+    call("vob_import_deliverable", {
+      project_id: FAN_PROJECT,
+      deliverables: [{ path: fakeFinal2, title: "Walker Short Two", short_id: "short-2" }],
+      normalize: true,
+    }),
+  );
+  assert(imp2.total_deliverables === 2, `expected 2 total deliverables, got ${imp2.total_deliverables}`);
+  assert(imp2.deliverables[0].origin === "render",
+    `expected origin:"render" for a renders/ file, got ${imp2.deliverables[0].origin}`);
+  const summary2 = await call("vob_read_state_summary", { project_id: FAN_PROJECT });
+  assert(Array.isArray(summary2.deliverables) && summary2.deliverables.length === 2
+    && summary2.deliverables.map((d) => d.short_id).sort().join(",") === "short-1,short-2",
+    `summary deliverables digest wrong: ${JSON.stringify(summary2.deliverables)}`);
+  await step("transition PACKAGE→ITERATE", () =>
+    call("vob_transition_phase", { project_id: FAN_PROJECT, to_phase: "ITERATE" }),
+  );
+  await step("finalize iteration", () => call("vob_finalize_iteration", { project_id: FAN_PROJECT }));
+
+  const final = await call("vob_read_state_summary", { project_id: FAN_PROJECT });
+  console.log(`\n=== fan-out final phase: ${final.phase}   deliverables: ${final.deliverable_count}   project: ${final.project_id}`);
+}
+
 async function main() {
   const phase = process.argv[2] || "all";
+  if (phase === "fanout") {
+    await runFanout();
+    return;
+  }
   console.log(`=== M5 walker v2 — phase: ${phase} — project: ${PROJECT_ID}`);
 
   if (phase === "setup" || phase === "all") {

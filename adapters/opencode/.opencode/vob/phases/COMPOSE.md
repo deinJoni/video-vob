@@ -20,6 +20,18 @@ to the `composer` subagent; linting, snapshots, and transitions stay with you.
 2. If `composition` already exists in the summary (back-edge or re-entry), ask whether they want
    a fresh composition or to keep the existing files — only proceed to step 3 for a new pass.
 
+   **Fan-out (the storyboard has `shorts[]`):** first determine the **active short**:
+   - the first short in storyboard order with no record in the summary's `deliverables[]`
+     (match on `short_id`);
+   - if EVERY short has a record (a revision pass from ITERATE), the short the user named —
+     carried in conversation from ITERATE.md. On a RESUME mid-revision where you don't have the
+     user's pick but `composition.short_id` is set, that IS the in-flight short — use it; only
+     ask which short to revise when the composition slot is empty or predates the fan-out.
+   When the summary's `composition.short_id` differs from the active short, the existing files
+   implement ANOTHER short — a fresh composer pass is MANDATORY (never offer "keep"). The
+   keep-or-fresh question above applies only when `composition.short_id` matches the active
+   short. Tell the user the progress ("composing short k of N: <short_id> — <title>").
+
 3. **Delegate.** Record the invocation first: `vob_vob_log_composer_invocation
    { project_id, revision_notes? }` — omit `revision_notes` on the very first invocation; pass
    the user's exact words on a user-driven revision; pass rule codes on a lint/QC auto-retry.
@@ -31,6 +43,7 @@ to the `composer` subagent; linting, snapshots, and transitions stay with you.
    project_id: <project_id>
    session_dir: ~/video-vob-sessions/<project_id>/
    storyboard_path: <storyboard.artifact_path>
+   short_id: <active short_id | none>            (fan-out only: compose ONLY this short)
    brief_path: <brief.path>                      (its Design language section is BINDING)
    manifest_path: <manifest.path>
    transcript_path: <inspect.transcript_path | none>
@@ -80,7 +93,8 @@ caused by this checklist). The lint ≤3 retry budget is separate and lint alway
 if a self-QC fix introduces lint errors, those consume lint retries; when lint is clean again,
 resume self-QC at the SAME round count.
 
-1. Compute snapshot timecodes from the storyboard (cumulative scene starts):
+1. Compute snapshot timecodes from the storyboard (cumulative scene starts; fan-out: the ACTIVE
+   short's scenes only — the composition implements just that timeline):
    - hook frame: hook-scene start + min(0.5, scene_duration/2) seconds — always include;
    - caption-dense: midpoint of the first caption window of every scene with captions (cap 3);
    - boundaries: every scene start + 0.2s (cap to fill);

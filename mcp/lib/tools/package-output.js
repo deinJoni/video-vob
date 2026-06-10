@@ -23,12 +23,10 @@ const { probeFile, summarizeProbe } = require("../ffprobe.js");
 const {
   runFfmpegBlocking,
   checkFfmpegAvailable,
-  buildLoudnormMeasureArgv,
-  buildLoudnormApplyArgv,
-  parseLoudnormStats,
-  LOUDNORM_TIMEOUT_MS,
   LOUDNORM_TARGET,
 } = require("../ffmpeg-runner.js");
+const { normalizeLoudnessInPlace } = require("../loudnorm.js");
+const { storyboardHasShorts, storyboardTimelines } = require("../storyboard-schema.js");
 const { stderrTail } = require("../spawn-with-shutdown.js");
 const { thumbnailTimestampPercent, canonicalizePlatform } = require("../platform-profiles.js");
 const { renderPackageReadme } = require("../package-readme.js");
@@ -86,50 +84,6 @@ function resolveThumbnailMoment({ projectId, durationSeconds, state }) {
   return { seconds: at, strategy: "percent", hook_scene_id: null, percent };
 }
 
-// Two-pass loudnorm to -14 LUFS / -1 dBTP on the packaged final.mp4. Audio-only
-// re-encode (video stream copied). Every non-applied exit records a
-// skipped_reason and packaging CONTINUES un-normalized — loudness is polish,
-// not a gate.
-async function runLoudnormPass({ finalMp4, summaryPre }) {
-  const knob = (process.env.VOB_NO_LOUDNORM || "").trim().toLowerCase();
-  const base = { applied: false, skipped_reason: null, error: null, measured_input_i: null, measured_input_tp: null };
-  if (knob === "1" || knob === "on" || knob === "true" || knob === "yes") {
-    return { ...base, skipped_reason: "disabled_via_env" };
-  }
-  if (!summaryPre || summaryPre.audio_streams === 0) {
-    return { ...base, skipped_reason: "no_audio" };
-  }
-  const measure = await runFfmpegBlocking(buildLoudnormMeasureArgv({ input: finalMp4 }), { timeoutMs: LOUDNORM_TIMEOUT_MS });
-  const measured = measure.timed_out || measure.exit_code !== 0 ? null : parseLoudnormStats(measure.stderr);
-  if (!measured) {
-    return { ...base, skipped_reason: "measure_failed", error: stderrTail(measure.stderr, 1000) };
-  }
-  if (measured.input_i === "-inf") {
-    return { ...base, skipped_reason: "silent_audio" };
-  }
-  const inputI = Number(measured.input_i);
-  const inputTp = Number(measured.input_tp);
-  const measuredNums = {
-    measured_input_i: Number.isFinite(inputI) ? inputI : null,
-    measured_input_tp: Number.isFinite(inputTp) ? inputTp : null,
-  };
-  if (Number.isFinite(inputI) && Math.abs(inputI - LOUDNORM_TARGET.i) <= 0.5
-    && Number.isFinite(inputTp) && inputTp <= LOUDNORM_TARGET.tp) {
-    return { ...base, ...measuredNums, skipped_reason: "already_within_tolerance" };
-  }
-  const tmp = path.join(path.dirname(finalMp4), "final.loudnorm.tmp.mp4");
-  const apply = await runFfmpegBlocking(
-    buildLoudnormApplyArgv({ input: finalMp4, output: tmp, measured }),
-    { timeoutMs: LOUDNORM_TIMEOUT_MS },
-  );
-  if (apply.timed_out || apply.exit_code !== 0 || !fs.existsSync(tmp)) {
-    try { fs.rmSync(tmp, { force: true }); } catch {}
-    return { ...base, ...measuredNums, skipped_reason: "apply_failed", error: stderrTail(apply.stderr, 1000) };
-  }
-  fs.renameSync(tmp, finalMp4);
-  return { ...base, ...measuredNums, applied: true };
-}
-
 function sessionRelative(projectId, absPath) {
   return path.relative(sessionDir(projectId), absPath);
 }
@@ -144,6 +98,31 @@ async function packageOutput(args) {
   const id = assertSafeProjectId(args && args.project_id);
 
   const state = readSessionStateStrict(id);
+
+  // Fan-out guard — FIRST, before any precondition check and strictly before
+  // the package/ wipe: a shorts[] storyboard means the deliverables set is the
+  // output; packaging only the last-rendered short would be a misleading
+  // single-timeline package. The composition short_id stamp proves fan-out
+  // even when storyboard.json is unreadable.
+  let sbForGuard = null;
+  try {
+    sbForGuard = JSON.parse(fs.readFileSync(storyboardPath(id), "utf8"));
+  } catch {
+    sbForGuard = null;
+  }
+  const compositionShortId = state.composition && typeof state.composition === "object" && !Array.isArray(state.composition)
+    && typeof state.composition.short_id === "string" && state.composition.short_id !== ""
+    ? state.composition.short_id
+    : null;
+  if ((sbForGuard && storyboardHasShorts(sbForGuard)) || (sbForGuard === null && compositionShortId !== null)) {
+    const shortIds = sbForGuard ? storyboardTimelines(sbForGuard).map((t) => t.short_id).filter(Boolean) : [];
+    throw new ToolError(
+      ERROR_CODES.STATE_CONFLICT,
+      `this is a multi-short fan-out project${shortIds.length > 0 ? ` (shorts: ${shortIds.join(", ")})` : ""} — the deliverables set is the output, not a single-timeline package. Record each rendered short via vob_import_deliverable { deliverables:[{path, title, short_id}], normalize:true, set_phase:false }; deliverables/manifest.json is the package manifest.`,
+      { fan_out: true, short_ids: shortIds },
+    );
+  }
+
   const render = state.render && typeof state.render === "object" && !Array.isArray(state.render)
     ? state.render
     : null;
@@ -213,7 +192,7 @@ async function packageOutput(args) {
 
   // Loudness normalization BEFORE the thumbnail/manifest probe: the post-
   // normalization re-probe is the authoritative summary for everything below.
-  const loudnorm = await runLoudnormPass({ finalMp4, summaryPre });
+  const loudnorm = await normalizeLoudnessInPlace({ mp4Path: finalMp4, summaryPre });
   let summary = summaryPre;
   if (loudnorm.applied) {
     try {
@@ -397,7 +376,7 @@ async function packageOutput(args) {
 
 module.exports = Object.freeze({
   name: "vob_package_output",
-  description: "Assemble package/: copy the confirmed render to final.mp4, two-pass loudness-normalize the audio to −14 LUFS/−1 dBTP (audio-only re-encode, video stream copied; VOB_NO_LOUDNORM=1 skips), extract the thumbnail at the storyboard hook-scene midpoint (fallback: 10%), write manifest.json (v1.1) + README.md. Wipes package/ first. Requires render.confirmed:true.",
+  description: "Assemble package/: copy the confirmed render to final.mp4, two-pass loudness-normalize the audio to −14 LUFS/−1 dBTP (audio-only re-encode, video stream copied; VOB_NO_LOUDNORM=1 skips), extract the thumbnail at the storyboard hook-scene midpoint (fallback: 10%), write manifest.json (v1.1) + README.md. Wipes package/ first. Requires render.confirmed:true. SINGLE-TIMELINE ONLY: refuses (STATE_CONFLICT) on a multi-short fan-out storyboard — there the deliverables set recorded via vob_import_deliverable {normalize:true} is the output and deliverables/manifest.json is the package manifest.",
   inputSchema: {
     type: "object",
     properties: {

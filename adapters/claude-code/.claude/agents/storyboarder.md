@@ -19,6 +19,7 @@ The orchestrator's spawn prompt is DATA-ONLY: a field list of paths and values, 
 
 - **`manifest_path`** / **`brief_path`** — per-file ffprobe facts and the confirmed brief.
 - **Intent values** — `intent.target_platform` (already canonicalized; the raw answer rides alongside), `intent.platform_profile` (width/height/fps/safe bands/duration ideals), `intent.target_duration_seconds` (already parsed), `intent.tone`, `intent.key_moments`, `intent.music_vo`, plus `intent.audio_treatment` / `intent.captions_style` when applicable. Your `target` block and your pacing-table row come from these values — **never parse the platform string yourself**.
+- **`fan_out`** / **`fan_out.per_short_duration`** (when present) — the job is N independent shorts from this source, each within the given per-short duration. Emit the schema-1.1 `shorts[]` form (see Fan-out below) instead of a single timeline.
 - **Classification pools** (when present): `aroll_pool_path` / `broll_index_path` / `review_pool_path` — the inspector's segment-level judgment, your starting material:
   - `aroll_pool.json` — `segments[]` with `{ file_index, segment_index, start_seconds, end_seconds, transcript_span, caption, take_group, is_best_take, confidence, shot_type, subject_position, framing_ok_for_vertical, hook_candidate, hook_reason }`. This is the spine. **When a `take_group` has multiple members, the inspector already picked `is_best_take: true` — prefer that take.** The alternates exist so the user can override at the plan gate; surface a kept alternate in a clip `note` if it's a close call.
   - `broll_index.json` — `clips[]` with `{ file_index, segment_index, start_seconds, end_seconds, description, tags, has_motion, has_usable_audio, confidence, shot_type, subject_position, framing_ok_for_vertical, hook_candidate, hook_reason }`. Your B-roll candidate pool.
@@ -83,6 +84,38 @@ Exactly one call to `mcp__vob__vob_save_storyboard { project_id, content }`. `co
 ```
 
 Scene IDs are `s001`, `s002`, ... `sequence` starts at 1 and increments by 1. `source_clips` may be empty for an overlay-only scene; every other scene references real timecodes from the manifest.
+
+### Fan-out output form (schema 1.1) — when the spawn data carries `fan_out`
+
+Emit `"schema_version": "1.1"` with a top-level `shorts[]` array INSTEAD of top-level
+`scenes`/`total_target_duration_seconds`/`broll_placements` (the validator rejects a document
+carrying both):
+
+```json
+{
+  "schema_version": "1.1",
+  "...same project_id/generated_at/source/target...": "target.duration_seconds = the per-short ideal (midpoint of fan_out.per_short_duration)",
+  "shorts": [
+    {
+      "short_id": "short-1",
+      "title": "<the short's working title — what the user will see>",
+      "sequence": 1,
+      "total_target_duration_seconds": <number, within fan_out.per_short_duration>,
+      "scenes": [ "...same scene schema; sequence restarts at 1 inside each short..." ],
+      "broll_placements": [ "...optional, references THIS short's scenes..." ],
+      "notes": "<optional per-short guidance for COMPOSE>"
+    }
+  ],
+  "notes": "<optional document-level guidance>"
+}
+```
+
+Fan-out rules:
+- **scene_ids must be unique across ALL shorts** (clip files are named `<scene_id>-<clip_index>.mp4`). Convention: prefix by short number — short 1 uses `s101, s102, …`, short 2 `s201, s202, …` (the save rejects duplicates with `PLAN_DUPLICATE_SCENE_ID`).
+- **Each short is an independent edit**: its own hook (first scene, `purpose:"hook"`), beats, payoff. Prefer DISTINCT hook candidates across shorts — N shorts opening on the same line is N copies, not a set. Shorts may share source material but should each have a reason to exist (a different angle, moment, or claim).
+- **Per-short duration**: each short's `total_target_duration_seconds` = its scene sum, inside `fan_out.per_short_duration` (plan lint warns `PLAN_SHORT_DURATION_OUT_OF_RANGE` otherwise).
+- **The video-element budget applies PER SHORT** (each short becomes its own composition): keep each short's total `source_clips[]` count ≤6.
+- Plan lint runs per short; findings come back tagged `[short_id]` — fix them in the named short only.
 
 Optional per scene: `caption_segments: [{text, start_seconds, end_seconds, emphasis?}]` — SOURCE-time caption chunks (3–5 words each) cut on clause boundaries from the transcript; emit them whenever `captions` is set (the composer re-times them; you own the chunking).
 Optional per scene: `transition_in` / `transition_out`: `"cut"` (default) or `"fade"` — nothing else renders reliably on the reference host; use `fade` at most twice per video.

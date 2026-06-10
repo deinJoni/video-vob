@@ -283,6 +283,43 @@ function summarizeTargetDurationSeconds(answers) {
   return duration && Number.isFinite(duration.seconds) ? duration.seconds : null;
 }
 
+// Range/per-deliverable form of the target duration: "20-35s per short" ->
+// {min,max,per_deliverable:true}; "30s each" (no range) still surfaces
+// {per_deliverable:true} with null bounds — the adapters' fan-out trigger keys
+// on this field, so the flag must survive rangeless qualifiers. null for plain
+// durations and legacy sessions.
+function summarizeTargetDurationRange(answers) {
+  const a = asSlot(answers);
+  const duration = a ? asSlot(a.target_duration) : null;
+  if (!duration) return null;
+  const range = asSlot(duration.range);
+  const hasRange = range && Number.isFinite(range.min_seconds) && Number.isFinite(range.max_seconds);
+  const perDeliverable = duration.per_deliverable === true;
+  if (!hasRange && !perDeliverable) return null;
+  return {
+    min_seconds: hasRange ? range.min_seconds : null,
+    max_seconds: hasRange ? range.max_seconds : null,
+    per_deliverable: perDeliverable,
+  };
+}
+
+// Lean deliverables digest: enough for the orchestrator to compute the
+// remaining fan-out shorts on resume (full records live in state.deliverables
+// and deliverables/manifest.json).
+function summarizeDeliverables(deliverables) {
+  const list = arrOr(deliverables);
+  if (list.length === 0) return [];
+  return list.map((d) => {
+    const x = asSlot(d) || {};
+    return {
+      id: strOrNull(x.id),
+      short_id: strOrNull(x.short_id),
+      title: strOrNull(x.title),
+      origin: strOrNull(x.origin),
+    };
+  });
+}
+
 function summarizeBrief(slot) {
   const b = asSlot(slot);
   if (!b) return null;
@@ -307,6 +344,22 @@ function summarizeStoryboard(slot) {
     revision_count: intOr(s.revision_count, 0),
     scene_count: intOr(s.scene_count, null),
     total_duration_seconds: numOr(s.total_duration_seconds, null),
+    // Fan-out (shorts[] storyboards): the per-short digest the orchestrator
+    // needs to drive the active-short loop on resume.
+    ...(Number.isInteger(s.short_count) && s.short_count > 0
+      ? {
+        short_count: s.short_count,
+        shorts: arrOr(s.shorts).map((sh) => {
+          const x = asSlot(sh) || {};
+          return {
+            short_id: strOrNull(x.short_id),
+            title: strOrNull(x.title),
+            total_target_duration_seconds: numOr(x.total_target_duration_seconds, null),
+            scene_count: intOr(x.scene_count, null),
+          };
+        }),
+      }
+      : {}),
     plan_lint: planLint
       ? { error_count: intOr(planLint.error_count, 0), warning_count: intOr(planLint.warning_count, 0) }
       : null,
@@ -323,6 +376,8 @@ function summarizeComposition(slot) {
     lint_report_path: strOrNull(c.lint_report_path),
     lint_ran_at: strOrNull(c.lint_ran_at),
     revision_count: intOr(c.revision_count, 0),
+    // Fan-out: which short the current composition implements.
+    short_id: strOrNull(c.short_id),
   };
 }
 
@@ -389,6 +444,7 @@ function buildStateSummary(state, projectId) {
     style: style && style.derived_from != null ? { derived_from: style.derived_from } : null,
     external_import: state.external_import === true,
     deliverable_count: arrOr(state.deliverables).length,
+    deliverables: summarizeDeliverables(state.deliverables),
     history_count: arrOr(state.history).length,
     dependency_failures: dependencyFailuresDigest(state.dependencies),
     manifest: summarizeManifest(state.manifest),
@@ -401,6 +457,7 @@ function buildStateSummary(state, projectId) {
       : null,
     platform: summarizePlatform(answers),
     target_duration_seconds: summarizeTargetDurationSeconds(answers),
+    target_duration_range: summarizeTargetDurationRange(answers),
     brief: summarizeBrief(state.brief),
     storyboard: summarizeStoryboard(state.storyboard),
     clips: transcoded
