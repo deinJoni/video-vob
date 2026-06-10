@@ -13,7 +13,6 @@ if [[ -z "$TARGET" ]]; then
   echo "  available adapters:"
   for d in "$SCRIPT_DIR/adapters/"*/; do
     name="$(basename "$d")"
-    [[ "$name" == "README.md" ]] && continue
     echo "    - $name"
   done
   exit 1
@@ -28,6 +27,14 @@ mkdir -p "$TARGET"
 
 # The engine is adapter-agnostic and shared by every adapter.
 cp -R "$SCRIPT_DIR/mcp" "$TARGET/"
+
+# Back up any pre-existing CLI config the wholesale copy would clobber.
+for f in opencode.json .mcp.json .claude/settings.json; do
+  if [[ -e "$TARGET/$f" ]]; then
+    cp -R "$TARGET/$f" "$TARGET/$f.pre-vob.bak"
+    echo "warning: $f existed in target — backed up to $f.pre-vob.bak (then overwritten)"
+  fi
+done
 
 # Copy the adapter's config wholesale. Each adapter directory contains exactly
 # the files that CLI expects, in that CLI's own layout — claude-code ships

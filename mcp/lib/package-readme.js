@@ -58,7 +58,25 @@ function renderPackageReadme(manifest) {
     lines.push("");
     lines.push(`- **Path:** \`${manifest.thumbnail.path}\``);
     if (Number.isFinite(manifest.thumbnail.extracted_at_seconds)) {
-      lines.push(`- **Frame at:** ${fmtSeconds(manifest.thumbnail.extracted_at_seconds)} (${manifest.thumbnail.extracted_at_percent ?? "?"}% of duration)`);
+      const where = manifest.thumbnail.strategy === "hook_scene_midpoint"
+        ? `${manifest.thumbnail.extracted_at_percent ?? "?"}% of duration; hook scene "${manifest.thumbnail.hook_scene_id ?? "?"}" midpoint`
+        : `${manifest.thumbnail.extracted_at_percent ?? "?"}% of duration`;
+      lines.push(`- **Frame at:** ${fmtSeconds(manifest.thumbnail.extracted_at_seconds)} (${where})`);
+    }
+    lines.push("");
+  }
+
+  // Audio section: omitted entirely on a legacy (pre-v1.1) manifest.
+  if (manifest.audio && typeof manifest.audio === "object") {
+    lines.push("## Audio");
+    lines.push("");
+    if (manifest.audio.loudnorm_applied) {
+      const measured = Number.isFinite(manifest.audio.measured_input_i)
+        ? ` (measured ${manifest.audio.measured_input_i} LUFS at input)`
+        : "";
+      lines.push(`- **Loudness:** normalized to −14 LUFS / −1 dBTP${measured}`);
+    } else {
+      lines.push(`- **Loudness:** not normalized (${manifest.audio.skipped_reason || "unknown"})`);
     }
     lines.push("");
   }

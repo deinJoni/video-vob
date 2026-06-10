@@ -20,6 +20,12 @@ const { checkHyperframesAvailable } = require("../hyperframes-runner.js");
 const { checkFfmpegAvailable } = require("../ffmpeg-runner.js");
 const { checkAsrAvailable } = require("../asr-backend.js");
 
+const DEPENDENCY_HINTS = Object.freeze({
+  ffmpeg: "install ffmpeg (macOS: brew install ffmpeg; Debian/Ubuntu: apt-get install ffmpeg)",
+  hyperframes: "npm install -g hyperframes",
+  asr: "pip install faster-whisper (or set VOB_ASR_BACKEND)",
+});
+
 const VIDEO_EXTENSIONS = new Set([".mp4", ".mov", ".mkv", ".webm", ".m4v", ".avi"]);
 // Audio-only drops are first-class: a bare voiceover/narration track is a valid
 // spine source (stream-layout prior 'narration'). Accept common audio
@@ -246,6 +252,10 @@ function ingestFile(args) {
         ingested_at: manifest.ingested_at,
         file_count: manifest.file_count,
         video_stream_count: manifest.video_stream_count,
+        // Stamped so the state summary (buildStateSummary) can report total
+        // source duration without re-reading manifest.json. Null when no file
+        // has a finite probed duration; legacy sessions lack the field.
+        total_duration_seconds: Math.round(manifest.files.reduce((a, f) => a + (Number(f.duration_seconds) || 0), 0) * 10) / 10 || null,
       },
       dependencies: {
         ...(state.dependencies && typeof state.dependencies === "object" && !Array.isArray(state.dependencies) ? state.dependencies : {}),
@@ -269,6 +279,20 @@ function ingestFile(args) {
     };
     writeFileAtomic(statePath(id), `${JSON.stringify(next, null, 2)}\n`);
 
+    // Lean return (D1): per-file summaries + dependency FAILURES only. The
+    // full preflight blobs live in state.dependencies for the gates/doctor.
+    const dependencyFailures = [
+      ["ffmpeg", ffmpeg],
+      ["hyperframes", hyperframes],
+      ["asr", asr],
+    ]
+      .filter(([, info]) => info && info.ok === false)
+      .map(([name, info]) => ({
+        name,
+        error: info.error || null,
+        hint: DEPENDENCY_HINTS[name] || null,
+      }));
+
     return {
       manifest_path: manifestFile,
       source_path: sourcePath,
@@ -277,9 +301,7 @@ function ingestFile(args) {
       new_or_changed_count: manifest.new_or_changed_count,
       reused_count: manifest.reused_count,
       files: manifest.files.map(({ probe: _probe, ...summary }) => summary),
-      hyperframes,
-      ffmpeg,
-      asr,
+      dependency_failures: dependencyFailures,
       rotation_warning: rotatedFiles.length > 0 ? rotatedFiles : null,
     };
   });
@@ -287,7 +309,7 @@ function ingestFile(args) {
 
 module.exports = Object.freeze({
   name: "vob_ingest_file",
-  description: "Probe a video/audio file (or directory) with ffprobe and write a hash-keyed manifest.json plus a state.json summary. INCREMENTAL + ADDITIVE: re-running merges with the existing manifest — unchanged files (same path+size+mtime) reuse their prior probe+hash, new/changed files are re-probed and re-hashed, and files from earlier drops are preserved. Each entry carries {hash, container, resolution, fps, has_video, has_audio, rotation} plus a stream-layout `prior` ('narration' for audio-only, 'broll' for silent video, null for both). Preflights the downstream toolchain (ffmpeg, hyperframes, AND the ASR/transcription backend) into state.dependencies so a dead transcription path surfaces here instead of after INSPECT burns minutes; returns `asr` (the backend preflight) and `rotation_warning` (files with a non-zero display rotation — the DJI autorotate gotcha). Returns new_or_changed_count/reused_count. Errors if ffprobe is missing, the merged manifest has no playable video stream, or the project is uninitialized.",
+  description: "Probe a media file or directory with ffprobe into a hash-keyed, incremental manifest.json (re-runs merge; unchanged files are not re-probed). Preflights ffmpeg/hyperframes/ASR into state.dependencies and returns dependency_failures (empty when healthy) plus per-file summaries and rotation_warning. Errors if ffprobe is missing or no video stream exists.",
   inputSchema: {
     type: "object",
     properties: {

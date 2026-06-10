@@ -95,20 +95,25 @@ function runFfmpegBlocking(argv, { cwd, timeoutMs = FFMPEG_TIMEOUT_MS, stderrLog
   );
 }
 
+// Input-side -ss (fast seek): ffmpeg seeks to the nearest preceding keyframe,
+// then decodes-and-DISCARDS up to the exact timestamp — frame-accurate under
+// re-encode (the "lands on the previous keyframe" corruption applies only to
+// stream-copy, which we never do here). This turns COMPOSE entry on a 30-40 min
+// source from O(sum of clip end-times) decode into O(sum of clip durations).
+// -t (duration) is used instead of -to because input-side -ss resets the
+// timeline to 0 at the seek point.
 function buildClipCutArgv({ src, out, inSeconds, outSeconds, dropAudio }) {
-  // `-i <src>` before `-ss` does decode-then-seek: slower but frame-accurate,
-  // and required for HEVC (input-side `-ss` lands on the previous keyframe
-  // and corrupts the cut). The clip is re-encoded to H.264 + yuv420p so
-  // headless Chrome can decode it reliably regardless of source codec.
   const argv = [
     "-y",
     ...inputAutorotateArgs(),
-    "-i", src,
     "-ss", String(inSeconds),
-    "-to", String(outSeconds),
+    "-i", src,
+    "-t", (outSeconds - inSeconds).toFixed(3),
     "-c:v", "libx264",
-    "-preset", "fast",
-    "-crf", "20",
+    "-preset", "medium", // was fast — clips are short + sidecar-cached; spend the
+    "-crf", "18",        // encode time once. crf 20->18 + medium cuts the double-
+                         // generation loss on the A-roll (clip is re-encoded again
+                         // by the hyperframes capture).
     // Dense keyframes (~1 per second at 30fps): every output frame is at most a
     // few frames from a keyframe, so headless-Chrome seeks during capture are
     // fast. WITHOUT this the pre-cut defaults to ~8s GOPs; single-track renders
@@ -124,10 +129,70 @@ function buildClipCutArgv({ src, out, inSeconds, outSeconds, dropAudio }) {
   if (dropAudio) {
     argv.push("-an");
   } else {
-    argv.push("-c:a", "aac", "-b:a", "128k");
+    argv.push("-c:a", "aac", "-b:a", "192k"); // was 128k — voice intermediate headroom
   }
   argv.push(out);
   return argv;
+}
+
+// --- Two-pass loudnorm (PACKAGE) ---------------------------------------------
+// Pass 1 measures, pass 2 applies with linear=true (one-pass dynamic loudnorm
+// pumps); the video stream is copied untouched. Target: -14 LUFS / -1 dBTP
+// (the short-form platform reference level).
+const LOUDNORM_TIMEOUT_MS = 10 * 60 * 1000;
+const LOUDNORM_TARGET = Object.freeze({ i: -14, tp: -1, lra: 11 });
+
+function buildLoudnormMeasureArgv({ input }) {
+  return ["-hide_banner", "-nostats", "-i", input, "-map", "0:a:0",
+    "-af", "loudnorm=I=-14:TP=-1:LRA=11:print_format=json", "-f", "null", "-"];
+}
+
+// `measured` fields are the strings parsed from pass 1 (parseLoudnormStats).
+function buildLoudnormApplyArgv({ input, output, measured }) {
+  const af = `loudnorm=I=-14:TP=-1:LRA=11:measured_I=${measured.input_i}:measured_TP=${measured.input_tp}`
+    + `:measured_LRA=${measured.input_lra}:measured_thresh=${measured.input_thresh}`
+    + `:offset=${measured.target_offset}:linear=true:print_format=summary`;
+  return ["-y", "-i", input, "-map", "0:v:0", "-map", "0:a:0",
+    "-c:v", "copy",
+    "-af", af,
+    "-c:a", "aac", "-b:a", "256k",
+    "-ar", "48000", // loudnorm internally resamples to 192kHz; restore 48k
+    "-movflags", "+faststart",
+    output];
+}
+
+// Parse the JSON block loudnorm prints to stderr: take the substring from the
+// LAST "{" preceding the last occurrence of "input_i" to the next balanced "}".
+// Returns { input_i, input_tp, input_lra, input_thresh, target_offset } as
+// STRINGS (loudnorm emits them quoted), or null on any miss.
+function parseLoudnormStats(stderr) {
+  const s = typeof stderr === "string" ? stderr : "";
+  const keyIndex = s.lastIndexOf('"input_i"');
+  if (keyIndex === -1) return null;
+  const open = s.lastIndexOf("{", keyIndex);
+  if (open === -1) return null;
+  let depth = 0;
+  let close = -1;
+  for (let i = open; i < s.length; i += 1) {
+    if (s[i] === "{") depth += 1;
+    else if (s[i] === "}") {
+      depth -= 1;
+      if (depth === 0) { close = i; break; }
+    }
+  }
+  if (close === -1) return null;
+  let parsed;
+  try {
+    parsed = JSON.parse(s.slice(open, close + 1));
+  } catch {
+    return null;
+  }
+  const out = {};
+  for (const key of ["input_i", "input_tp", "input_lra", "input_thresh", "target_offset"]) {
+    if (typeof parsed[key] !== "string" || parsed[key] === "") return null;
+    out[key] = parsed[key];
+  }
+  return out;
 }
 
 async function cutClip({ src, out, inSeconds, outSeconds, dropAudio = false, timeoutMs = CLIP_CUT_TIMEOUT_MS } = {}) {
@@ -176,12 +241,17 @@ module.exports = {
   FFMPEG_INSTALL_HINT,
   FFMPEG_TIMEOUT_MS,
   CLIP_CUT_TIMEOUT_MS,
+  LOUDNORM_TIMEOUT_MS,
+  LOUDNORM_TARGET,
   PREFLIGHT_TIMEOUT_MS,
   MAX_OUTPUT_BYTES,
   buildClipCutArgv,
+  buildLoudnormApplyArgv,
+  buildLoudnormMeasureArgv,
   checkFfmpegAvailable,
   cutClip,
   inputAutorotateArgs,
+  parseLoudnormStats,
   runFfmpegBlocking,
   runFfmpegSync,
 };

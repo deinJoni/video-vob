@@ -52,7 +52,16 @@ function renderBrollPlacements(placements) {
 
 function renderScene(scene) {
   const lines = [];
-  lines.push(`## Scene ${scene.sequence}: ${scene.scene_id} — ${scene.purpose}`);
+  // Non-default transitions only — plain cuts stay unannotated.
+  const transitions = [];
+  if (typeof scene.transition_in === "string" && scene.transition_in !== "cut") {
+    transitions.push(`in: ${scene.transition_in}`);
+  }
+  if (typeof scene.transition_out === "string" && scene.transition_out !== "cut") {
+    transitions.push(`out: ${scene.transition_out}`);
+  }
+  const transitionTag = transitions.length > 0 ? ` _(${transitions.join(", ")})_` : "";
+  lines.push(`## Scene ${scene.sequence}: ${scene.scene_id} — ${scene.purpose}${transitionTag}`);
   lines.push("");
   lines.push(`**Target duration:** ${formatSeconds(scene.target_duration_seconds)}  `);
   lines.push(`**Pacing:** ${scene.pacing}`);
@@ -80,6 +89,16 @@ function renderScene(scene) {
     lines.push("");
   }
 
+  if (Array.isArray(scene.caption_segments) && scene.caption_segments.length > 0) {
+    lines.push("**Caption segments:**");
+    scene.caption_segments.forEach((seg) => {
+      const emphasis = seg && seg.emphasis === true ? " **(emphasis)**" : "";
+      const text = seg && typeof seg.text === "string" ? seg.text : "";
+      lines.push(`  - ${formatTimecode(seg && seg.start_seconds)} → ${formatTimecode(seg && seg.end_seconds)} "${text}"${emphasis}`);
+    });
+    lines.push("");
+  }
+
   if (typeof scene.notes === "string" && scene.notes.trim() !== "") {
     lines.push(`**Notes:** ${scene.notes.trim()}`);
     lines.push("");
@@ -88,10 +107,13 @@ function renderScene(scene) {
   return lines.join("\n");
 }
 
-function renderStoryboardMarkdown(storyboard) {
+// options.planWarnings: plan-lint findings to surface at the plan gate.
+// Back-compat: callable with one argument (walker, tests).
+function renderStoryboardMarkdown(storyboard, options = {}) {
   if (!storyboard || typeof storyboard !== "object") {
     throw new Error("renderStoryboardMarkdown: storyboard must be an object");
   }
+  const planWarnings = Array.isArray(options && options.planWarnings) ? options.planWarnings : [];
   const target = storyboard.target || {};
   const source = storyboard.source || {};
   const scenes = Array.isArray(storyboard.scenes) ? storyboard.scenes : [];
@@ -108,6 +130,19 @@ function renderStoryboardMarkdown(storyboard) {
   lines.push(`- Tone: ${target.tone || "(?)"}`);
   lines.push(`- Total target across scenes: ${formatSeconds(storyboard.total_target_duration_seconds)}`);
   lines.push("");
+
+  if (planWarnings.length > 0) {
+    lines.push(`## Plan warnings (${planWarnings.length})`);
+    lines.push("");
+    lines.push("_Flagged by plan lint — review at the plan gate; fix or accept explicitly._");
+    lines.push("");
+    planWarnings.slice(0, 25).forEach((w) => {
+      const code = w && typeof w.code === "string" ? w.code : "WARNING";
+      const message = w && typeof w.message === "string" ? w.message : String(w);
+      lines.push(`- **${code}** — ${message}`);
+    });
+    lines.push("");
+  }
 
   lines.push("## Source");
   lines.push(`- Manifest: \`${source.manifest_path || "(?)"}\``);

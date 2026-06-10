@@ -4,11 +4,12 @@ const fs = require("fs");
 const path = require("path");
 
 const { ERROR_CODES, ToolError } = require("../envelope.js");
-const { assertSafeProjectId, composeDir, statePath } = require("../paths.js");
+const { assertSafeProjectId, composeDir, statePath, storyboardPath } = require("../paths.js");
 const { withSessionLock, writeFileAtomic } = require("../storage.js");
 const { readSessionStateStrict } = require("../session-state.js");
-const { validateCompositionFiles } = require("../composition-files.js");
-const { recreateSourceSymlinks } = require("../source-symlink.js");
+const { validateCompositionFiles, htmlAndCssEntries } = require("../composition-files.js");
+const { recreateSourceSymlinks, resolveSceneClipLinks, resolveSourceLinks, injectFontKit } = require("../source-symlink.js");
+const { runCompositionQc } = require("../composition-qc.js");
 
 function nowIso() {
   return new Date().toISOString();
@@ -40,6 +41,33 @@ function saveComposition(args) {
     );
   }
 
+  // Static QC pre-check (D6), BEFORE the lock/wipe: a QC-failing save leaves the
+  // prior composition (and its lint status) fully intact, exactly like a
+  // schema-failing save.
+  let storyboard = null;
+  try {
+    storyboard = JSON.parse(fs.readFileSync(storyboardPath(id), "utf8"));
+  } catch {
+    storyboard = null;
+  }
+  if (storyboard && (typeof storyboard !== "object" || Array.isArray(storyboard))) storyboard = null;
+
+  const qc = runCompositionQc({
+    files: htmlAndCssEntries(verdict.normalized),
+    storyboard,
+    sourceLinks: resolveSourceLinks(id),
+    sceneClipLinks: resolveSceneClipLinks(id),
+    checkTargetsOnDisk: true, // clips were materialized at COMPOSE entry; missing = real problem
+  });
+  if (qc.error_count > 0) {
+    throw new ToolError(
+      ERROR_CODES.INVALID_ARGUMENTS,
+      `composition QC failed: ${qc.error_count} error(s) — ${qc.findings
+        .filter((f) => f.severity === "error").slice(0, 3).map((f) => f.rule).join(", ")}. Fix and re-save.`,
+      { qc_findings: qc.findings.slice(0, 10), qc_error_count: qc.error_count, qc_warning_count: qc.warning_count },
+    );
+  }
+
   return withSessionLock(id, () => {
     const state = readSessionStateStrict(id);
 
@@ -64,6 +92,10 @@ function saveComposition(args) {
     }
 
     const symlinkResult = recreateSourceSymlinks(id, composeRoot);
+    // Font kit rides the same mechanism as ./source/ (D7). A composer-supplied
+    // fonts.css wins — skipCss leaves its already-written file in place.
+    const fontResult = injectFontKit(composeRoot, { skipCss: writtenRelPaths.includes("fonts.css") });
+    symlinkResult.warnings.push(...fontResult.warnings);
 
     const ts = nowIso();
     const prev = state.composition && typeof state.composition === "object" && !Array.isArray(state.composition)
@@ -71,6 +103,13 @@ function saveComposition(args) {
       : null;
     const prevRevisionCount = prev && Number.isInteger(prev.revision_count) ? prev.revision_count : 0;
     const revisionCount = prevRevisionCount + 1;
+
+    const prevPreviewSlot = state.preview && typeof state.preview === "object" && !Array.isArray(state.preview)
+      ? state.preview
+      : null;
+    const prevRenderSlot = state.render && typeof state.render === "object" && !Array.isArray(state.render)
+      ? state.render
+      : null;
 
     const next = {
       ...state,
@@ -81,10 +120,22 @@ function saveComposition(args) {
         lint_report_path: null,
         lint_ran_at: null,
         revision_count: revisionCount,
+        // errors never stored — they reject before the lock
+        qc: { error_count: 0, warning_count: qc.warning_count, findings: qc.findings.slice(0, 10) },
+        fonts: { linked: fontResult.linked, css_path: fontResult.linked ? "fonts.css" : null },
         ...(symlinkResult.warnings.length > 0
           ? { source_link_warnings: symlinkResult.warnings }
           : {}),
       },
+      // D2: a composition save invalidates downstream human approvals. SKILL.md
+      // claimed this reset existed; now it does. Slots are not deleted (paths
+      // survive for display) — only confirmed/confirmed_at reset.
+      ...(prevPreviewSlot
+        ? { preview: { ...prevPreviewSlot, confirmed: false, confirmed_at: null } }
+        : {}),
+      ...(prevRenderSlot
+        ? { render: { ...prevRenderSlot, confirmed: false, confirmed_at: null } }
+        : {}),
       last_updated: ts,
       history: [
         ...(Array.isArray(state.history) ? state.history : []),
@@ -98,6 +149,9 @@ function saveComposition(args) {
           scene_clip_link_count: Array.isArray(symlinkResult.scene_clip_links)
             ? symlinkResult.scene_clip_links.length
             : 0,
+          reset_preview_confirmed: Boolean(prevPreviewSlot && prevPreviewSlot.confirmed === true),
+          reset_render_confirmed: Boolean(prevRenderSlot && prevRenderSlot.confirmed === true),
+          qc_warning_count: qc.warning_count,
         },
       ],
     };
@@ -109,13 +163,15 @@ function saveComposition(args) {
       saved_at: ts,
       lint_status: "unknown",
       revision_count: revisionCount,
+      qc: { error_count: 0, warning_count: qc.warning_count, findings: qc.findings.slice(0, 10) },
+      fonts_linked: fontResult.linked,
     };
   });
 }
 
 module.exports = Object.freeze({
   name: "vob_save_composition",
-  description: "Save (or overwrite) the hyperframes composition for a project. Input is a map of relative-path → string content; index.html is required, companion files optional (.html, .css, .js, .json, .svg only). Files are written atomically to the session's compose/ directory; any prior composition files are wiped first (save is fully replacing). After writing files, MCP creates two sets of symlinks under compose/source/: (a) one symlink per manifest.files[] entry named after the source's basename — original-source fallback for overlay frames; (b) one symlink per storyboard source_clips[] entry named <scene_id>-<clip_index>.mp4, pointing at the H.264 pre-cut clip in <session>/transcoded/clips/. Compositions should reference scene clips (./source/<scene_id>-<clip_index>.mp4) with data-media-start=0 rather than the original source — pre-cut clips avoid the HEVC + deep-seek failure modes in headless Chrome. Any save resets composition.lint_status to 'unknown' and increments revision_count — vob_lint_composition must run again before COMPOSE -> PREVIEW will unlock.",
+  description: "Save the hyperframes composition: map of relative-path → content (index.html required; .html/.css/.js/.json/.svg; ≤64 files, ≤256KiB each, ≤1MiB total). Fully replacing. The engine recreates ./source/ symlinks and the ./fonts.css font kit, runs static QC (errors reject with details.qc_findings), resets lint_status to 'unknown' and preview/render confirmation, and bumps revision_count.",
   inputSchema: {
     type: "object",
     properties: {

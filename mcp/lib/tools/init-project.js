@@ -4,7 +4,7 @@ const { initProject } = require("../session-state.js");
 
 module.exports = Object.freeze({
   name: "vob_init_project",
-  description: "Initialize a new video-vob project: create the session directory and write the initial state.json (phase=INGEST). Errors if the project already exists. Optional `derived_from` (a prior project_id) records a style lineage so the orchestrator can inherit that project's design — its intent answers, brief tone, and composition look — for new content; the source project must already exist (validated up front; NOT_FOUND otherwise) and is stamped into state.style.",
+  description: "Create the session directory and initial state.json (phase INGEST). Errors STATE_CONFLICT if the project exists (resume instead). Optional derived_from stamps style lineage from an existing project (NOT_FOUND if it doesn't exist). Returns {created, project_id, session_dir, phase, style}.",
   inputSchema: {
     type: "object",
     properties: {

@@ -19,26 +19,35 @@ function nowIso() {
 }
 
 function parseContent(rawContent) {
-  if (typeof rawContent !== "string") {
-    throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, "content must be a string of JSON");
-  }
-  if (rawContent.trim() === "") {
-    throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, "content must be a non-empty JSON string");
-  }
-  if (rawContent.length > MAX_STORYBOARD_LENGTH) {
-    throw new ToolError(
-      ERROR_CODES.INVALID_ARGUMENTS,
-      `content exceeds ${MAX_STORYBOARD_LENGTH} character limit`,
-    );
-  }
   let parsed;
-  try {
-    parsed = JSON.parse(rawContent);
-  } catch (error) {
-    throw new ToolError(
-      ERROR_CODES.INVALID_ARGUMENTS,
-      `content is not valid JSON: ${error.message || String(error)}`,
-    );
+  if (typeof rawContent === "string") {
+    if (rawContent.trim() === "") {
+      throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, "content must be a non-empty JSON string");
+    }
+    if (rawContent.length > MAX_STORYBOARD_LENGTH) {
+      throw new ToolError(
+        ERROR_CODES.INVALID_ARGUMENTS,
+        `content exceeds ${MAX_STORYBOARD_LENGTH} character limit`,
+      );
+    }
+    try {
+      parsed = JSON.parse(rawContent);
+    } catch (error) {
+      throw new ToolError(
+        ERROR_CODES.INVALID_ARGUMENTS,
+        `content is not valid JSON: ${error.message || String(error)}`,
+      );
+    }
+  } else if (rawContent !== null && typeof rawContent === "object" && !Array.isArray(rawContent)) {
+    if (JSON.stringify(rawContent).length > MAX_STORYBOARD_LENGTH) {
+      throw new ToolError(
+        ERROR_CODES.INVALID_ARGUMENTS,
+        `content exceeds ${MAX_STORYBOARD_LENGTH} character limit`,
+      );
+    }
+    parsed = rawContent;
+  } else {
+    throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, "content must be a JSON object or a string of JSON");
   }
   const verdict = validateStoryboard(parsed);
   if (!verdict.ok) {
@@ -60,20 +69,27 @@ function saveStoryboard(args) {
 
     const contentCheck = validateStoryboardContent(storyboard, state);
     if (!contentCheck.ok) {
-      const summary = contentCheck.errors
-        .map((e) => (typeof e === "string" ? e : `${e.code}: ${e.message}`))
-        .join("; ");
+      const shown = contentCheck.errors.slice(0, 10);
+      const extra = contentCheck.errors.length - shown.length;
       throw new ToolError(
         ERROR_CODES.INVALID_ARGUMENTS,
-        `storyboard content checks failed: ${summary}`,
-        { content_errors: contentCheck.errors },
+        `storyboard plan lint failed: ${shown.map((e) => (typeof e === "string" ? e : `${e.code}: ${e.message}`)).join("; ")}${extra > 0 ? ` (+${extra} more)` : ""}`,
+        {
+          plan_errors: shown,
+          // warnings ride on rejection too — the storyboarder fixes both in
+          // one revision pass
+          plan_warnings: contentCheck.warnings.slice(0, 10),
+          error_count: contentCheck.errors.length,
+          warning_count: contentCheck.warnings.length,
+        },
       );
     }
+    const planWarnings = contentCheck.warnings;
 
     const jsonFile = storyboardPath(id);
     const mdFile = storyboardMarkdownPath(id);
     const jsonText = `${JSON.stringify(storyboard, null, 2)}\n`;
-    const mdText = renderStoryboardMarkdown(storyboard);
+    const mdText = renderStoryboardMarkdown(storyboard, { planWarnings });
 
     writeFileAtomic(jsonFile, jsonText);
     writeFileAtomic(mdFile, mdText);
@@ -96,11 +112,19 @@ function saveStoryboard(args) {
         confirmed: false,
         confirmed_at: null,
         revision_count: revisionCount,
+        scene_count: storyboard.scenes.length,
+        total_duration_seconds: storyboard.total_target_duration_seconds,
+        plan_lint: {
+          error_count: 0,
+          warning_count: planWarnings.length,
+          warnings: planWarnings.slice(0, 25), // bounded in state
+          linted_at: ts,
+        },
       },
       last_updated: ts,
       history: [
         ...(Array.isArray(state.history) ? state.history : []),
-        { kind: "storyboard_saved", at: ts, revision_count: revisionCount },
+        { kind: "storyboard_saved", at: ts, revision_count: revisionCount, warning_count: planWarnings.length },
       ],
     };
     writeFileAtomic(statePath(id), `${JSON.stringify(next, null, 2)}\n`);
@@ -112,22 +136,32 @@ function saveStoryboard(args) {
       confirmed: false,
       revision_count: revisionCount,
       scene_count: storyboard.scenes.length,
+      total_duration_seconds: storyboard.total_target_duration_seconds,
+      plan_lint: {
+        error_count: 0,
+        warning_count: planWarnings.length,
+        warnings: planWarnings.slice(0, 10), // ≤10 inline per D1
+      },
     };
   });
 }
 
 module.exports = Object.freeze({
   name: "vob_save_storyboard",
-  description: "Save (or overwrite) the storyboard for a project (the structural half of the PLAN gate). Input is a JSON string conforming to storyboard schema 1.0; the MCP server validates it, writes storyboard.json, and renders the human-readable storyboard.md from the JSON (markdown is never authored separately). Any save resets confirmed:false and increments revision_count — the user must explicitly approve again via vob_confirm_storyboard before the PLAN -> COMPOSE gate will unlock.",
+  description: "Save the storyboard (schema 1.0; content may be a JSON object or string). Validates shape, then runs plan lint: errors (out-of-range clips, captions-on-silent, narration-span violations) reject the save; warnings (hook placement/length, duration drift, b_roll holds, key-moment coverage, clean-speech straddles) return in plan_lint, persist to state, and render into storyboard.md for the plan gate. Any save resets confirmed:false and bumps revision_count.",
   inputSchema: {
     type: "object",
     properties: {
       project_id: { type: "string" },
       content: {
-        type: "string",
-        minLength: 1,
-        maxLength: MAX_STORYBOARD_LENGTH,
-        description: "Storyboard JSON document as a string. Must satisfy storyboard schema 1.0.",
+        // NB: the object branch MUST keep additionalProperties:true — the
+        // mini-validator defaults objects to additionalProperties:false (the
+        // bug class that broke save_classification).
+        oneOf: [
+          { type: "string", minLength: 1, maxLength: MAX_STORYBOARD_LENGTH },
+          { type: "object", additionalProperties: true },
+        ],
+        description: "Storyboard document (schema 1.0) as a JSON object or a JSON string.",
       },
     },
     required: ["project_id", "content"],

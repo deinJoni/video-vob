@@ -1,8 +1,5 @@
 {
   "thumbnail_timestamp_percent": 10,
-  "tiktok":    { "width": 1080, "height": 1920, "fps": 30, "thumbnail_timestamp_percent": 10 },
-  "reels":     { "width": 1080, "height": 1920, "fps": 30, "thumbnail_timestamp_percent": 10 },
-  "shorts":    { "width": 1080, "height": 1920, "fps": 30, "thumbnail_timestamp_percent": 10 },
-  "square":    { "width": 1080, "height": 1080, "fps": 30, "thumbnail_timestamp_percent": 15 },
-  "landscape": { "width": 1920, "height": 1080, "fps": 30, "thumbnail_timestamp_percent": 15 }
+  "tiktok":   { "safe_bottom_px": 320, "ideal_duration_s": { "min": 20, "max": 40 } },
+  "linkedin": { "width": 1080, "height": 1350, "fps": 30, "max_duration_s": 600 }
 }

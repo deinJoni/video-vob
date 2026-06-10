@@ -1,0 +1,120 @@
+# PLAN — brief + storyboard, presented together, one sign-off
+Spine rules 3, 4, 5, 11, 12 apply.
+
+PLAN is the single planning gate. It produces two artifacts: the **brief** (creative direction —
+hook, beats, tone, design language) which you draft, and the **storyboard** (the editorial plan)
+which you delegate to the `storyboarder` subagent. You present BOTH together and get ONE approval
+before COMPOSE. The gate requires both halves saved AND confirmed; internally that's
+`vob_confirm_brief` + `vob_confirm_storyboard`, but to the user it's a single "approve the plan"
+moment.
+
+## Read sites
+| step | source | fields |
+|---|---|---|
+| 1 | `vob_read_state_summary` | `manifest{path,file_count,total_duration_seconds}`, `intent.answers`, `platform{...}`, `target_duration_seconds`, `inspect.classification` pool paths, `inspect.{clean_speech_path,digest_path,strips_legend_path,thumbs_dir,thumb_interval_seconds,thumb_count,transcript_path,segments_path}`, `brief`, `storyboard`, `style.derived_from` |
+| 2 | read of `.opencode/vob/references/brief-design.md` | brief skeleton + tone→design table |
+| 7 | `vob_save_storyboard` result (via subagent) or summary | `storyboard.markdown_path`, `scene_count`, `plan_lint` |
+
+**Draft the brief**
+
+1. Call `vob_vob_read_state_summary { project_id }` for paths and flags. The intent ANSWER
+   VALUES are already in your conversation from INTENT — on a resume where they are not, the
+   summary's `intent.answers` carries the full stored answers; never call `vob_read_state` for
+   this (its `include` enum is `history|clips|dependencies` only). The brief's Source line uses
+   the summary's `manifest.total_duration_seconds`/`file_count`; `total_duration_seconds` is
+   `null` on a pre-v2 session — only then read `manifest.json` at `summary.manifest.path` and sum
+   `files[].duration_seconds`. Read the manifest likewise when per-file detail is needed for the
+   Technical line. If `brief`/`storyboard` already exist `confirmed:true` and the user is back
+   via a back-edge, ask whether they want a fresh pass or to keep what's there — only redo what
+   they want changed.
+
+2. Read `.opencode/vob/references/brief-design.md` now (once; skip if already in context)
+   and draft the brief from its skeleton + tone table. Your INSPECT visual notes plus the
+   A-roll/B-roll split are ground truth for Hook and Beats — do not invent visual content; if
+   your visual sense has faded, read the contact sheet(s) again first. The **Design language**
+   section is BINDING for the composer — fill it from the tone table, adjusted only where the
+   user's `captions_style` / rough idea / `--like` source brief say otherwise.
+
+   **Hook guidance:** Pick the verbal hook from `digest_path`'s `hook_candidates[]` (read the
+   digest if it isn't in context). Prefer a mid-action, high-energy line that makes a claim or
+   asks a question; NEVER a greeting or wind-up. If the inspector tagged `hook_candidate`
+   segments in the pools, cross-check the candidate's segment is in the A-roll pool. For silent
+   sources, the hook is the most kinetic contact-sheet cell.
+
+3. Call `vob_vob_save_brief { project_id, content }`. (Don't ask for approval yet — the
+   brief and storyboard are presented together as one gate.)
+
+**Delegate the storyboard**
+
+4. Record the invocation: `vob_vob_log_storyboarder_invocation { project_id,
+   revision_notes? }`. Omit `revision_notes` on the first invocation; pass the user's exact words
+   on every subsequent pass.
+
+5. Invoke the storyboarder. Spawn prompt is DATA-ONLY (no behavioral clauses — the agent .md owns
+   behavior; if you are tempted to add an instruction, it belongs in the agent file). Fields with
+   no value are passed as the literal string `none`; values come from the read-sites table.
+   Invoke the `storyboarder` subagent with the `task` tool, passing:
+   ```
+   DATA
+   project_id: <project_id>
+   manifest_path: <manifest.path>
+   brief_path: <brief.path>
+   intent.target_platform: <canonical>            (raw: "<raw>")
+   intent.platform_profile: width=<w> height=<h> fps=<fps> safe_top_px=<t> safe_bottom_px=<b> ideal_duration_s=<min>-<max> max_duration_s=<m>
+   intent.target_duration_seconds: <seconds>
+   intent.tone: <tone>
+   intent.key_moments: <key_moments>
+   intent.music_vo: <music_vo>
+   intent.audio_treatment: <value | n/a>
+   intent.captions_style: <value | n/a>
+   aroll_pool_path: <path | none>
+   broll_index_path: <path | none>
+   review_pool_path: <path | none>
+   segments_path: <path | none>
+   clean_speech_path: <inspect.clean_speech_path | none>
+   digest_path: <inspect.digest_path | none>
+   transcript_path: <path | none>
+   thumbs_dir: <inspect.thumbs_dir>
+   thumb_interval_seconds: <n>
+   thumb_count: <n>
+   strips_legend_path: <inspect.strips_legend_path | none>
+   style_source: <derived_from | none>
+   style_source_brief: ~/video-vob-sessions/<derived_from>/brief.md | none
+   prior_storyboard_path: <storyboard.artifact_path | none>
+   revision_notes: <user's exact words, or validator errors | none>
+   Follow your agent instructions.
+   ```
+
+6. If the storyboarder errors (schema validation OR plan-lint rejection — the error's `details`
+   carries `plan_errors[≤10]` + `plan_warnings[≤10]` + counts so one revision pass fixes both),
+   re-invoke it once with the error list as `revision_notes`. If it fails again, surface the
+   blocker and stop — never fabricate a storyboard yourself.
+
+**Present the plan, get one sign-off**
+
+7. Call `vob_vob_read_state_summary` (markdown path + scene count) and read
+   `storyboard.markdown_path` — show it, don't paraphrase. Present BOTH halves together: the
+   brief, then the storyboard markdown. Call out the editorial decisions the user is most likely
+   to override: which **best take** was auto-picked per retake group (alternates available), and
+   any **B-roll placements**. Ask one question: "Approve the plan, revise the brief, revise the
+   storyboard, or re-clarify intent?"
+
+7b. If the save result carried plan-lint `warnings[]`, present them with the plan as
+   `⚠ plan-lint:` lines — they are exactly the drift/hook/B-roll problems the user should rule
+   on at this gate.
+
+8. Handle the response:
+   - **Approve** → `vob_vob_confirm_brief { project_id }` AND `vob_vob_confirm_storyboard
+     { project_id }`, then `vob_vob_transition_phase { project_id, to_phase: "COMPOSE" }`.
+   - **Revise the brief** → re-draft, `vob_save_brief` again (resets `brief.confirmed:false`),
+     re-present.
+   - **Revise the storyboard** → loop to step 4 with the user's note as `revision_notes` (the
+     server bumps `revision_count`, resets `storyboard.confirmed:false`, re-renders the
+     markdown), re-present.
+   - **Re-clarify intent** → `vob_transition_phase` to `INTENT`, record the updated answer,
+     transition back to PLAN, re-draft both halves.
+
+9. Do not call either confirm tool until the user has explicitly approved the plan. A vague
+   "sounds good" is fine; silence or "let me think" is not. If the gate blocks with
+   `brief_not_confirmed` or `storyboard_not_confirmed`, you skipped one — call the missing
+   confirm and retry.

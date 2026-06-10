@@ -9,6 +9,15 @@
 
 const SCHEMA_VERSION = "1.0";
 
+// Structured visual fields (OPTIONAL on every pool entry; presence is enforced
+// socially via the inspector prompt — requiring them server-side would break
+// every pre-v2 payload mid-migration). shot_type "screen" = screen-recording/UI,
+// "graphic" = title card/slide/chart; subject_position "none" = empty/abstract
+// frame; framing_ok_for_vertical = a 9:16 center crop keeps subject + on-frame
+// text fully visible.
+const SHOT_TYPES = Object.freeze(["extreme_closeup", "closeup", "medium", "wide", "screen", "graphic", "other"]);
+const SUBJECT_POSITIONS = Object.freeze(["left", "center", "right", "none"]);
+
 function isPlainObject(v) {
   return v !== null && typeof v === "object" && !Array.isArray(v);
 }
@@ -64,6 +73,15 @@ function validateRef(entry, where, segIndex, errors) {
   if (entry.confidence !== undefined && !isUnit(entry.confidence)) {
     errors.push(`${where}.confidence must be a number in [0,1] when present`);
   }
+  if (entry.shot_type !== undefined && !SHOT_TYPES.includes(entry.shot_type)) {
+    errors.push(`${where}.shot_type must be one of ${SHOT_TYPES.join("|")} when present`);
+  }
+  if (entry.subject_position !== undefined && !SUBJECT_POSITIONS.includes(entry.subject_position)) {
+    errors.push(`${where}.subject_position must be one of ${SUBJECT_POSITIONS.join("|")} when present`);
+  }
+  if (entry.framing_ok_for_vertical !== undefined && typeof entry.framing_ok_for_vertical !== "boolean") {
+    errors.push(`${where}.framing_ok_for_vertical must be a boolean when present`);
+  }
   // Cross-reference against the detected segments, if available.
   if (segIndex && Number.isInteger(entry.file_index) && Number.isInteger(entry.segment_index)) {
     const key = `${entry.file_index}:${entry.segment_index}`;
@@ -96,6 +114,15 @@ function validateArollPool(pool, segIndex, errors) {
       }
       if (seg && seg.is_best_take !== undefined && typeof seg.is_best_take !== "boolean") {
         errors.push(`${where}.is_best_take must be a boolean when present`);
+      }
+      // hook_candidate: the inspector's tag that this segment could open the
+      // video cold — refines the server-side digest heuristic list. Tagged on
+      // BOTH pools (A-roll openers and arresting B-roll frames).
+      if (seg && seg.hook_candidate !== undefined && typeof seg.hook_candidate !== "boolean") {
+        errors.push(`${where}.hook_candidate must be a boolean when present`);
+      }
+      if (seg && seg.hook_reason !== undefined && typeof seg.hook_reason !== "string") {
+        errors.push(`${where}.hook_reason must be a string when present`);
       }
     });
   }
@@ -136,6 +163,14 @@ function validateBrollIndex(index, segIndex, errors) {
     }
     if (clip && clip.has_usable_audio !== undefined && typeof clip.has_usable_audio !== "boolean") {
       errors.push(`${where}.has_usable_audio must be a boolean when present`);
+    }
+    // hook_candidate/hook_reason on B-roll: same optional semantics as A-roll —
+    // the inspector also tags arresting B-roll clips as cold-open candidates.
+    if (clip && clip.hook_candidate !== undefined && typeof clip.hook_candidate !== "boolean") {
+      errors.push(`${where}.hook_candidate must be a boolean when present`);
+    }
+    if (clip && clip.hook_reason !== undefined && typeof clip.hook_reason !== "string") {
+      errors.push(`${where}.hook_reason must be a string when present`);
     }
   });
 }
@@ -178,6 +213,8 @@ function validateClassification(input, segmentsDoc = null) {
 
 module.exports = {
   SCHEMA_VERSION,
+  SHOT_TYPES,
+  SUBJECT_POSITIONS,
   indexSegments,
   validateArollPool,
   validateBrollIndex,

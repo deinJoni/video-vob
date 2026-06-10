@@ -6,9 +6,9 @@ const path = require("path");
 const { startStdioServer } = require("./lib/transport.js");
 const { TOOLS, VALID_ROLE_BUNDLES } = require("./lib/tool-registry.js");
 const { executeTool } = require("./lib/dispatch.js");
-const { verifyAgentRegistrations } = require("./lib/registry-integrity.js");
+const { verifyAdapterToolReferences, verifyAgentRegistrations } = require("./lib/registry-integrity.js");
 
-const SERVER_INFO = Object.freeze({ name: "vob", version: "1.0.0" });
+const SERVER_INFO = Object.freeze({ name: "vob", version: "2.0.0" });
 
 // Boot-time integrity check: every SUBAGENT definition shipped by ANY adapter
 // must have a matching entry in VALID_ROLE_BUNDLES. Encodes the M3 lesson — a
@@ -29,6 +29,17 @@ function runIntegrityChecks() {
   for (const segments of ADAPTER_AGENT_DIRS) {
     const agentsDir = path.resolve(__dirname, "..", ...segments);
     verifyAgentRegistrations({ agentsDir, validRoleBundles: VALID_ROLE_BUNDLES });
+  }
+  // Allow-list drift guard (D9): every tool name either adapter references must
+  // exist in the registry, the subagent write tools must stay contained, and
+  // every role bundle must resolve to an agent file. Fail loud at boot.
+  const { problems } = verifyAdapterToolReferences({
+    repoRoot: path.resolve(__dirname, ".."),
+    toolNames: TOOLS.map((t) => t.name),
+    validRoleBundles: VALID_ROLE_BUNDLES,
+  });
+  if (problems.length > 0) {
+    throw new Error(`adapter tool-list drift:\n  - ${problems.join("\n  - ")}`);
   }
 }
 

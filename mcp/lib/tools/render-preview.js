@@ -4,10 +4,12 @@ const fs = require("fs");
 const path = require("path");
 
 const { ERROR_CODES, ToolError } = require("../envelope.js");
-const { assertSafeProjectId, composeDir, rendersDir, statePath } = require("../paths.js");
+const { assertSafeProjectId, composeDir, renderStderrLogPath, rendersDir, statePath, storyboardPath } = require("../paths.js");
 const { withSessionLock, writeFileAtomic } = require("../storage.js");
 const { readSessionStateStrict } = require("../session-state.js");
-const { runHyperframesWithRetry, buildRenderArgv, RENDER_TIMEOUT_MS } = require("../hyperframes-runner.js");
+const { runHyperframesWithRetry, buildRenderArgv, renderTimeoutMs } = require("../hyperframes-runner.js");
+const { stderrTail } = require("../spawn-with-shutdown.js");
+const { verifyRenderedMp4 } = require("../render-verify.js");
 
 function nowIso() {
   return new Date().toISOString();
@@ -40,43 +42,61 @@ async function renderPreview(args) {
       "no composition saved — invoke the composer subagent and call vob_save_composition before rendering a preview",
     );
   }
+  // Revision binding (D2): capture which composition revision the renderer is
+  // actually consuming, at the PRE-render read. A save that lands mid-render
+  // bumps composition.revision_count past this value, so the stale-render gate
+  // detects the mismatch instead of false-passing a render of old files.
+  const compositionRevisionRendered = Number.isInteger(composition.revision_count)
+    ? composition.revision_count
+    : null;
 
   const rendersRoot = rendersDir(id);
   fs.mkdirSync(rendersRoot, { recursive: true });
 
-  const outName = `preview-${filenameSafeTimestamp()}.mp4`;
-  const outPath = path.join(rendersRoot, outName);
+  // Timeout scales with the storyboard total (floored at the fixed 15-min cap);
+  // sbTotal also feeds the post-render duration-drift verification.
+  let sbTotal = null;
+  try {
+    sbTotal = Number(JSON.parse(fs.readFileSync(storyboardPath(id), "utf8")).total_target_duration_seconds) || null;
+  } catch {}
+  const timeoutMs = renderTimeoutMs("preview", sbTotal);
+
+  const ts0 = filenameSafeTimestamp();
+  const outPath = path.join(rendersRoot, `preview-${ts0}.mp4`);
+  const stderrLogPath = renderStderrLogPath(id, "preview", ts0);
   const start = Date.now();
 
   const result = await runHyperframesWithRetry(
     buildRenderArgv({ composeRoot, outPath, quality: "draft" }),
-    { timeoutMs: RENDER_TIMEOUT_MS, maxAttempts: 3 },
+    { timeoutMs, stderrLogPath, maxAttempts: 3 },
   );
 
   if (result.timed_out) {
     throw new ToolError(
       ERROR_CODES.INTERNAL_ERROR,
-      `hyperframes render timed out after ${Math.round(RENDER_TIMEOUT_MS / 1000)}s`,
-      { stderr_preview: (result.stderr || "").trim().slice(0, 1000) || null },
+      `hyperframes render timed out after ${Math.round(timeoutMs / 1000)}s — partial log at ${stderrLogPath}`,
+      { stderr_log_path: stderrLogPath, stderr_preview: stderrTail(result.stderr, 1000) },
     );
   }
   if (result.exit_code !== 0) {
-    const stderrPreview = (result.stderr || "").trim().slice(0, 2000) || null;
+    const stderrPreview = stderrTail(result.stderr, 2000);
     throw new ToolError(
       ERROR_CODES.INTERNAL_ERROR,
-      `hyperframes render failed (exit ${result.exit_code}): ${stderrPreview || "no stderr"}`,
-      { exit_code: result.exit_code, signal: result.signal, stderr_preview: stderrPreview },
+      `hyperframes render failed (exit ${result.exit_code}) — partial log at ${stderrLogPath}: ${stderrPreview || "no stderr"}`,
+      { exit_code: result.exit_code, signal: result.signal, stderr_log_path: stderrLogPath, stderr_preview: stderrPreview },
     );
   }
   if (!fs.existsSync(outPath)) {
     throw new ToolError(
       ERROR_CODES.INTERNAL_ERROR,
-      `hyperframes render reported success but no output file at ${outPath}`,
-      { stderr_preview: (result.stderr || "").trim().slice(0, 1000) || null },
+      `hyperframes render reported success but no output file at ${outPath} — partial log at ${stderrLogPath}`,
+      { stderr_log_path: stderrLogPath, stderr_preview: stderrTail(result.stderr, 1000) },
     );
   }
 
   const renderDurationSeconds = (Date.now() - start) / 1000;
+  // Silent-truncation detector: ffprobe the MP4 vs the storyboard expectation.
+  const verification = verifyRenderedMp4({ mp4Path: outPath, expectedDurationSeconds: sbTotal });
   const ts = nowIso();
 
   return withSessionLock(id, () => {
@@ -89,6 +109,10 @@ async function renderPreview(args) {
       : 0;
     const revisionCount = prevRevisionCount + 1;
 
+    // composition_revision_rendered was captured at the PRE-render read (see
+    // above) — stamping the commit-time value would bind a render of OLD files
+    // to a NEW revision saved mid-render, false-passing the stale gate.
+
     const next = {
       ...stateNow,
       preview: {
@@ -98,6 +122,9 @@ async function renderPreview(args) {
         confirmed: false,
         confirmed_at: null,
         revision_count: revisionCount,
+        stderr_log_path: stderrLogPath,
+        composition_revision_rendered: compositionRevisionRendered,
+        verification,
       },
       last_updated: ts,
       history: [
@@ -108,6 +135,7 @@ async function renderPreview(args) {
           revision_count: revisionCount,
           render_path: outPath,
           render_duration_seconds: renderDurationSeconds,
+          duration_drift_seconds: verification.duration_drift_seconds,
         },
       ],
     };
@@ -118,6 +146,9 @@ async function renderPreview(args) {
       rendered_at: ts,
       render_duration_seconds: renderDurationSeconds,
       revision_count: revisionCount,
+      stderr_log_path: stderrLogPath,
+      composition_revision_rendered: compositionRevisionRendered,
+      verification,
       exit_code: 0,
     };
   });
@@ -125,7 +156,7 @@ async function renderPreview(args) {
 
 module.exports = Object.freeze({
   name: "vob_render_preview",
-  description: "Run `hyperframes render --quality draft` against the session's compose/ directory, producing a low-resolution MP4 in renders/preview-<timestamp>.mp4. BLOCKING — typically 30s to a few minutes. Inform the user a render is starting before calling. On success, writes state.preview with render_path, rendered_at, render_duration_seconds, confirmed:false, and bumps preview.revision_count; appends 'preview_rendered' to history. On failure (non-zero exit, timeout, missing output): throws WITHOUT mutating state — prior successful preview survives a failed re-render. Re-rendering always resets preview.confirmed to false; the user must re-approve via vob_confirm_preview before PREVIEW -> RENDER will unlock.",
+  description: "Render a draft MP4 to renders/preview-<ts>.mp4, teeing stderr to renders/preview-<ts>.log. BLOCKING; timeout scales with storyboard duration (≥15 min; VOB_RENDER_TIMEOUT_MS overrides). Success returns render_path + ffprobe `verification` (duration drift vs storyboard, dims, audio) and resets preview confirmation. Failure throws without touching state.",
   inputSchema: {
     type: "object",
     properties: {
@@ -141,6 +172,6 @@ module.exports = Object.freeze({
   browser_access: false,
   scope_required: false,
   sensitive_output: false,
-  session_artifacts_written: ["renders/preview-*.mp4", "state.json"],
+  session_artifacts_written: ["renders/preview-*.mp4", "renders/preview-*.log", "state.json"],
   hook_required: false,
 });

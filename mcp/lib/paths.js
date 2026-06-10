@@ -127,6 +127,80 @@ function segmentCachePath(projectId, fileHash) {
   return path.join(segmentCacheDir(projectId), `${fileHash}.json`);
 }
 
+// --- WP3: INSPECT v2 artifacts ---------------------------------------------
+function inspectTranscriptsDir(projectId) {
+  return path.join(inspectDir(projectId), "transcripts");
+}
+
+function inspectFileTranscriptPath(projectId, fileIndex) {
+  const fi = assertNonNegativeInt(fileIndex, "file_index");
+  return path.join(inspectTranscriptsDir(projectId), `file_${fi}.json`);
+}
+
+function inspectDigestPath(projectId) {
+  return path.join(inspectDir(projectId), "digest.md");
+}
+
+function inspectStripsDir(projectId) {
+  return path.join(inspectDir(projectId), "strips");
+}
+
+function inspectStripPath(projectId, fileIndex, stripIndex) {
+  const fi = assertNonNegativeInt(fileIndex, "file_index");
+  const si = assertNonNegativeInt(stripIndex, "strip_index");
+  return path.join(inspectStripsDir(projectId), `file_${fi}_strip_${si}.jpg`);
+}
+
+function inspectStripListPath(projectId, fileIndex, stripIndex) {
+  const fi = assertNonNegativeInt(fileIndex, "file_index");
+  const si = assertNonNegativeInt(stripIndex, "strip_index");
+  return path.join(inspectStripsDir(projectId), `file_${fi}_strip_${si}.ffconcat`);
+}
+
+function inspectStripsLegendPath(projectId) {
+  return path.join(inspectStripsDir(projectId), "legend.json");
+}
+
+function inspectAudioFeaturesDir(projectId) {
+  return path.join(inspectDir(projectId), "audio_features");
+}
+
+function inspectEnergyLogPath(projectId, fileIndex) {
+  const fi = assertNonNegativeInt(fileIndex, "file_index");
+  return path.join(inspectAudioFeaturesDir(projectId), `file_${fi}_rms.log`);
+}
+
+function inspectFeaturesStderrLogPath(projectId, fileIndex) {
+  const fi = assertNonNegativeInt(fileIndex, "file_index");
+  return path.join(inspectAudioFeaturesDir(projectId), `file_${fi}_detect.stderr.log`);
+}
+
+// Transcript cache lives at the SESSION ROOT (sibling of segment_cache/) so it
+// survives clearInspectDir — same rationale as segmentCacheDir above.
+function transcriptCacheDir(projectId) {
+  return path.join(sessionDir(projectId), "transcript_cache");
+}
+
+function transcriptCachePath(projectId, fileHash) {
+  if (typeof fileHash !== "string" || !/^[A-Za-z0-9_-]+$/.test(fileHash)) {
+    throw new Error(`transcriptCachePath requires a safe hash string, got ${fileHash}`);
+  }
+  return path.join(transcriptCacheDir(projectId), `${fileHash}.json`);
+}
+
+// Stderr tee log for the render tools (D6): render-preview.js uses kind
+// "preview" (renders/preview-<ts>.log), render-full.js uses kind "render"
+// (renders/render-<ts>.log). stamp = the caller's filename-safe timestamp slug.
+function renderStderrLogPath(projectId, kind, stamp) {
+  if (kind !== "render" && kind !== "preview") {
+    throw new Error(`renderStderrLogPath kind must be "render"|"preview", got ${kind}`);
+  }
+  if (typeof stamp !== "string" || !/^[A-Za-z0-9._-]+$/.test(stamp)) {
+    throw new Error(`renderStderrLogPath requires a safe stamp, got ${stamp}`);
+  }
+  return path.join(rendersDir(projectId), `${kind}-${stamp}.log`);
+}
+
 function storyboardPath(projectId) {
   return path.join(sessionDir(projectId), "storyboard.json");
 }
@@ -250,15 +324,25 @@ module.exports = {
   composeDir,
   composeSourceDir,
   ingestDir,
+  inspectAudioFeaturesDir,
   inspectAudioPath,
   inspectCleanSpeechPath,
   inspectContactSheetPath,
+  inspectDigestPath,
   inspectDir,
+  inspectEnergyLogPath,
+  inspectFeaturesStderrLogPath,
+  inspectFileTranscriptPath,
+  inspectStripListPath,
+  inspectStripPath,
+  inspectStripsDir,
+  inspectStripsLegendPath,
   inspectSummaryPath,
   inspectThumbsDir,
   inspectTranscriptParagraphsPath,
   inspectTranscriptPath,
   inspectTranscriptSummaryPath,
+  inspectTranscriptsDir,
   manifestPath,
   deliverablesDir,
   packageDir,
@@ -267,6 +351,7 @@ module.exports = {
   packageReadmePath,
   packageThumbnailPath,
   previewDir,
+  renderStderrLogPath,
   rendersDir,
   segmentCacheDir,
   segmentCachePath,
@@ -285,4 +370,6 @@ module.exports = {
   transcodedClipStem,
   transcodedClipsDir,
   transcodedDir,
+  transcriptCacheDir,
+  transcriptCachePath,
 };

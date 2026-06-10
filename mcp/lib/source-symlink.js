@@ -14,6 +14,9 @@ const {
 
 const SOURCE_SUBDIR = "source";
 
+const FONT_ASSETS_DIR = path.resolve(__dirname, "..", "assets", "fonts");
+const FONT_CSS_SRC = path.resolve(__dirname, "..", "assets", "fonts.css");
+
 function readManifestSafe(projectId) {
   try {
     const raw = fs.readFileSync(manifestPath(projectId), "utf8");
@@ -158,7 +161,9 @@ function recreateSourceSymlinks(projectId, composeRoot) {
   // are unreliable in headless Chrome on large or HEVC sources. Materialization
   // happens at PLAN -> COMPOSE; if a scene's clip is missing here we warn
   // (don't fail) because save-composition is also called on raw compose authoring
-  // and the gate already blocks PREVIEW until clips resolve.
+  // — a missing clip here surfaces as a warning, and composition QC
+  // (`vob/source_ref_target_missing`, run at save and lint) blocks the pipeline
+  // if the composition actually references it.
   const sceneClipsCreated = [];
   for (const link of sceneClipLinks) {
     if (!fs.existsSync(link.clip_abs)) {
@@ -186,8 +191,48 @@ function recreateSourceSymlinks(projectId, composeRoot) {
   return { links: created, scene_clip_links: sceneClipsCreated, warnings };
 }
 
+// Inject the vendored font kit into compose/: symlink compose/fonts -> mcp/assets/fonts
+// (same mechanism as ./source/ — hyperframes' file server follows symlinks; the
+// scene-clip symlinks prove it on every render today) and COPY fonts.css to
+// compose/fonts.css (tiny; keeps url("./fonts/...") resolution trivial).
+// Graceful when assets are absent: warn + return linked:false — compositions
+// fall back to system fonts; QC does not enforce font usage.
+function injectFontKit(composeRoot, { skipCss = false } = {}) {
+  const warnings = [];
+  const linkAbs = path.join(composeRoot, "fonts");
+  if (!fs.existsSync(FONT_ASSETS_DIR)) {
+    return { linked: false, warnings: [`font kit not found at ${FONT_ASSETS_DIR}; compositions fall back to system fonts`] };
+  }
+  try {
+    let st = null;
+    try { st = fs.lstatSync(linkAbs); } catch {}
+    if (st && st.isSymbolicLink()) fs.unlinkSync(linkAbs);
+    else if (st) {
+      // composer wrote real files under fonts/ — respect them, skip the kit dir
+      warnings.push("compose/fonts exists as a real directory (composer-supplied); font kit dir not linked");
+      return { linked: false, warnings };
+    }
+    fs.symlinkSync(FONT_ASSETS_DIR, linkAbs);
+  } catch (err) {
+    if (err && (err.code === "EPERM" || err.code === "EACCES")) {
+      warnings.push(`could not link font kit: ${err.code}`);
+      return { linked: false, warnings };
+    }
+    throw err;
+  }
+  if (!skipCss) {
+    try {
+      fs.copyFileSync(FONT_CSS_SRC, path.join(composeRoot, "fonts.css"));
+    } catch {
+      warnings.push(`fonts.css missing at ${FONT_CSS_SRC}; linked fonts/ without a stylesheet`);
+    }
+  }
+  return { linked: true, warnings };
+}
+
 module.exports = {
   SOURCE_SUBDIR,
+  injectFontKit,
   recreateSourceSymlinks,
   resolveSceneClipLinks,
   resolveSourceLinks,

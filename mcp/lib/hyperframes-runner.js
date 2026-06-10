@@ -19,6 +19,27 @@ const FULL_RENDER_TIMEOUT_MS = 30 * 60 * 1000;
 const PREFLIGHT_TIMEOUT_MS = 30 * 1000;
 const MAX_OUTPUT_BYTES = DEFAULT_MAX_OUTPUT_BYTES;
 
+const RENDER_TIMEOUT_PER_COMPOSITION_SECOND_MS = 20 * 1000;       // preview (draft)
+const FULL_RENDER_TIMEOUT_PER_COMPOSITION_SECOND_MS = 40 * 1000;  // full
+const RENDER_TIMEOUT_CEILING_MS = 2 * 60 * 60 * 1000;             // preview ceiling 2h
+const FULL_RENDER_TIMEOUT_CEILING_MS = 3 * 60 * 60 * 1000;        // full ceiling 3h
+
+// kind: "preview" | "full". durationSeconds: storyboard total or null.
+// Env override (positive int ms) wins outright: VOB_RENDER_TIMEOUT_MS (preview),
+// VOB_FULL_RENDER_TIMEOUT_MS (full). Otherwise scale by composition duration,
+// FLOORED at today's fixed caps (15/30 min) and ceilinged to keep a runaway
+// storyboard from creating a day-long wall.
+function renderTimeoutMs(kind, durationSeconds) {
+  const envName = kind === "full" ? "VOB_FULL_RENDER_TIMEOUT_MS" : "VOB_RENDER_TIMEOUT_MS";
+  const env = Number.parseInt((process.env[envName] || "").trim(), 10);
+  if (Number.isInteger(env) && env > 0) return env;
+  const floor = kind === "full" ? FULL_RENDER_TIMEOUT_MS : RENDER_TIMEOUT_MS;
+  const perSec = kind === "full" ? FULL_RENDER_TIMEOUT_PER_COMPOSITION_SECOND_MS : RENDER_TIMEOUT_PER_COMPOSITION_SECOND_MS;
+  const ceiling = kind === "full" ? FULL_RENDER_TIMEOUT_CEILING_MS : RENDER_TIMEOUT_CEILING_MS;
+  if (!Number.isFinite(durationSeconds) || durationSeconds <= 0) return floor;
+  return Math.min(ceiling, Math.max(floor, Math.round(durationSeconds * perSec)));
+}
+
 // --- Headless-Chrome GPU mode for hyperframes child processes ----------------
 //
 // hyperframes selects the Chrome GL backend via the PRODUCER_BROWSER_GPU_MODE
@@ -145,6 +166,19 @@ function renderWorkerArgs() {
   try { totalmem = os.totalmem(); } catch { totalmem = 0; }
   if (totalmem > 0 && totalmem < LOW_RAM_BYTES) return ["--workers", "1"];
   return [];
+}
+
+// Final-render quality default, gated like renderWorkerArgs:
+//   VOB_RENDER_QUALITY = "high"|"standard" -> that value;  "default" -> null (omit flag)
+//   unset: >=10 GB RAM -> "high"; low-RAM host -> null (hyperframes' standard)
+function defaultRenderQuality() {
+  const raw = (process.env.VOB_RENDER_QUALITY || "").trim().toLowerCase();
+  if (raw === "high" || raw === "standard") return raw;
+  if (raw === "default") return null;
+  let totalmem = 0;
+  try { totalmem = os.totalmem(); } catch { totalmem = 0; }
+  if (totalmem >= LOW_RAM_BYTES) return "high";
+  return null;
 }
 
 // --- Single binary resolution ------------------------------------------------
@@ -338,6 +372,12 @@ const RETRYABLE_PATTERNS = [
 // so a transient substring elsewhere in the log can't force a pointless retry.
 // (Note: a successful-but-warned render exits 0 and never reaches this check.)
 const NON_RETRYABLE_PATTERNS = [
+  // Deterministic resource failures: a missing/broken file path in the
+  // composition can never succeed on retry. Must out-rank the generic
+  // /net::ERR/i transient pattern below.
+  /net::ERR_FILE_NOT_FOUND/i,
+  /net::ERR_FILE_ACCESS_DENIED/i,
+  /net::ERR_INVALID_URL/i,
   /Aborting render/i,
   /Aborting due to/i,
   /strict-variables/i,
@@ -428,6 +468,8 @@ module.exports = {
   resolveBrowserGpuMode,
   hyperframesChildEnv,
   renderWorkerArgs,
+  renderTimeoutMs,
+  defaultRenderQuality,
   buildRenderArgv,
   buildLintArgv,
   buildSnapshotArgv,

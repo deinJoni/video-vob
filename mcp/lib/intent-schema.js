@@ -39,6 +39,20 @@ function isPlainObject(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
+// v2 answers may be canonicalized objects:
+//   target_platform: { raw, canonical, profile }   target_duration: { raw, seconds }
+// Legacy sessions store plain strings. Every consumer goes through these.
+function intentAnswerRaw(value) {
+  if (typeof value === "string") return value;
+  if (isPlainObject(value) && typeof value.raw === "string") return value.raw;
+  return null;
+}
+
+function intentAnswerPresent(value) {
+  const raw = intentAnswerRaw(value);
+  return typeof raw === "string" && raw.trim() !== "";
+}
+
 // Given an inspect.json summary and the current answers map, return the list
 // of CONDITIONAL keys that must be answered before INTENT can advance.
 //
@@ -56,7 +70,7 @@ function applicableConditionalKeys(inspectSummary, answers) {
   if (inspectSummary.audio_present === true) {
     keys.push("audio_treatment");
   }
-  const treatment = typeof present.audio_treatment === "string" ? present.audio_treatment.trim() : "";
+  const treatment = (intentAnswerRaw(present.audio_treatment) || "").trim();
   if (
     inspectSummary.speech_detected === true
     && (treatment === "keep_audio" || treatment === "transcribe_captions")
@@ -70,14 +84,12 @@ function missingIntentKeys(answers, inspectSummary = null) {
   const present = isPlainObject(answers) ? answers : {};
   const missing = [];
   for (const key of REQUIRED_INTENT_KEYS) {
-    const value = present[key];
-    if (typeof value !== "string" || value.trim() === "") {
+    if (!intentAnswerPresent(present[key])) {
       missing.push(key);
     }
   }
   for (const key of applicableConditionalKeys(inspectSummary, present)) {
-    const value = present[key];
-    if (typeof value !== "string" || value.trim() === "") {
+    if (!intentAnswerPresent(present[key])) {
       missing.push(key);
     }
   }
@@ -105,6 +117,8 @@ module.exports = {
   CONDITIONAL_INTENT_KEYS,
   REQUIRED_INTENT_KEYS,
   applicableConditionalKeys,
+  intentAnswerPresent,
+  intentAnswerRaw,
   isValidIntentKey,
   missingIntentKeys,
   validateIntentAnswerValue,

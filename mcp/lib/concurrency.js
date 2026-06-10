@@ -33,24 +33,40 @@ function recommendedHeavyEncodeConcurrency() {
 // Run `fn(item, index)` over `items` with at most `limit` in flight at once.
 // Resolves to an array of results in input order. A task that throws rejects
 // the whole call (callers that want per-item tolerance should catch inside fn).
+// On the first rejection the pool ABORTS: surviving workers stop pulling new
+// items, all in-flight tasks are awaited (allSettled), and only then does the
+// first error rethrow — otherwise workers would keep spawning heavy ffmpeg
+// encodes after the caller has already thrown (orphan writes that can corrupt
+// the clip cache on hosts whose limit is >1).
 async function mapWithConcurrency(items, limit, fn) {
   const list = Array.isArray(items) ? items : [];
   const cap = Number.isInteger(limit) && limit >= 1 ? limit : 1;
   const results = new Array(list.length);
   let cursor = 0;
+  let aborted = false;
+  let firstError = null;
 
   async function worker() {
-    while (true) {
+    while (!aborted) {
       const index = cursor;
       cursor += 1;
       if (index >= list.length) return;
-      results[index] = await fn(list[index], index);
+      try {
+        results[index] = await fn(list[index], index);
+      } catch (error) {
+        if (!aborted) {
+          aborted = true;
+          firstError = error;
+        }
+        return;
+      }
     }
   }
 
   const workers = [];
   for (let i = 0; i < Math.min(cap, list.length); i += 1) workers.push(worker());
-  await Promise.all(workers);
+  await Promise.allSettled(workers);
+  if (aborted) throw firstError;
   return results;
 }
 

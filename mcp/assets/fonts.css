@@ -1,0 +1,8 @@
+/* video-vob font kit — OFL-licensed, vendored under mcp/assets/fonts/ and
+   symlinked into compose/fonts/ on every save. font-display: block ensures
+   headless capture never paints fallback glyphs mid-render. */
+@font-face { font-family: "Inter"; src: url("./fonts/Inter-Variable.ttf") format("truetype"); font-weight: 100 900; font-style: normal; font-display: block; }
+@font-face { font-family: "Anton"; src: url("./fonts/Anton-Regular.ttf") format("truetype"); font-weight: 400; font-style: normal; font-display: block; }
+@font-face { font-family: "Bebas Neue"; src: url("./fonts/BebasNeue-Regular.ttf") format("truetype"); font-weight: 400; font-style: normal; font-display: block; }
+@font-face { font-family: "Playfair Display"; src: url("./fonts/PlayfairDisplay-Variable.ttf") format("truetype"); font-weight: 400 900; font-style: normal; font-display: block; }
+@font-face { font-family: "Nunito"; src: url("./fonts/Nunito-Variable.ttf") format("truetype"); font-weight: 200 1000; font-style: normal; font-display: block; }

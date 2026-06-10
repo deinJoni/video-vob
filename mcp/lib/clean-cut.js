@@ -208,6 +208,17 @@ function emptyStats() {
   return { source_seconds: 0, kept_seconds: 0, removed_seconds: 0, compression_ratio: 0, span_count: 0, words_total: 0, words_kept: 0, fillers_removed: 0, retakes_removed: 0, gaps_cut: 0, silence_driven: false };
 }
 
+// Removed (non-kept) time inside [start,end], from a keep_spans list.
+// For plan lint: an a_roll clip straddles a removed span when seconds > threshold.
+function removedWithin(keepSpans, start, end) {
+  if (!Array.isArray(keepSpans) || !isNum(start) || !isNum(end) || end <= start) {
+    return { intervals: [], seconds: 0 };
+  }
+  const intervals = subtractIntervals([{ start, end }], keepSpans);
+  const seconds = +intervals.reduce((a, i) => a + (i.end - i.start), 0).toFixed(3);
+  return { intervals, seconds };
+}
+
 // Map source time -> compressed output time. keepSpans ascending, disjoint.
 function buildTimeline(keepSpans) {
   const spans = (Array.isArray(keepSpans) ? keepSpans : []).slice().sort((a, b) => a.start - b.start);
@@ -226,4 +237,4 @@ function buildTimeline(keepSpans) {
   return { totalSeconds: +totalSeconds.toFixed(3), segments, mapSourceToComp };
 }
 
-module.exports = { computeCleanSpans, buildTimeline, mergeIntervals, subtractIntervals, DEFAULT_FILLERS, DEFAULTS };
+module.exports = { computeCleanSpans, buildTimeline, mergeIntervals, subtractIntervals, removedWithin, DEFAULT_FILLERS, DEFAULTS };

@@ -2,3 +2,16 @@ video-vob
 Copyright 2026 video-vob contributors
 
 This product includes software developed at video-vob (https://github.com/<org>/video-vob).
+
+This template bundles the following font software under mcp/assets/fonts/,
+each licensed under the SIL Open Font License, Version 1.1
+(https://openfontlicense.org):
+
+- Inter — Copyright 2016 The Inter Project Authors (https://github.com/rsms/inter)
+- Anton — Copyright 2020 The Anton Project Authors (https://github.com/googlefonts/AntonFont.git)
+- Bebas Neue — Copyright 2019 The Bebas Neue Project Authors (https://github.com/dharmatype/Bebas-Neue)
+- Playfair Display — Copyright 2017 The Playfair Display Project Authors (https://github.com/clauseggers/Playfair-Display)
+- Nunito — Copyright 2014 The Nunito Project Authors (https://github.com/googlefonts/nunito)
+
+The fonts are aggregated, not modified; the OFL applies to the font files only,
+not to the rest of this repository (Apache-2.0).

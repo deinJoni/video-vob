@@ -4,10 +4,12 @@ const fs = require("fs");
 const path = require("path");
 
 const { ERROR_CODES, ToolError } = require("../envelope.js");
-const { assertSafeProjectId, composeDir, rendersDir, statePath } = require("../paths.js");
+const { assertSafeProjectId, composeDir, renderStderrLogPath, rendersDir, statePath, storyboardPath } = require("../paths.js");
 const { withSessionLock, writeFileAtomic } = require("../storage.js");
 const { readSessionStateStrict } = require("../session-state.js");
-const { runHyperframesWithRetry, buildRenderArgv, FULL_RENDER_TIMEOUT_MS } = require("../hyperframes-runner.js");
+const { runHyperframesWithRetry, buildRenderArgv, renderTimeoutMs, defaultRenderQuality } = require("../hyperframes-runner.js");
+const { stderrTail } = require("../spawn-with-shutdown.js");
+const { verifyRenderedMp4 } = require("../render-verify.js");
 
 function nowIso() {
   return new Date().toISOString();
@@ -29,17 +31,12 @@ const RENDER_QUALITIES = new Set(["standard", "high"]);
 
 async function renderFull(args) {
   const id = assertSafeProjectId(args && args.project_id);
-  // Quality: omit the flag (hyperframes default = "standard") unless a caller
-  // asks for a level explicitly. The final deliverable can be bumped to "high",
-  // but it is not forced — "high" can multiply render time, so it stays opt-in
-  // to avoid surprising existing environments. Rendering is ALWAYS native on the
-  // host — Docker is intentionally not an option (project policy: never use
-  // Docker; always render natively on the machine).
-  const quality = args && args.quality != null ? String(args.quality) : null;
+  // Quality: explicit arg wins; else defaultRenderQuality() (high on >=10GB hosts). Docker is never an option.
+  const quality = args && args.quality != null ? String(args.quality) : defaultRenderQuality();
   if (quality !== null && !RENDER_QUALITIES.has(quality)) {
     throw new ToolError(
       ERROR_CODES.INVALID_ARGUMENTS,
-      `quality must be one of: ${[...RENDER_QUALITIES].join(", ")} (preview uses draft; full render defaults to standard)`,
+      `quality must be one of: ${[...RENDER_QUALITIES].join(", ")} (preview uses draft; unset defers to the host default)`,
     );
   }
   const composeRoot = composeDir(id);
@@ -61,6 +58,13 @@ async function renderFull(args) {
       "no composition saved — invoke the composer subagent and call vob_save_composition before rendering",
     );
   }
+  // Revision binding (D2): capture which composition revision the renderer is
+  // actually consuming, at the PRE-render read. A save that lands mid-render
+  // bumps composition.revision_count past this value, so the stale-render gate
+  // detects the mismatch instead of false-passing a render of old files.
+  const compositionRevisionRendered = Number.isInteger(composition.revision_count)
+    ? composition.revision_count
+    : null;
   const preview = state.preview && typeof state.preview === "object" && !Array.isArray(state.preview)
     ? state.preview
     : null;
@@ -74,9 +78,17 @@ async function renderFull(args) {
   const rendersRoot = rendersDir(id);
   fs.mkdirSync(rendersRoot, { recursive: true });
 
+  // Timeout scales with the storyboard total (floored at the fixed 30-min cap);
+  // sbTotal also feeds the post-render duration-drift verification.
+  let sbTotal = null;
+  try {
+    sbTotal = Number(JSON.parse(fs.readFileSync(storyboardPath(id), "utf8")).total_target_duration_seconds) || null;
+  } catch {}
+  const timeoutMs = renderTimeoutMs("full", sbTotal);
+
   const ts = filenameSafeTimestamp();
   const outPath = path.join(rendersRoot, `final-${ts}.mp4`);
-  const stderrLogPath = path.join(rendersRoot, `render-${ts}.log`);
+  const stderrLogPath = renderStderrLogPath(id, "render", ts);
 
   // Audit the start of the render before the (potentially long) spawn so
   // failed/aborted attempts leave a trace in history.
@@ -97,7 +109,7 @@ async function renderFull(args) {
         {
           kind: "render_started",
           at: startTs,
-          expected_quality: "full",
+          expected_quality: quality !== null ? quality : "standard(default)",
           out_path: outPath,
           stderr_log_path: stderrLogPath,
           next_revision_count: prevRevisionCount + 1,
@@ -110,18 +122,18 @@ async function renderFull(args) {
   const start = Date.now();
   const result = await runHyperframesWithRetry(
     buildRenderArgv({ composeRoot, outPath, quality }),
-    { timeoutMs: FULL_RENDER_TIMEOUT_MS, stderrLogPath, maxAttempts: 2 },
+    { timeoutMs, stderrLogPath, maxAttempts: 2 },
   );
 
   if (result.timed_out) {
     throw new ToolError(
       ERROR_CODES.INTERNAL_ERROR,
-      `hyperframes render timed out after ${Math.round(FULL_RENDER_TIMEOUT_MS / 1000)}s — partial log at ${stderrLogPath}`,
-      { stderr_log_path: stderrLogPath, stderr_preview: (result.stderr || "").trim().slice(0, 1000) || null },
+      `hyperframes render timed out after ${Math.round(timeoutMs / 1000)}s — partial log at ${stderrLogPath}`,
+      { stderr_log_path: stderrLogPath, stderr_preview: stderrTail(result.stderr, 1000) },
     );
   }
   if (result.exit_code !== 0) {
-    const stderrPreview = (result.stderr || "").trim().slice(0, 2000) || null;
+    const stderrPreview = stderrTail(result.stderr, 2000);
     throw new ToolError(
       ERROR_CODES.INTERNAL_ERROR,
       `hyperframes render failed (exit ${result.exit_code}) — see ${stderrLogPath} for full output: ${stderrPreview || "no stderr"}`,
@@ -132,12 +144,14 @@ async function renderFull(args) {
     throw new ToolError(
       ERROR_CODES.INTERNAL_ERROR,
       `hyperframes render reported success but no output file at ${outPath}`,
-      { stderr_log_path: stderrLogPath, stderr_preview: (result.stderr || "").trim().slice(0, 1000) || null },
+      { stderr_log_path: stderrLogPath, stderr_preview: stderrTail(result.stderr, 1000) },
     );
   }
 
   const renderDurationSeconds = (Date.now() - start) / 1000;
   const sizeBytes = fileSizeBytes(outPath);
+  // Silent-truncation detector: ffprobe the MP4 vs the storyboard expectation.
+  const verification = verifyRenderedMp4({ mp4Path: outPath, expectedDurationSeconds: sbTotal });
   const completedTs = nowIso();
 
   return withSessionLock(id, () => {
@@ -150,6 +164,10 @@ async function renderFull(args) {
       : 0;
     const revisionCount = prevRevisionCount + 1;
 
+    // composition_revision_rendered was captured at the PRE-render read (see
+    // above) — stamping the commit-time value would bind a render of OLD files
+    // to a NEW revision saved mid-render, false-passing the stale gate.
+
     const next = {
       ...stateNow,
       render: {
@@ -161,6 +179,9 @@ async function renderFull(args) {
         confirmed: false,
         confirmed_at: null,
         revision_count: revisionCount,
+        quality,
+        composition_revision_rendered: compositionRevisionRendered,
+        verification,
       },
       last_updated: completedTs,
       history: [
@@ -172,6 +193,7 @@ async function renderFull(args) {
           mp4_path: outPath,
           render_duration_seconds: renderDurationSeconds,
           file_size_bytes: sizeBytes,
+          duration_drift_seconds: verification.duration_drift_seconds,
         },
       ],
     };
@@ -184,6 +206,9 @@ async function renderFull(args) {
       file_size_bytes: sizeBytes,
       stderr_log_path: stderrLogPath,
       revision_count: revisionCount,
+      quality,
+      composition_revision_rendered: compositionRevisionRendered,
+      verification,
       exit_code: 0,
     };
   });
@@ -191,7 +216,7 @@ async function renderFull(args) {
 
 module.exports = Object.freeze({
   name: "vob_render_full",
-  description: "Run `hyperframes render` against the session's compose/ directory, producing a final MP4 in renders/final-<timestamp>.mp4 and teeing stderr to renders/render-<timestamp>.log so the user can `tail -f` for progress. Optional `quality` ('standard' default | 'high' for the shippable cut) maps to `--quality`. Always renders natively on the host — Docker is not supported by design. BLOCKING — typically 5 to 30 minutes depending on composition length, quality, and complexity. Inform the user the render is starting and point them at the log file before the call returns. Requires preview.confirmed === true. On success: writes state.render with mp4_path, rendered_at, render_duration_seconds, file_size_bytes, stderr_log_path, confirmed:false, and bumps render.revision_count; appends 'render_started' + 'render_completed' to history. On failure (non-zero exit, timeout, missing output): the 'render_started' event remains in history; render state is not promoted — prior successful render survives a failed re-render. Re-rendering always resets render.confirmed to false; the user must re-approve via vob_confirm_render before RENDER -> PACKAGE will unlock.",
+  description: "Render the final MP4 to renders/final-<ts>.mp4, teeing stderr to renders/render-<ts>.log (tail -f for progress). Requires preview.confirmed:true. quality: explicit 'standard'|'high', else defaults to 'high' on ≥10GB-RAM hosts (VOB_RENDER_QUALITY overrides). BLOCKING; timeout scales with storyboard duration (≥30 min; VOB_FULL_RENDER_TIMEOUT_MS overrides). Success returns mp4_path, file_size_bytes, stderr_log_path + ffprobe `verification`, and resets render confirmation. Failure leaves only the render_started audit entry.",
   inputSchema: {
     type: "object",
     properties: {
