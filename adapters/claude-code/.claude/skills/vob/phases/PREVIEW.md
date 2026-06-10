@@ -18,6 +18,10 @@ path, and wait for the user to open it in an external player — you cannot disp
    one-paragraph summary of the stderr (the error message includes the relevant tail) and ask
    whether to revise the composition (back-edge to COMPOSE with their notes) or retry unchanged.
    Do not auto-retry — render failures usually indicate a real problem.
+   If repeated attempts die in the BROWSER (`Target closed`, `Protocol error`, BeginFrame/ready
+   timeouts) rather than in the composition, offer the overlay-over-base escape hatch —
+   `phases/PACKAGE.md` §Escape hatch (`vob_import_deliverable`) — and ask the user first: it
+   leaves the single-timeline FSM.
 
 3. On success, print the absolute `render_path`: "preview rendered in
    <render_duration_seconds>s. Open it in any video player: `<render_path>`. I can't display

@@ -152,6 +152,15 @@ const timeoutMs = durationAwareTimeout({
 });
 ```
 
+> **Superseded in implementation (post-live-run fix):** the single `fps=1/N` pass still decoded
+> the whole stream, which timed out on an 18-min/35Mbps HEVC source regardless of this timeout.
+> `extractThumbnailsForFile` is now seek-based — one input-side `-ss` single-frame extract per
+> grid slot (O(thumb count), grid capped at 400/file), failed slots filled with stand-in
+> neighbor copies (grid-true `frame_%04d` numbering preserved), and the whole pass is non-fatal
+> (degrades to `warnings[]`). `VOB_THUMB_TIMEOUT_MS` survives as the pass's **soft deadline**
+> (skips remaining seeks instead of throwing); `VOB_THUMB_SEEK_TIMEOUT_MS` bounds each seek
+> (default 60s).
+
 Contact sheet (inspect.js:140-172): **two changes** (the orchestrator's mandatory grounding must
 stay readable after the vision pipeline's ~1.15 MP downscale — a single 600-cell tile collapses
 to ~50 px smears on a 30-min source, which would make spine rule 12's grounding nominal):

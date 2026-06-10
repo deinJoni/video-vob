@@ -18,6 +18,10 @@ at the stderr log they can `tail -f` from another terminal.
 2. Call `mcp__vob__vob_render_full { project_id }`. On failure it throws with the log path in
    the error fields — surface that path so the user can inspect the failure. Do not auto-retry —
    full-render failures usually indicate a real problem worth surfacing.
+   If repeated attempts die in the BROWSER (`Target closed`, `Protocol error`, BeginFrame/ready
+   timeouts) rather than in the composition, offer the overlay-over-base escape hatch —
+   `phases/PACKAGE.md` §Escape hatch (`vob_import_deliverable`) — and ask the user first: it
+   leaves the single-timeline FSM.
 
 3. On success, print the absolute `mp4_path` and size: "full render done in
    <render_duration_seconds>s — <file_size_bytes/1e6>MB at `<mp4_path>`. Watch for things draft

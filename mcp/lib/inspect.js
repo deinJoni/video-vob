@@ -41,9 +41,21 @@ const {
   buildSegmentStrips,
   extractSegmentKeyframes,
 } = require("./segment-signals.js");
+const { mapWithConcurrency, recommendedHeavyEncodeConcurrency } = require("./concurrency.js");
 const { rankHookCandidates, buildInspectDigest } = require("./inspect-digest.js");
 
 const THUMB_TIMEOUT_MS = 120 * 1000;
+// Per-seek timeout for one single-frame thumbnail extract (KEYFRAME_TIMEOUT_MS
+// precedent — one input-side seek decodes ~one GOP, 60s is generous).
+const THUMB_SEEK_TIMEOUT_MS = 60 * 1000;
+// Hard grid cap per file, even for an explicit thumb_interval_seconds (the
+// default-interval math already targets ~120). Seek cost is O(grid), so a
+// pathological tiny interval on a long source must not spawn thousands of
+// seeks; dropped slots surface as a thumbnails_truncated warning.
+const MAX_THUMBS_PER_FILE = 400;
+// Stop scheduling new seeks after this many real failures — a pipeline that
+// keeps failing is a dead decoder, not scattered bad frames.
+const THUMB_FAILURE_BAIL = 5;
 const AUDIO_TIMEOUT_MS = 180 * 1000;
 const CONTACT_SHEET_TIMEOUT_MS = 120 * 1000;
 const CONTACT_SHEET_COLS = 5;
@@ -111,6 +123,11 @@ function durationAwareTimeout({ baseMs, durationSeconds, perSecondMs, ceilingMs,
   return Math.min(ceilingMs, Math.max(baseMs, Math.round(durationSeconds * perSecondMs)));
 }
 
+function envPositiveIntMs(envVar, fallbackMs) {
+  const override = Number.parseInt((process.env[envVar] || "").trim(), 10);
+  return Number.isInteger(override) && override > 0 ? override : fallbackMs;
+}
+
 function pickSampleThumbs(thumbPaths, targetCount = DEFAULT_SAMPLE_THUMB_COUNT) {
   if (!Array.isArray(thumbPaths) || thumbPaths.length === 0) return [];
   if (thumbPaths.length <= targetCount) return thumbPaths.slice();
@@ -130,53 +147,139 @@ function clearInspectDir(projectId) {
   fs.mkdirSync(inspectThumbsDir(projectId), { recursive: true });
 }
 
+// Seek-based thumbnail extraction: one input-side -ss single-frame extract per
+// grid point (the extractSegmentKeyframes pattern) instead of a single
+// fps=1/N pass. The fps filter decodes EVERY frame regardless of interval, so
+// on long/high-bitrate sources (18-min 35Mbps HEVC) it outruns any sane
+// timeout; per-seek cost is ~one GOP decode, making the pass O(grid size).
+//
+// Numbering is GRID-TRUE: frame_K is always source second (K-1)*interval — the
+// storyboarder's cut-point math and the image2 contact-sheet reads both depend
+// on it. A failed/skipped slot is filled with a copy of the nearest successful
+// frame (stand-in) so the sequence stays contiguous without shifting later
+// frames; stand-in slots are reported, never silent.
+//
+// Never throws — failures degrade to warnings at the caller (INSPECT's real
+// payload is digest/segments/transcripts; triage images must not abort it).
 async function extractThumbnailsForFile({ projectId, fileIndex, sourcePath, intervalSeconds, durationSeconds = null }) {
-  const thumbsRoot = inspectThumbsDir(projectId);
-  const fileSubdir = path.join(thumbsRoot, `file_${fileIndex}`);
-  fs.mkdirSync(fileSubdir, { recursive: true });
-  const pattern = path.join(fileSubdir, "frame_%04d.jpg");
-  // Thumb extraction decodes the whole stream too — scale its timeout like
-  // scene detection rather than guaranteeing a timeout on long sources.
-  const timeoutMs = durationAwareTimeout({
+  const result = { paths: [], attempted: 0, failed: 0, skipped: 0, standins: [], truncated: 0, noDuration: false };
+  const fileSubdir = path.join(inspectThumbsDir(projectId), `file_${fileIndex}`);
+  try {
+    fs.mkdirSync(fileSubdir, { recursive: true });
+  } catch {
+    result.attempted = 1;
+    result.failed = 1;
+    return result;
+  }
+
+  // Timestamp grid: k*interval, clamped strictly inside the stream (a seek at
+  // or past the last frame yields zero output). Unknown duration -> single
+  // t=0 attempt.
+  const grid = [];
+  if (Number.isFinite(durationSeconds) && durationSeconds > 0) {
+    const limit = Math.max(0, durationSeconds - 0.1);
+    const fullCount = Math.max(1, Math.floor(limit / intervalSeconds) + 1);
+    const gridCount = Math.min(fullCount, MAX_THUMBS_PER_FILE);
+    result.truncated = fullCount - gridCount;
+    for (let k = 0; k < gridCount; k += 1) grid.push(k * intervalSeconds);
+  } else {
+    grid.push(0);
+    result.noDuration = true;
+  }
+  result.attempted = grid.length;
+
+  const seekTimeoutMs = envPositiveIntMs("VOB_THUMB_SEEK_TIMEOUT_MS", THUMB_SEEK_TIMEOUT_MS);
+  // Soft pass deadline (same scaling the old single-pass timeout used): past
+  // it, remaining seeks are skipped instead of the whole INSPECT throwing.
+  const passDeadlineMs = durationAwareTimeout({
     baseMs: THUMB_TIMEOUT_MS,
     durationSeconds,
     perSecondMs: 500,
     ceilingMs: SCENE_DETECT_CEILING_MS,
     envVar: "VOB_THUMB_TIMEOUT_MS",
   });
-  // scale=480:-2 + q4: thumbs are orientation/triage frames, not classification
-  // evidence — ~10× smaller than full-res q3, visually clean at agent scale.
-  const result = await runFfmpegBlocking(
-    [
-      "-y",
-      ...inputAutorotateArgs(),
-      "-i", sourcePath,
-      "-vf", `fps=1/${intervalSeconds},scale=480:-2`,
-      "-q:v", "4",
-      pattern,
-    ],
-    { timeoutMs },
-  );
-  if (result.timed_out) {
-    throw new ToolError(
-      ERROR_CODES.INTERNAL_ERROR,
-      `ffmpeg thumbnail extraction timed out for ${sourcePath}`,
-      { stderr_preview: (result.stderr || "").trim().slice(0, 1000) || null },
-    );
+  const startedAt = Date.now();
+  let failureCount = 0;
+
+  // Single-frame decodes are far lighter than the heavy-encode tier; one above
+  // that ceiling (capped at 4) is safe even on the 8GB reference host.
+  const concurrency = Math.min(4, recommendedHeavyEncodeConcurrency() + 1);
+  const outcomes = await mapWithConcurrency(grid, concurrency, async (t, k) => {
+    if (failureCount >= THUMB_FAILURE_BAIL || Date.now() - startedAt > passDeadlineMs) {
+      return { ok: false, skipped: true };
+    }
+    const tmpPath = path.join(fileSubdir, `t_${k}.tmp.jpg`);
+    let r = null;
+    try {
+      // scale=480:-2 + q4: thumbs are orientation/triage frames, not
+      // classification evidence — ~10× smaller than full-res q3.
+      r = await runFfmpegBlocking(
+        [
+          "-y",
+          ...inputAutorotateArgs(),
+          "-ss", String(t),
+          "-i", sourcePath,
+          "-frames:v", "1",
+          "-vf", "scale=480:-2",
+          "-q:v", "4",
+          "-update", "1",
+          tmpPath,
+        ],
+        { timeoutMs: seekTimeoutMs },
+      );
+    } catch {
+      r = null;
+    }
+    // exit 0 with no output file is real (seek past the video stream's last
+    // frame inside a longer container, attached_pic-only streams) — existsSync
+    // is part of the success predicate, like extractSegmentKeyframes.
+    if (r && !r.timed_out && r.exit_code === 0 && fs.existsSync(tmpPath)) {
+      return { ok: true, tmpPath };
+    }
+    failureCount += 1;
+    try { fs.rmSync(tmpPath, { force: true }); } catch { /* best-effort tmp cleanup */ }
+    return { ok: false, skipped: false };
+  });
+
+  const successKs = [];
+  for (let k = 0; k < outcomes.length; k += 1) {
+    const o = outcomes[k];
+    if (o && o.ok) successKs.push(k);
+    else if (o && o.skipped) result.skipped += 1;
   }
-  if (result.exit_code !== 0) {
-    const stderrPreview = (result.stderr || "").trim().slice(0, 2000) || null;
-    throw new ToolError(
-      ERROR_CODES.INTERNAL_ERROR,
-      `ffmpeg thumbnail extraction failed (exit ${result.exit_code}) for ${sourcePath}`,
-      { exit_code: result.exit_code, stderr_preview: stderrPreview },
-    );
+  result.failed = grid.length - successKs.length - result.skipped;
+  if (successKs.length === 0) return result;
+
+  const frameName = (k) => `frame_${String(k + 1).padStart(4, "0")}.jpg`;
+  // successKs ascends, so on equidistant ties the previous neighbor wins (the
+  // frame more likely still on screen at the missing slot's timestamp).
+  const nearestSuccess = (k) => {
+    let best = successKs[0];
+    for (const s of successKs) {
+      if (Math.abs(s - k) < Math.abs(best - k)) best = s;
+    }
+    return best;
+  };
+  const successSet = new Set(successKs);
+  for (const k of successKs) {
+    fs.renameSync(path.join(fileSubdir, `t_${k}.tmp.jpg`), path.join(fileSubdir, frameName(k)));
   }
-  const entries = fs.readdirSync(fileSubdir)
-    .filter((name) => name.endsWith(".jpg"))
-    .sort()
-    .map((name) => path.join(fileSubdir, name));
-  return entries;
+  for (let k = 0; k < grid.length; k += 1) {
+    const finalPath = path.join(fileSubdir, frameName(k));
+    if (successSet.has(k)) {
+      result.paths.push(finalPath);
+      continue;
+    }
+    try {
+      fs.copyFileSync(path.join(fileSubdir, frameName(nearestSuccess(k))), finalPath);
+      result.standins.push(k + 1); // 1-based, matching frame_%04d names
+      result.paths.push(finalPath);
+    } catch {
+      // Disk-level copy failure leaves a numbering hole; the contact-sheet
+      // build for this file will degrade and warn (it reads sequentially).
+    }
+  }
+  return result;
 }
 
 // Build one or more contact sheets for a file's thumbs, chunked at ≤40 cells
@@ -563,12 +666,21 @@ async function runInspect({ projectId, manifest, options = {} }) {
   const transcriptAbs = inspectTranscriptPath(projectId);
   const summaryAbs = inspectSummaryPath(projectId);
 
+  // Thumbnails + contact sheets are triage artifacts and must never abort
+  // INSPECT (the real payload is digest/segments/transcripts) — every failure
+  // here degrades to a warnings[] entry instead of a throw.
   const thumbPaths = [];
   const thumbCountsByFile = new Map();
+  const warnings = [];
+  let thumbFailedCount = 0;
   let appliedThumbInterval = explicitInterval != null ? explicitInterval : DEFAULT_THUMB_INTERVAL_SECONDS;
   for (let i = 0; i < manifest.files.length; i += 1) {
     const file = manifest.files[i];
     if (!file || typeof file.path !== "string") continue;
+    // Audio-only manifest entries (e.g. a narration .wav) have no frames to
+    // thumbnail — running ffmpeg's video filter on them used to kill INSPECT.
+    const hasVideo = file.has_video === true || Number(file.video_streams) > 0;
+    if (!hasVideo) continue;
     const fileDuration = Number(file.duration_seconds);
     const intervalForFile = explicitInterval != null
       ? explicitInterval
@@ -577,22 +689,70 @@ async function runInspect({ projectId, manifest, options = {} }) {
         Math.ceil((Number.isFinite(fileDuration) ? fileDuration : 0) / MAX_DEFAULT_THUMBS_PER_FILE),
       );
     appliedThumbInterval = Math.max(appliedThumbInterval, intervalForFile);
-    const created = await extractThumbnailsForFile({
-      projectId,
-      fileIndex: i,
-      sourcePath: file.path,
-      intervalSeconds: intervalForFile,
-      durationSeconds: Number.isFinite(fileDuration) ? fileDuration : null,
-    });
-    thumbPaths.push(...created);
-    thumbCountsByFile.set(i, created.length);
+    let t;
+    try {
+      t = await extractThumbnailsForFile({
+        projectId,
+        fileIndex: i,
+        sourcePath: file.path,
+        intervalSeconds: intervalForFile,
+        durationSeconds: Number.isFinite(fileDuration) ? fileDuration : null,
+      });
+    } catch (error) {
+      t = { paths: [], attempted: 1, failed: 1, skipped: 0, standins: [], truncated: 0, noDuration: false };
+      warnings.push({
+        code: "thumbnails_failed",
+        file_index: i,
+        message: `thumbnail extraction threw for file ${i}: ${error && error.message ? error.message : String(error)}`,
+      });
+    }
+    thumbPaths.push(...t.paths);
+    thumbCountsByFile.set(i, t.paths.length);
+    thumbFailedCount += t.failed + t.skipped;
+    if (t.noDuration) {
+      warnings.push({
+        code: "thumbnails_no_duration",
+        file_index: i,
+        message: `file ${i} has no usable duration in the manifest — attempted a single t=0 thumbnail only`,
+      });
+    }
+    if (t.truncated > 0) {
+      warnings.push({
+        code: "thumbnails_truncated",
+        file_index: i,
+        message: `thumbnail grid for file ${i} clamped at ${MAX_THUMBS_PER_FILE} (dropped ${t.truncated} slot(s)) — raise thumb_interval_seconds for a sparser grid`,
+      });
+    }
+    if (t.paths.length === 0 && t.attempted > 0) {
+      warnings.push({
+        code: "thumbnails_failed",
+        file_index: i,
+        message: `all ${t.attempted} thumbnail seek(s) failed for file ${i} — no thumbs or contact sheet; ground from segment keyframes/strips instead`,
+      });
+    } else if (t.failed + t.skipped > 0) {
+      const standinPreview = t.standins.slice(0, 10).join(", ")
+        + (t.standins.length > 10 ? ` (+${t.standins.length - 10} more)` : "");
+      warnings.push({
+        code: "thumbnails_partial",
+        file_index: i,
+        message: `${t.failed} thumbnail seek(s) failed${t.skipped > 0 ? ` and ${t.skipped} were skipped (deadline/bail)` : ""} for file ${i}; frame slot(s) [${standinPreview}] are stand-in copies of the nearest extracted frame — frame_K↔timestamp mapping is unchanged`,
+      });
+    }
   }
 
   const contactSheetPaths = [];
   for (const [fileIndex, count] of thumbCountsByFile.entries()) {
     if (count <= 0) continue;
-    const sheets = await buildContactSheets({ projectId, fileIndex, thumbCount: count });
-    contactSheetPaths.push(...sheets);
+    try {
+      const sheets = await buildContactSheets({ projectId, fileIndex, thumbCount: count });
+      contactSheetPaths.push(...sheets);
+    } catch (error) {
+      warnings.push({
+        code: "contact_sheet_failed",
+        file_index: fileIndex,
+        message: `contact sheet build failed for file ${fileIndex}: ${error && error.message ? error.message : String(error)} — read individual thumbs or segment strips instead`,
+      });
+    }
   }
 
   // Transcribe EVERY audio file (content-hash cached) and keep them all as
@@ -861,6 +1021,7 @@ async function runInspect({ projectId, manifest, options = {} }) {
         legendPath: stripsLegendPathOut,
         failures: segmentation.stripFailures,
       },
+      thumbs: { count: thumbPaths.length, failed: thumbFailedCount },
       lowConfidenceWords: collectLowConfidenceWords(winnerWords),
       asr: { backend: asrBackend, skippedReason },
       sceneDetectionSkipped: skipSceneDetection,
@@ -878,10 +1039,12 @@ async function runInspect({ projectId, manifest, options = {} }) {
     generated_at: nowIso(),
     thumb_interval_seconds: appliedThumbInterval,
     thumb_count: thumbPaths.length,
+    thumb_failed_count: thumbFailedCount,
     thumbs_dir: thumbsRootAbs,
     thumb_paths: thumbPaths,
     sample_thumb_paths: pickSampleThumbs(thumbPaths),
     contact_sheet_paths: contactSheetPaths,
+    warnings,
     audio_present: audioPresent,
     audio_path: audioPathOut,
     speech_detected: speechDetected,

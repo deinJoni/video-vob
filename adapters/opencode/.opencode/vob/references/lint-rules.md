@@ -140,7 +140,10 @@ seconds. (`data-start`/`data-fps` are hyperframes timing attrs — this rule doe
 ### `vob/unresolved_source_ref` / `vob/source_ref_target_missing` (errors)
 A `./source/<name>` reference resolves to nothing on disk. The ref must be
 `./source/<scene_id>-<clip_index>.mp4` for an existing storyboard clip — check the scene_id
-spelling and the 0-based clip index against the storyboard.
+spelling and the 0-based clip index against the storyboard. An unresolved-ref rejection lists
+the legal names: the finding message previews them, and the rejection's
+`details.valid_source_refs.scene_clips` (passed through in your `revision_notes`) carries the
+full list — pick from it verbatim.
 
 ### `vob/absolute_src_path` (error)
 A media `src` uses an absolute filesystem path. Make it relative (`./source/...`) — absolute

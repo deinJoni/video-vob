@@ -54,8 +54,9 @@ to the `composer` subagent; linting, snapshots, and transitions stay with you.
 
 4. **Save-time QC rejection branch.** If the composer reports `vob_save_composition` rejected
    with QC findings (`details.qc_findings`), that is the same auto-retry path as lint errors
-   below — re-invoke with the findings' rule codes as `revision_notes` and count it against the
-   lint-retry budget.
+   below — re-invoke with the findings' rule codes as `revision_notes` (plus, when the rejection
+   carries `details.valid_source_refs` for unresolved `./source/` refs, its `scene_clips` list
+   verbatim — that is data, not findings prose) and count it against the lint-retry budget.
 
 5. **Lint.** After the subagent returns, call `vob_vob_lint_composition { project_id }`
    (it merges hyperframes lint + the engine's static QC into one findings report). Branch on

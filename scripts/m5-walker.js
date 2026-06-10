@@ -364,14 +364,15 @@ ${captionDivs.join("\n")}
   return { "index.html": index };
 }
 
-// Negative QC fixture: the good HTML with (a) an absolute filesystem src and
-// (b) the root's data-composition-id removed — both save-time QC errors.
+// Negative QC fixture: the good HTML with (a) an absolute filesystem src,
+// (b) the root's data-composition-id removed, and (c) a ./source/ ref matching
+// no scene clip or manifest source — three save-time QC errors.
 function badComposition(goodFiles) {
   const index = goodFiles["index.html"]
     .replace('\n     data-composition-id="master"', "")
     .replace(
       '<div id="hook-overlay"',
-      '<video id="bad-abs" class="full-bleed" src="/absolute/path.mp4" muted data-media-start="0" data-playback-start="0"></video>\n  <div id="hook-overlay"',
+      '<video id="bad-abs" class="full-bleed" src="/absolute/path.mp4" muted data-media-start="0" data-playback-start="0"></video>\n  <video id="bad-ref" class="full-bleed" src="./source/no-such-scene-9.mp4" muted data-media-start="0"></video>\n  <div id="hook-overlay"',
     );
   return { "index.html": index };
 }
@@ -631,13 +632,18 @@ async function main() {
       );
       const d = err.details || {};
       assert(Array.isArray(d.qc_findings) && d.qc_findings.length > 0, "QC rejection carried no qc_findings");
-      for (const rule of ["vob/missing_root_attr", "vob/absolute_src_path"]) {
+      for (const rule of ["vob/missing_root_attr", "vob/absolute_src_path", "vob/unresolved_source_ref"]) {
         assert(
           d.qc_findings.some((f) => f && f.rule === rule),
           `expected ${rule} in qc_findings, got ${JSON.stringify(d.qc_findings.map((f) => f && f.rule))}`,
         );
       }
-      console.log(`\n   rejected as expected: ${d.qc_error_count} QC error(s) [${d.qc_findings.filter((f) => f.severity === "error").map((f) => f.rule).join(", ")}]`);
+      // An unresolved ref must hand back the legal name list (no storyboard round-trip).
+      assert(
+        d.valid_source_refs && Array.isArray(d.valid_source_refs.scene_clips) && d.valid_source_refs.scene_clips.length > 0,
+        "unresolved_source_ref rejection carried no valid_source_refs.scene_clips",
+      );
+      console.log(`\n   rejected as expected: ${d.qc_error_count} QC error(s) [${d.qc_findings.filter((f) => f.severity === "error").map((f) => f.rule).join(", ")}]   valid clips: ${d.valid_source_refs.scene_clips.join(", ")}`);
     });
 
     // 7b. good composition — engine recreates ./source/ symlinks + font kit

@@ -48,6 +48,9 @@ acknowledge.
    several per file; read them all). Do NOT read individual `sample_thumb_paths` singles unless a
    specific frame needs confirmation (limit 2). You must be able to write 1–2 sentences of
    concrete visual notes from what you saw.**
+   If `contact_sheet_paths` is empty or the result carries thumbnail `warnings` (degraded
+   extraction), ground from the strip images instead — `strips/legend.json` lists `strips[].path`
+   — plus segment keyframes; the visual-notes requirement still applies.
 
 5. Surface the findings in plain language, including your concrete visual notes:
    - "extracted N thumbnails to `<thumbs_dir>` (every Ns) — contact sheet(s) at
@@ -62,6 +65,9 @@ acknowledge.
    - If `!audio_present`: "no audio streams in the source."
    - If `skipped_reason` is set and the user didn't ask to skip: explain (e.g.
      `transcription_failed`) and offer to retry or skip.
+   - If the result carries `warnings` (thumbnail/contact-sheet degradation — stand-in frames,
+     partial sheets), say so in one line; classification is unaffected (it grounds on segment
+     keyframes/strips, not thumbs).
    - Mention the top 1–2 `hook_candidates` from the digest — they anchor the INTENT proposal.
 
 5b. **Classify the segments via the `inspector` subagent.** When `segment_count > 0`, delegate —

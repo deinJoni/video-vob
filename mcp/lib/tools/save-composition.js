@@ -60,11 +60,19 @@ function saveComposition(args) {
     checkTargetsOnDisk: true, // clips were materialized at COMPOSE entry; missing = real problem
   });
   if (qc.error_count > 0) {
+    const hasUnresolvedRef = qc.findings.some((f) => f.rule === "vob/unresolved_source_ref");
     throw new ToolError(
       ERROR_CODES.INVALID_ARGUMENTS,
       `composition QC failed: ${qc.error_count} error(s) — ${qc.findings
         .filter((f) => f.severity === "error").slice(0, 3).map((f) => f.rule).join(", ")}. Fix and re-save.`,
-      { qc_findings: qc.findings.slice(0, 10), qc_error_count: qc.error_count, qc_warning_count: qc.warning_count },
+      {
+        qc_findings: qc.findings.slice(0, 10),
+        qc_error_count: qc.error_count,
+        qc_warning_count: qc.warning_count,
+        // Unresolved-ref fixes shouldn't need a storyboard round-trip: hand
+        // back every legal ./source/ name.
+        ...(hasUnresolvedRef ? { valid_source_refs: qc.expected_source_names } : {}),
+      },
     );
   }
 

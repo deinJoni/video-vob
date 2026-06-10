@@ -324,9 +324,11 @@ function segmentTableSection(fileSummaries) {
   return lines.join("\n");
 }
 
-function visualIndexSection(strips) {
+function visualIndexSection(strips, thumbs) {
   const stripCount = strips && isNum(strips.stripCount) ? strips.stripCount : 0;
   const failures = strips && isNum(strips.failures) ? strips.failures : 0;
+  const thumbCount = thumbs && isNum(thumbs.count) ? thumbs.count : 0;
+  const thumbsFailed = thumbs && isNum(thumbs.failed) ? thumbs.failed : 0;
   const lines = ["## Visual index"];
   if (stripCount > 0) {
     lines.push(`- strips: ${stripCount} strip(s) (≤12 cells each) at inspect/strips/ — cell→segment legend: strips/legend.json`);
@@ -334,9 +336,16 @@ function visualIndexSection(strips) {
     lines.push("- strips: none — read per-segment stills directly");
   }
   lines.push("- per-segment stills (512w): inspect/segment_keyframes/file_<i>/seg_<n>.jpg");
-  lines.push("- full thumbs (480w): inspect/thumbs/file_<i>/ · contact sheets: inspect/contact_sheet_file_<i>*.jpg");
+  if (thumbCount > 0) {
+    lines.push("- full thumbs (480w): inspect/thumbs/file_<i>/ · contact sheets: inspect/contact_sheet_file_<i>*.jpg");
+  } else {
+    lines.push("- full thumbs: none — ground from strips / per-segment stills");
+  }
   if (failures > 0) {
     lines.push(`WARNING: ${failures} strip(s) failed to build — read the listed segment keyframes individually.`);
+  }
+  if (thumbCount > 0 && thumbsFailed > 0) {
+    lines.push(`WARNING: ${thumbsFailed} thumbnail grid slot(s) failed — filled with stand-in copies of neighboring frames (frame_K↔timestamp mapping unchanged; see inspect.json warnings).`);
   }
   return lines.join("\n");
 }
@@ -369,6 +378,7 @@ function buildInspectDigest({
   cleanSpeechStats,
   hookCandidates,
   strips,
+  thumbs,
   lowConfidenceWords,
   asr,
   sceneDetectionSkipped,
@@ -388,7 +398,7 @@ function buildInspectDigest({
     cleanSpeechSection(cleanSpeechStats),
     hookCandidatesSection(hookCandidates, { transcribedFileIndex, manifestFiles }),
     segmentTableSection(fileSummaries),
-    visualIndexSection(strips),
+    visualIndexSection(strips, thumbs),
     captionRiskSection(lowConfidenceWords),
   ].join("\n\n") + "\n";
 }

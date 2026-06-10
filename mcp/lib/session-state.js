@@ -218,6 +218,8 @@ function summarizeInspect(slot) {
     summary_path: strOrNull(i.summary_path),
     thumbs_dir: strOrNull(i.thumbs_dir),
     thumb_count: intOr(i.thumb_count, 0),
+    thumb_failed_count: intOr(i.thumb_failed_count, 0),
+    warnings: arrOr(i.warnings),
     thumb_interval_seconds: numOr(i.thumb_interval_seconds, 0),
     sample_thumb_paths: arrOr(i.sample_thumb_paths),
     contact_sheet_paths: arrOr(i.contact_sheet_paths),

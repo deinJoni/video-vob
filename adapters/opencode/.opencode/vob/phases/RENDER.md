@@ -57,3 +57,6 @@ at the stderr log they can `tail -f` from another terminal.
 > record the finished file with `vob_vob_import_deliverable` (see the escape hatch in
 > `.opencode/vob/phases/PACKAGE.md`). Raise OpenCode's MCP timeout if your version honors it
 > (`mcp.vob.timeout` is set high in `opencode.json`, but some versions cap execution separately).
+> The same hatch applies when repeated attempts die in the BROWSER (`Target closed`, `Protocol
+> error`, BeginFrame/ready timeouts) rather than in the composition — offer the overlay-over-base
+> path from that section and ask the user first: it leaves the single-timeline FSM.

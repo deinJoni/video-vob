@@ -236,10 +236,15 @@ function runCompositionQc({ files, storyboard, sourceLinks, sceneClipLinks, chec
             ));
           }
         } else {
+          // List the legal names (scene clips first — they're what the composer
+          // almost always meant) so the fix needs no storyboard re-derivation.
+          const expected = [...clipNames.keys(), ...sourceNames.keys()];
+          const preview = expected.slice(0, 6).join(", ");
+          const moreCount = expected.length - Math.min(6, expected.length);
           findings.push(makeFinding(
             "error",
             "vob/unresolved_source_ref",
-            `src "./source/${name}" (${f.relPath}:${tag.line}) does not match any manifest source or storyboard scene clip — it will 404 at render (net::ERR_FILE_NOT_FOUND)`,
+            `src "./source/${name}" (${f.relPath}:${tag.line}) does not match any manifest source or storyboard scene clip — it will 404 at render (net::ERR_FILE_NOT_FOUND)${expected.length > 0 ? `. Expected one of: ${preview}${moreCount > 0 ? ` (+${moreCount} more)` : ""}` : ""}`,
             f.relPath,
             tag.line,
           ));
@@ -366,7 +371,17 @@ function runCompositionQc({ files, storyboard, sourceLinks, sceneClipLinks, chec
     if (finding.severity === "error") errorCount += 1;
     else warningCount += 1;
   }
-  return { findings, error_count: errorCount, warning_count: warningCount };
+  return {
+    findings,
+    error_count: errorCount,
+    warning_count: warningCount,
+    // Every legal ./source/ name, for callers that want to hand the composer
+    // the full list on an unresolved-ref rejection (the findings cap at 6).
+    expected_source_names: {
+      scene_clips: [...clipNames.keys()],
+      sources: [...sourceNames.keys()],
+    },
+  };
 }
 
 function captionFontSizeFindings({ parsedFiles, cssFiles, effectiveMaster, findings }) {
