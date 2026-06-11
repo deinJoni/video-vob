@@ -1,8 +1,36 @@
-/* video-vob font kit — OFL-licensed, vendored under mcp/assets/fonts/ and
-   symlinked into compose/fonts/ on every save. font-display: block ensures
-   headless capture never paints fallback glyphs mid-render. */
-@font-face { font-family: "Inter"; src: url("./fonts/Inter-Variable.ttf") format("truetype"); font-weight: 100 900; font-style: normal; font-display: block; }
-@font-face { font-family: "Anton"; src: url("./fonts/Anton-Regular.ttf") format("truetype"); font-weight: 400; font-style: normal; font-display: block; }
-@font-face { font-family: "Bebas Neue"; src: url("./fonts/BebasNeue-Regular.ttf") format("truetype"); font-weight: 400; font-style: normal; font-display: block; }
-@font-face { font-family: "Playfair Display"; src: url("./fonts/PlayfairDisplay-Variable.ttf") format("truetype"); font-weight: 400 900; font-style: normal; font-display: block; }
-@font-face { font-family: "Nunito"; src: url("./fonts/Nunito-Variable.ttf") format("truetype"); font-weight: 200 1000; font-style: normal; font-display: block; }
+/* video-vob font kit — built by scripts/build-fonts.js; do not hand-edit.
+   OFL/Apache-licensed, vendored under mcp/assets/fonts/ and symlinked into
+   compose/fonts/ on every save. font-display: block ensures headless capture
+   never paints fallback glyphs mid-render. Attribution: mcp/assets/fonts/LICENSES.md. */
+@font-face { font-family: "Inter"; src: url("./fonts/inter-latin-wght-normal.woff2") format("woff2"); font-weight: 100 900; font-style: normal; font-display: block; }
+@font-face { font-family: "Anton"; src: url("./fonts/anton-latin-400-normal.woff2") format("woff2"); font-weight: 400; font-style: normal; font-display: block; }
+@font-face { font-family: "Bebas Neue"; src: url("./fonts/bebas-neue-latin-400-normal.woff2") format("woff2"); font-weight: 400; font-style: normal; font-display: block; }
+@font-face { font-family: "Playfair Display"; src: url("./fonts/playfair-display-latin-wght-normal.woff2") format("woff2"); font-weight: 100 900; font-style: normal; font-display: block; }
+@font-face { font-family: "Nunito"; src: url("./fonts/nunito-latin-wght-normal.woff2") format("woff2"); font-weight: 100 900; font-style: normal; font-display: block; }
+@font-face { font-family: "Archivo Black"; src: url("./fonts/archivo-black-latin-400-normal.woff2") format("woff2"); font-weight: 400; font-style: normal; font-display: block; }
+@font-face { font-family: "EB Garamond"; src: url("./fonts/eb-garamond-latin-wght-normal.woff2") format("woff2"); font-weight: 100 900; font-style: normal; font-display: block; }
+@font-face { font-family: "IBM Plex Mono"; src: url("./fonts/ibm-plex-mono-latin-400-normal.woff2") format("woff2"); font-weight: 400; font-style: normal; font-display: block; }
+@font-face { font-family: "IBM Plex Mono"; src: url("./fonts/ibm-plex-mono-latin-700-normal.woff2") format("woff2"); font-weight: 700; font-style: normal; font-display: block; }
+@font-face { font-family: "JetBrains Mono"; src: url("./fonts/jetbrains-mono-latin-wght-normal.woff2") format("woff2"); font-weight: 100 900; font-style: normal; font-display: block; }
+@font-face { font-family: "Lato"; src: url("./fonts/lato-latin-400-normal.woff2") format("woff2"); font-weight: 400; font-style: normal; font-display: block; }
+@font-face { font-family: "Lato"; src: url("./fonts/lato-latin-700-normal.woff2") format("woff2"); font-weight: 700; font-style: normal; font-display: block; }
+@font-face { font-family: "Lato"; src: url("./fonts/lato-latin-900-normal.woff2") format("woff2"); font-weight: 900; font-style: normal; font-display: block; }
+@font-face { font-family: "League Gothic"; src: url("./fonts/league-gothic-latin-400-normal.woff2") format("woff2"); font-weight: 400; font-style: normal; font-display: block; }
+@font-face { font-family: "Montserrat"; src: url("./fonts/montserrat-latin-wght-normal.woff2") format("woff2"); font-weight: 100 900; font-style: normal; font-display: block; }
+@font-face { font-family: "Noto Sans JP"; src: url("./fonts/noto-sans-jp-japanese-400-normal.woff2") format("woff2"); font-weight: 400; font-style: normal; font-display: block; }
+@font-face { font-family: "Noto Sans JP"; src: url("./fonts/noto-sans-jp-japanese-700-normal.woff2") format("woff2"); font-weight: 700; font-style: normal; font-display: block; }
+@font-face { font-family: "Open Sans"; src: url("./fonts/open-sans-latin-wght-normal.woff2") format("woff2"); font-weight: 100 900; font-style: normal; font-display: block; }
+@font-face { font-family: "Oswald"; src: url("./fonts/oswald-latin-wght-normal.woff2") format("woff2"); font-weight: 100 900; font-style: normal; font-display: block; }
+@font-face { font-family: "Outfit"; src: url("./fonts/outfit-latin-wght-normal.woff2") format("woff2"); font-weight: 100 900; font-style: normal; font-display: block; }
+@font-face { font-family: "Poppins"; src: url("./fonts/poppins-latin-400-normal.woff2") format("woff2"); font-weight: 400; font-style: normal; font-display: block; }
+@font-face { font-family: "Poppins"; src: url("./fonts/poppins-latin-700-normal.woff2") format("woff2"); font-weight: 700; font-style: normal; font-display: block; }
+@font-face { font-family: "Poppins"; src: url("./fonts/poppins-latin-900-normal.woff2") format("woff2"); font-weight: 900; font-style: normal; font-display: block; }
+@font-face { font-family: "Roboto"; src: url("./fonts/roboto-latin-wght-normal.woff2") format("woff2"); font-weight: 100 900; font-style: normal; font-display: block; }
+@font-face { font-family: "Source Code Pro"; src: url("./fonts/source-code-pro-latin-wght-normal.woff2") format("woff2"); font-weight: 100 900; font-style: normal; font-display: block; }
+@font-face { font-family: "Space Mono"; src: url("./fonts/space-mono-latin-400-normal.woff2") format("woff2"); font-weight: 400; font-style: normal; font-display: block; }
+@font-face { font-family: "Space Mono"; src: url("./fonts/space-mono-latin-700-normal.woff2") format("woff2"); font-weight: 700; font-style: normal; font-display: block; }
+@font-face { font-family: "Hanken Grotesk"; src: url("./fonts/hanken-grotesk-latin-wght-normal.woff2") format("woff2"); font-weight: 100 900; font-style: normal; font-display: block; }
+@font-face { font-family: "Noto Serif SC"; src: url("./fonts/noto-serif-sc-chinese-simplified-400-normal.woff2") format("woff2"); font-weight: 400; font-style: normal; font-display: block; }
+@font-face { font-family: "Noto Serif SC"; src: url("./fonts/noto-serif-sc-chinese-simplified-700-normal.woff2") format("woff2"); font-weight: 700; font-style: normal; font-display: block; }
+@font-face { font-family: "Noto Sans SC"; src: url("./fonts/noto-sans-sc-chinese-simplified-400-normal.woff2") format("woff2"); font-weight: 400; font-style: normal; font-display: block; }
+@font-face { font-family: "Noto Sans SC"; src: url("./fonts/noto-sans-sc-chinese-simplified-700-normal.woff2") format("woff2"); font-weight: 700; font-style: normal; font-display: block; }

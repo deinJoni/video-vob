@@ -4,7 +4,7 @@ exactly those codes — do not guess.
 
 ## `timed_element_missing_clip_class`
 
-The #1 cause of lint failure. Triggers when an element has `data-start` + `data-duration` but no `class="clip"`. Without `class="clip"`, the element is treated as static and visible for the entire composition instead of only during its scheduled window. (The engine's static QC pre-empts this as warning `vob/timed_element_missing_clip_class` at save time — same fix.)
+Triggers when a NON-media element carries any timing attribute (`data-start`, `data-duration`, or `data-track-index`) without a `clip` class token (exact token — `my-clip` does not count). Without `class="clip"`, a layout element is visible for the entire composition instead of only its scheduled window. **`<video>`/`<audio>` are EXEMPT** — the runtime schedules media by its own timing attrs; never "fix" a timed `<video>` by adding wrappers or classes (timing attrs are REQUIRED directly on media — see `media_missing_data_start`). The engine's static QC pre-empts this rule as warning `vob/timed_element_missing_clip_class` with file/line — same scope, same fix.
 
 ✗
 ```html
@@ -20,6 +20,25 @@ The #1 cause of lint failure. Triggers when an element has `data-start` + `data-
 </div>
 ```
 
+## `media_missing_data_start`
+
+Triggers when a `<video>`/`<audio>` with `src` has no `data-start` — hyperframes cannot own playback for untimed media, so preview and render diverge. Timing attributes go DIRECTLY on the media element; a timed wrapper `<div>` does not time the media inside it.
+
+✗
+```html
+<div class="clip" data-start="2.0" data-duration="6.0" data-track-index="0">
+  <video id="s002-aroll" src="./source/s002-0.mp4" data-has-audio="true"
+         data-media-start="0" data-playback-start="0"></video>
+</div>
+```
+
+✓
+```html
+<video id="s002-aroll" src="./source/s002-0.mp4" data-has-audio="true"
+       data-start="2.0" data-duration="6.0" data-track-index="0"
+       data-media-start="0" data-playback-start="0"></video>
+```
+
 ## `media_missing_id`
 
 Triggers when a `<video>` or `<audio>` element lacks an `id` attribute. Hyperframes uses the id to address media elements for seeking and discovery; without one, the linter can't reason about the element.
@@ -27,6 +46,7 @@ Triggers when a `<video>` or `<audio>` element lacks an `id` attribute. Hyperfra
 ✗
 ```html
 <video src="./source/s001-0.mp4" muted
+       data-start="0" data-duration="4.0" data-track-index="0"
        data-media-start="0" data-playback-start="0"></video>
 ```
 
@@ -34,6 +54,7 @@ Triggers when a `<video>` or `<audio>` element lacks an `id` attribute. Hyperfra
 ```html
 <video id="scene-1-video"
        src="./source/s001-0.mp4" muted
+       data-start="0" data-duration="4.0" data-track-index="0"
        data-media-start="0" data-playback-start="0"></video>
 ```
 
@@ -45,18 +66,22 @@ Triggers when a `<video>` element with `data-start` is neither `muted` nor expli
 
 ✗
 ```html
-<video src="./source/s001-0.mp4" data-media-start="0" data-playback-start="0"></video>
+<video id="scene-1-video" src="./source/s001-0.mp4"
+       data-start="0" data-duration="4.0" data-track-index="0"
+       data-media-start="0" data-playback-start="0"></video>
 ```
 
 ✓ (silent visual — for b-roll without dialogue):
 ```html
-<video src="./source/s001-0.mp4" muted
+<video id="scene-1-video" src="./source/s001-0.mp4" muted
+       data-start="0" data-duration="4.0" data-track-index="0"
        data-media-start="0" data-playback-start="0"></video>
 ```
 
 ✓ (keep diegetic audio — for dialogue, native sound):
 ```html
-<video src="./source/s001-0.mp4" data-has-audio="true"
+<video id="scene-1-video" src="./source/s001-0.mp4" data-has-audio="true"
+       data-start="0" data-duration="4.0" data-track-index="0"
        data-media-start="0" data-playback-start="0"></video>
 ```
 
@@ -68,24 +93,20 @@ Triggers when two clips share identical `data-start` + `data-duration` on the sa
 
 ✗
 ```html
-<div class="clip" data-start="5" data-duration="3" data-track-index="0">
-  <video id="a" src="./source/s003-0.mp4" muted data-media-start="0"></video>
-</div>
-<div class="clip" data-start="5" data-duration="3" data-track-index="0">
-  <video id="b" src="./source/s003-0.mp4" muted data-media-start="0"></video>
-</div>
+<video id="a" src="./source/s003-0.mp4" muted data-start="5" data-duration="3" data-track-index="0" data-media-start="0"></video>
+<video id="b" src="./source/s003-0.mp4" muted data-start="5" data-duration="3" data-track-index="0" data-media-start="0"></video>
 ```
 
 ✓ (stagger timing):
 ```html
-<div class="clip" data-start="5" data-duration="3" data-track-index="0">...</div>
-<div class="clip" data-start="8" data-duration="3" data-track-index="0">...</div>
+<video id="a" ... data-start="5" data-duration="3" data-track-index="0"></video>
+<video id="b" ... data-start="8" data-duration="3" data-track-index="0"></video>
 ```
 
 ✓ (or move to a different track for an intentional overlay):
 ```html
-<div class="clip" data-start="5" data-duration="3" data-track-index="0">...</div>
-<div class="clip" data-start="5" data-duration="3" data-track-index="1">...</div>
+<video id="a" ... data-start="5" data-duration="3" data-track-index="0"></video>
+<video id="b" ... data-start="5" data-duration="3" data-track-index="1"></video>
 ```
 
 ## `font_family_without_font_face`
@@ -97,9 +118,11 @@ Triggers when CSS sets a non-generic `font-family` (custom fonts, system stacks 
 body { font-family: -apple-system, BlinkMacSystemFont, "Inter", sans-serif; }
 ```
 
-✓ load the shipped kit and use a kit family:
+✓ **link** the shipped kit in `<head>` — a `<link>`, NOT an `@import`. The lint resolves `@font-face` from a linked stylesheet but does not follow `@import` inside `<style>`, so non-auto-resolved families (Anton, Bebas Neue, Hanken Grotesk, Noto Serif SC / Noto Sans SC / Noto Sans JP) stay flagged when imported. Then use a kit family:
+```html
+<link rel="stylesheet" href="./fonts.css" />
+```
 ```css
-@import url("./fonts.css");
 .hook-title { font-family: "Anton", sans-serif; }
 ```
 
@@ -120,12 +143,10 @@ Triggers when JavaScript calls `.play()`, `.pause()`, or sets `.currentTime` on 
 
 ✓ — declare timing and trim via attributes; let hyperframes drive:
 ```html
-<div class="clip" data-start="0" data-duration="3" data-track-index="0">
-  <video id="scene-1-video"
-         src="./source/s001-0.mp4" muted
-         data-media-start="0"
-         data-playback-start="0"></video>
-</div>
+<video id="scene-1-video" src="./source/s001-0.mp4" muted
+       data-start="0" data-duration="3" data-track-index="0"
+       data-media-start="0"
+       data-playback-start="0"></video>
 ```
 
 ## Composition QC codes (engine static scan)

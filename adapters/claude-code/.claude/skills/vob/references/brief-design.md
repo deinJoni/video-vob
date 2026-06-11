@@ -60,3 +60,13 @@ Fill the Design language section from this table, then adjust ONLY where the use
 `captions_style` / rough idea / `--like` source brief say otherwise. The composer implements the
 Design language section verbatim — it does not re-derive look from tone, so anything you leave
 vague here will be vague on screen.
+
+**The kit is wider than this table — these are just tone defaults.** The composer ships 23
+families (its kit table is the full list): also available are Hanken Grotesk, Montserrat, Poppins,
+Outfit, Open Sans, Lato, Roboto, Oswald, Archivo Black, League Gothic, EB Garamond, the monos
+(JetBrains Mono / IBM Plex Mono / Source Code Pro / Space Mono), and CJK — **Noto Serif SC** /
+**Noto Sans SC** (Simplified Chinese 中文) and **Noto Sans JP** (Japanese). Name any of them in the
+Design language section when the user's idea or `--like` source calls for it. Bilingual/CJK is fully
+renderable now: when the look needs a non-Latin line, name the matching Noto SC/JP family explicitly
+and pair it with a Latin face — only families that exist in the kit will render, so name from this
+list, not from a font you wish were installed.

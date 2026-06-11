@@ -685,42 +685,29 @@ run at save and lint) blocks the pipeline if the composition actually references
 
 ## 12. Font kit assets — D7
 
-### 12.1 Files (ALREADY on disk at `mcp/assets/fonts/`, currently untracked — `git add` them)
-| file | family | weights served | size |
-|---|---|---|---|
-| `Inter-Variable.ttf` | Inter | 100–900 (variable) | 860K |
-| `Anton-Regular.ttf` | Anton | 400 | 168K |
-| `BebasNeue-Regular.ttf` | Bebas Neue | 400 | 60K |
-| `PlayfairDisplay-Variable.ttf` | Playfair Display | 400–900 (variable) | 296K |
-| `Nunito-Variable.ttf` | Nunito | 200–1000 (variable) | 272K |
+### 12.1 Files (`mcp/assets/fonts/`, tracked) — built by `scripts/build-fonts.js`
+The kit is **23 families as self-hosted `.woff2`**, vendored from @fontsource and built
+reproducibly by `scripts/build-fonts.js` (the source of truth for both the font files and
+`fonts.css`). Run `node scripts/build-fonts.js` to (re)download every family and regenerate the
+stylesheet + `fonts/LICENSES.md`; `--css-only` regenerates the CSS alone. The manifest in that
+script carries each family's @fontsource package (variable vs static), subset, weights, and license.
 
-All OFL 1.1. They came from google/fonts raw (the brief's source); the repo hosts TTF, not woff2 —
-TTF is fully supported by Chrome `@font-face` and the files are local (no transfer cost), so TTF is
-the format shipped. If any file is missing/corrupt at build time, re-fetch:
-```
-curl -L -o mcp/assets/fonts/Inter-Variable.ttf           "https://raw.githubusercontent.com/google/fonts/main/ofl/inter/Inter%5Bopsz%2Cwght%5D.ttf"
-curl -L -o mcp/assets/fonts/Anton-Regular.ttf            "https://raw.githubusercontent.com/google/fonts/main/ofl/anton/Anton-Regular.ttf"
-curl -L -o mcp/assets/fonts/BebasNeue-Regular.ttf        "https://raw.githubusercontent.com/google/fonts/main/ofl/bebasneue/BebasNeue-Regular.ttf"
-curl -L -o mcp/assets/fonts/PlayfairDisplay-Variable.ttf "https://raw.githubusercontent.com/google/fonts/main/ofl/playfairdisplay/PlayfairDisplay%5Bwght%5D.ttf"
-curl -L -o mcp/assets/fonts/Nunito-Variable.ttf          "https://raw.githubusercontent.com/google/fonts/main/ofl/nunito/Nunito%5Bwght%5D.ttf"
-```
-Fallback if fetching is unreliable: document the same curl block in install.sh (WP6) — do not block
-v2 on it (brief D7). `.gitignore` does not exclude `.ttf` — no change needed there.
+The set is a **superset of hyperframes' own embedded families** — Inter, Montserrat, Poppins,
+Outfit, Open Sans, Lato, Roboto, Oswald, Archivo Black, League Gothic, EB Garamond, JetBrains Mono,
+IBM Plex Mono, Source Code Pro, Space Mono, Noto Sans JP, Playfair Display, Nunito — **plus** Anton
+and Bebas Neue, **plus** the house-style faces **Hanken Grotesk** and **Noto Serif SC / Noto Sans
+SC** (Simplified Chinese 中文). Variable families ship one wght-axis woff2 (100–900); static and CJK
+families ship one woff2 per weight. Total ≈ 7.8 MiB (the three CJK families dominate at ~1–1.5 MiB
+each; they lazy-load only when CJK text actually renders). All OFL 1.1 except Roboto (Apache-2.0).
 
-### 12.2 `mcp/assets/fonts.css` — exact content (NEW file)
-```css
-/* video-vob font kit — OFL-licensed, vendored under mcp/assets/fonts/ and
-   symlinked into compose/fonts/ on every save. font-display: block ensures
-   headless capture never paints fallback glyphs mid-render. */
-@font-face { font-family: "Inter"; src: url("./fonts/Inter-Variable.ttf") format("truetype"); font-weight: 100 900; font-style: normal; font-display: block; }
-@font-face { font-family: "Anton"; src: url("./fonts/Anton-Regular.ttf") format("truetype"); font-weight: 400; font-style: normal; font-display: block; }
-@font-face { font-family: "Bebas Neue"; src: url("./fonts/BebasNeue-Regular.ttf") format("truetype"); font-weight: 400; font-style: normal; font-display: block; }
-@font-face { font-family: "Playfair Display"; src: url("./fonts/PlayfairDisplay-Variable.ttf") format("truetype"); font-weight: 400 900; font-style: normal; font-display: block; }
-@font-face { font-family: "Nunito"; src: url("./fonts/Nunito-Variable.ttf") format("truetype"); font-weight: 200 1000; font-style: normal; font-display: block; }
-```
-Composer usage (WP5 writes the prose): `<link rel="stylesheet" href="./fonts.css">` then
-`font-family: "Anton", sans-serif;` etc. The hyperframes font lint passes because `@font-face`
-declarations exist in a linked stylesheet within the compose root.
+### 12.2 `mcp/assets/fonts.css` — GENERATED, do not hand-edit
+`fonts.css` is emitted by `scripts/build-fonts.js` from the same manifest, so the `@font-face` rules
+can never drift from the files on disk. One rule per woff2 (variable family → one rule spanning
+`font-weight: 100 900`; static/CJK → one rule per weight), each `font-display: block`. Composer
+usage: `<link rel="stylesheet" href="./fonts.css">` then `font-family: "Anton", sans-serif;` etc.
+The hyperframes font lint passes because `@font-face` declarations exist in a linked stylesheet
+within the compose root — its only font rule, `google_fonts_import`, fires only on a
+`fonts.googleapis.com` link/`@import`, which the kit never uses.
 
 ### 12.3 Serving mechanism — decision: symlink dir + copied css
 `./source/` file symlinks pointing OUTSIDE the compose root (to `transcoded/clips/` and arbitrary
