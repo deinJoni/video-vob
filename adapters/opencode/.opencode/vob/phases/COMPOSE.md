@@ -8,7 +8,7 @@ to the `composer` subagent; linting, snapshots, and transitions stay with you.
 | step | source | fields |
 |---|---|---|
 | 2 | `vob_read_state_summary` | `storyboard.artifact_path`, `brief.path`, `manifest.path`, `composition.*`, `inspect.{transcript_path,clean_speech_path}`, `platform{...}`, `intent.answers`, `style.derived_from` |
-| 5 | `vob_lint_composition` result | `lint_status, error_count, warning_count, qc_error_count, qc_warning_count, findings_summary[≤10], report_path` |
+| 5 | composer-relayed save verdict; `vob_read_state_summary` `composition.{lint_status,lint_report_path}`; `vob_lint_composition` (fallback only) | `lint_status, error_count, warning_count, qc_error_count, qc_warning_count, findings_summary[≤10], report_path` |
 | 6 | `vob_snapshot_keyframes` result | `still_paths, contact_sheet_path, snapshots_dir` |
 
 1. **Transition with a warning.** Tell the user the transition pre-cuts scene clips (first entry
@@ -71,9 +71,13 @@ to the `composer` subagent; linting, snapshots, and transitions stay with you.
    carries `details.valid_source_refs` for unresolved `./source/` refs, its `scene_clips` list
    verbatim — that is data, not findings prose) and count it against the lint-retry budget.
 
-5. **Lint.** After the subagent returns, call `vob_vob_lint_composition { project_id }`
-   (it merges hyperframes lint + the engine's static QC into one findings report). Branch on
-   `lint_status`:
+5. **Lint verdict.** Every accepted save already ran the merged lint (hyperframes + engine QC)
+   and stamped `composition.lint_status` — the composer self-corrects errors in-invocation
+   (≤3 saves) and reports its final verdict. Take `lint_status` from the composer's report
+   (confirm via `vob_read_state_summary` when in doubt — never from memory). Call
+   `vob_vob_lint_composition { project_id }` yourself ONLY when `lint_status` is
+   `unknown` (the save-time lint infra-failed — e.g. missing binary, timeout) or the
+   composer's report is missing/garbled. Branch on `lint_status`:
    - **`clean`** → go to step 6 (self-QC) before presenting anything.
    - **`warnings_only`** → show the warning summary (`findings_summary`, or `report_path` for
      the full list). Ask: "the linter flagged N warning(s); fix them, or accept and proceed?"
@@ -81,9 +85,10 @@ to the `composer` subagent; linting, snapshots, and transitions stay with you.
      - **Fix** → loop to step 3 with `revision_notes` = rule codes + file/line list +
        `report_path` — never paste full findings prose (the composer reads the report itself).
      - The user may also choose **revise** (their own notes) or **back to the plan**.
-   - **`errors`** — do NOT surface to the user yet; auto-retry. Re-invoke the composer (step 3)
-     with `revision_notes` = rule codes + file/line list + `report_path`. After **3** consecutive
-     auto-retries without reaching `clean`/`warnings_only`, stop, surface the latest report, and
+   - **`errors`** — the composer already burned its in-invocation save budget on these; do NOT
+     surface to the user yet; auto-retry. Re-invoke the composer (step 3) with `revision_notes`
+     = rule codes + file/line list + `report_path`. After **3** consecutive auto-retries
+     (re-spawns) without reaching `clean`/`warnings_only`, stop, surface the latest report, and
      ask: revise (user notes), back-edge to PLAN, or abort.
 
 ### Self-QC — snapshot review BEFORE the user sees anything

@@ -11,6 +11,9 @@ const { validateCompositionFiles, htmlAndCssEntries } = require("../composition-
 const { recreateSourceSymlinks, resolveSceneClipLinks, resolveSourceLinks, injectFontKit } = require("../source-symlink.js");
 const { runCompositionQc } = require("../composition-qc.js");
 const { findTimeline, storyboardHasShorts, storyboardTimelines } = require("../storyboard-schema.js");
+// The save-time lint IS the gate lint — one implementation, one report format,
+// one revision binding (see the post-commit block in saveComposition).
+const lintCompositionTool = require("./lint-composition.js");
 
 function nowIso() {
   return new Date().toISOString();
@@ -31,7 +34,7 @@ function wipeComposeDir(dirPath) {
   }
 }
 
-function saveComposition(args) {
+async function saveComposition(args) {
   const id = assertSafeProjectId(args && args.project_id);
   const verdict = validateCompositionFiles(args && args.files);
   if (!verdict.ok) {
@@ -110,7 +113,7 @@ function saveComposition(args) {
     );
   }
 
-  return withSessionLock(id, () => {
+  const saveResult = withSessionLock(id, () => {
     const state = readSessionStateStrict(id);
 
     const composeRoot = composeDir(id);
@@ -212,11 +215,34 @@ function saveComposition(args) {
       fonts_linked: fontResult.linked,
     };
   });
+
+  // The composer's only feedback used to be the static QC above — qc.error_count
+  // 0 on every accepted save — while the REAL gate verdict (hyperframes lint +
+  // QC merged, vob_lint_composition) was orchestrator-only and ran after
+  // handoff: the composer iterated blind and could make things worse. Run the
+  // same merged lint here, on the just-committed files, so the save result IS
+  // the gate verdict and the composer self-corrects before returning. Reuses
+  // the lint tool's handler directly — its revision binding makes a racing
+  // re-save fail this stamp instead of mislabeling the new files. An infra
+  // failure (missing/crashed hyperframes, timeout) must not fail the save:
+  // files are committed, lint_status stays "unknown", and the orchestrator's
+  // own vob_lint_composition call is the fallback.
+  try {
+    const lint = await lintCompositionTool.handler({ project_id: id });
+    return { ...saveResult, lint_status: lint.lint_status, lint };
+  } catch (err) {
+    const code = err && err.code ? `${err.code}: ` : "";
+    const message = err && err.message ? err.message : String(err);
+    return {
+      ...saveResult,
+      lint_error: `merged lint did not run — the save stands, lint_status stays "unknown" (the orchestrator's vob_lint_composition is the fallback): ${code}${message}`,
+    };
+  }
 }
 
 module.exports = Object.freeze({
   name: "vob_save_composition",
-  description: "Save the hyperframes composition: map of relative-path → content (index.html required; .html/.css/.js/.json/.svg; ≤64 files, ≤256KiB each, ≤1MiB total). Fully replacing. The engine recreates ./source/ symlinks and the ./fonts.css font kit, runs static QC (errors reject with details.qc_findings), resets lint_status to 'unknown' and preview/render confirmation, and bumps revision_count. Fan-out: when the storyboard has shorts[], short_id is REQUIRED (the short this composition implements) — QC scopes scene coverage/master duration to that short and warns on refs into other shorts' clips.",
+  description: "Save the hyperframes composition: map of relative-path → content (index.html required; .html/.css/.js/.json/.svg; ≤64 files, ≤256KiB each, ≤1MiB total). Fully replacing. The engine recreates ./source/ symlinks and the ./fonts.css font kit, runs static QC (errors reject with details.qc_findings), resets preview/render confirmation, bumps revision_count — then runs the FULL merged lint (hyperframes lint + static QC, same engine as vob_lint_composition) on the committed files, stamps composition.lint_status, and returns the verdict: lint_status ('clean'|'warnings_only'|'errors') + lint.findings_summary (≤10) + lint.report_path. Fix errors and re-save until clean. If the lint binary itself fails, the save still succeeds with lint_status 'unknown' + lint_error. Fan-out: when the storyboard has shorts[], short_id is REQUIRED (the short this composition implements) — QC scopes scene coverage/master duration to that short and warns on refs into other shorts' clips.",
   inputSchema: {
     type: "object",
     properties: {
@@ -240,10 +266,11 @@ module.exports = Object.freeze({
   role_bundles: ["composer"],
   mutating: true,
   global_preapproval: false,
-  network_access: false,
+  // The post-commit merged lint spawns hyperframes (npx fallback may fetch).
+  network_access: true,
   browser_access: false,
   scope_required: false,
   sensitive_output: false,
-  session_artifacts_written: ["compose/*", "compose/source/*", "state.json"],
+  session_artifacts_written: ["compose/*", "compose/source/*", "compose/lint-report.json", "state.json"],
   hook_required: false,
 });

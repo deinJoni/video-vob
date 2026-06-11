@@ -23,6 +23,13 @@ const QC_MIN_CAPTION_FONT_PX_SQUARE = 48;
 // Tags whose src attribute is a media reference the file server must resolve.
 const MEDIA_TAGS = new Set(["video", "audio", "img", "source"]);
 
+// Tags the hyperframes clip-class lint rule skips (mirrored from the installed
+// binary): the runtime schedules media off its own timing attrs — it discovers
+// them via video[data-start]/audio[data-start] — so class="clip" visibility
+// control applies to layout elements only. Timed media is not just legal, it is
+// REQUIRED (media_missing_data_start is a lint ERROR on untimed <video src>).
+const CLIP_CLASS_EXEMPT_TAGS = new Set(["audio", "video", "script", "style", "template"]);
+
 // Opening-tag scan: tolerates multiline attribute blocks; a quoted ">" inside
 // an attribute value does not terminate the tag.
 const OPEN_TAG_RE = /<([a-zA-Z][a-zA-Z0-9-]*)((?:"[^"]*"|'[^']*'|[^'">])*)>/g;
@@ -381,17 +388,26 @@ function runCompositionQc({ files, storyboard, sourceLinks, sceneClipLinks, chec
     ));
   }
 
-  // --- W3: timed elements without class="clip" ---------------------------------
+  // --- W3: timed NON-media elements without class="clip" ------------------------
+  // Exact mirror of the installed hyperframes lint rule: media/script/style/
+  // template tags are exempt (CLIP_CLASS_EXEMPT_TAGS above), sub-composition
+  // hosts (data-composition-src) are exempt like roots, the trigger is ANY of
+  // data-start/data-duration/data-track-index, and the class check is an exact
+  // token match. Diverging from the binary makes the two layers fight: the old
+  // all-tags version warned on every timed <video> — an element hyperframes
+  // REQUIRES to be timed — so every correct composition ate false positives.
   for (const f of parsedFiles) {
     for (const tag of f.tags) {
-      if (!("data-start" in tag.attrs) || !("data-duration" in tag.attrs)) continue;
-      if ("data-composition-id" in tag.attrs) continue;
-      const cls = tag.attrs.class;
-      if (typeof cls === "string" && /\bclip\b/.test(cls)) continue;
+      if (CLIP_CLASS_EXEMPT_TAGS.has(tag.name)) continue;
+      if ("data-composition-id" in tag.attrs || "data-composition-src" in tag.attrs) continue;
+      const timed = "data-start" in tag.attrs || "data-duration" in tag.attrs || "data-track-index" in tag.attrs;
+      if (!timed) continue;
+      const cls = typeof tag.attrs.class === "string" ? tag.attrs.class : "";
+      if (cls.split(/\s+/).includes("clip")) continue;
       findings.push(makeFinding(
         "warning",
         "vob/timed_element_missing_clip_class",
-        `${f.relPath}:${tag.line} <${tag.name}> has data-start/data-duration but no class="clip" — it will render static for the whole composition (pre-empting hyperframes lint timed_element_missing_clip_class)`,
+        `${f.relPath}:${tag.line} <${tag.name}> has timing attributes but no "clip" class token — it renders static for the whole composition instead of only its scheduled window (pre-empting hyperframes lint timed_element_missing_clip_class; <video>/<audio> are exempt — media is scheduled by its own timing attrs)`,
         f.relPath,
         tag.line,
       ));

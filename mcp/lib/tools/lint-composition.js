@@ -42,9 +42,15 @@ function findingFileKey(finding) {
     : null;
 }
 
-// Drop hyperframes findings already reported by an equivalent vob finding:
-// match on same file+line, or on rule equivalence alone when both findings
-// lack a location. Returns { kept, dropped } (dropped = hyperframes findings).
+// Drop hyperframes findings already reported by an equivalent vob finding.
+// hyperframes lint findings carry NO file/line (the CLI emits code + message +
+// snippet only), so a located vob finding can never satisfy a file+line match
+// against them — the old predicate required one and the dedupe was dead code:
+// every pre-empted defect double-counted. Now: a located hyperframes finding
+// (future-proofing) still dedupes on same file+line; an unlocated one consumes
+// one CREDIT per equivalent vob finding — at most as many hyperframes copies
+// are dropped as vob findings exist for that rule, so a hyperframes-only extra
+// hit always survives. Returns { kept, dropped } (dropped = hyperframes findings).
 function dedupeHyperframesFindings(vobFindings, hfFindings) {
   const vobByHfRule = new Map(); // hyperframes rule -> [vob findings]
   for (const v of vobFindings) {
@@ -56,17 +62,25 @@ function dedupeHyperframesFindings(vobFindings, hfFindings) {
     }
   }
   if (vobByHfRule.size === 0) return { kept: hfFindings, dropped: [] };
+  const credits = new Map(); // hyperframes rule -> unlocated-match credits left
+  for (const [rule, list] of vobByHfRule) credits.set(rule, list.length);
   const kept = [];
   const dropped = [];
   for (const h of hfFindings) {
     const candidates = vobByHfRule.get(h.rule);
-    const hFile = candidates ? findingFileKey(h) : null;
-    const isDuplicate = Boolean(candidates) && candidates.some((v) => {
-      const vFile = findingFileKey(v);
-      if (vFile !== null && hFile !== null) return vFile === hFile && v.line === h.line;
-      // Both lack any location -> the rule equivalence alone matches.
-      return vFile === null && hFile === null && v.line == null && h.line == null;
-    });
+    if (!candidates) {
+      kept.push(h);
+      continue;
+    }
+    const hFile = findingFileKey(h);
+    let isDuplicate = false;
+    if (hFile !== null && h.line != null) {
+      isDuplicate = candidates.some((v) => findingFileKey(v) === hFile && v.line === h.line);
+    } else {
+      const left = credits.get(h.rule) || 0;
+      isDuplicate = left > 0;
+      if (isDuplicate) credits.set(h.rule, left - 1);
+    }
     if (isDuplicate) dropped.push(h);
     else kept.push(h);
   }

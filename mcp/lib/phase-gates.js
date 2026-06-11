@@ -303,7 +303,7 @@ function composeToPreview(state) {
     return block([
       blocker(
         "lint_not_run",
-        "composition has been saved but not linted — call vob_lint_composition",
+        "composition saved but lint_status is unknown (the save-time merged lint did not complete — likely a hyperframes infra failure) — call vob_lint_composition",
       ),
     ]);
   }

@@ -3,10 +3,12 @@
 
 // v2 walker — drives the FSM through executeTool (schema validation + the
 // envelope, not bare handlers), modeling CURRENT conventions: scene clips
-// ./source/sNNN-K.mp4 with data-media-start="0", class="clip" on every timed
-// element, a plan-lint-clean storyboard, a QC-clean composition, and the font
-// kit. Negative fixtures exercise the plan-lint and composition-QC rejection
-// paths (errors AND warnings asserted), so this stays the executable spec.
+// ./source/sNNN-K.mp4 with data-media-start="0", timing attrs directly ON the
+// media elements (hyperframes media_missing_data_start), class="clip" on timed
+// non-media elements, a plan-lint-clean storyboard, a QC-clean composition, and
+// the font kit. Negative fixtures exercise the plan-lint and composition-QC
+// rejection paths (errors AND warnings asserted), so this stays the executable
+// spec.
 //
 // Phases: setup | preview | render | package | all | fanout. Heavy steps
 // beyond setup are env-gated by invocation; the in-COMPOSE snapshot QC step is
