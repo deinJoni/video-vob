@@ -1,0 +1,16 @@
+{
+  "_comment": "Per-machine performance tuning. Copy to host.json (same dir) and edit. Resolution precedence per setting: VOB_* env var > a per-key field here > the capacity tier > the RAM-derived default. Delete host.json (or leave it absent) to fall back entirely to RAM-derived defaults. Run `vob_doctor` to see the resolved effective values and where each came from.",
+
+  "_capacity": "Single shortcut: \"low\" | \"medium\" | \"high\" expands to a bundle (render_workers, encode_concurrency, render_quality, video_budget, video_hard_cap). Per-key fields below still override individual values. Omit to keep RAM-derived defaults.",
+  "capacity": "high",
+
+  "_per_key": "Any of these override the capacity tier and the RAM default. Comment out to fall back.",
+  "render_workers": 4,
+  "encode_concurrency": 4,
+  "render_quality": "high",
+  "video_budget": 12,
+  "video_hard_cap": 16,
+
+  "_browser_gpu": "GPU backend, NOT part of the capacity tier (GPU availability is independent of RAM). \"software\"|\"off\" = SwiftShader anywhere; \"hardware\"|\"on\" = host GPU; \"auto\" = let hyperframes probe. Leave unset for the platform default (software on macOS).",
+  "browser_gpu": "auto"
+}

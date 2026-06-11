@@ -16,6 +16,7 @@ const { checkFfmpegAvailable } = require("./ffmpeg-runner.js");
 const { checkHyperframesAvailable, resolveBrowserGpuMode, renderWorkerArgs } = require("./hyperframes-runner.js");
 const { checkAsrAvailable } = require("./asr-backend.js");
 const { recommendedHeavyEncodeConcurrency } = require("./concurrency.js");
+const hostProfile = require("./host-profile.js");
 
 const GIB = 1024 * 1024 * 1024;
 
@@ -59,6 +60,9 @@ function runDoctor() {
   const renderWorkers = workerArgs.length === 2 ? workerArgs[1] : "auto (hyperframes calibrates)";
   const encodeCap = recommendedHeavyEncodeConcurrency();
   const gpuMode = resolveBrowserGpuMode();
+  // Per-machine tuning resolution (env > .vob-config/host.json > capacity tier
+  // > RAM default), with the source of each effective value.
+  const tuning = hostProfile.describe();
 
   const checks = [];
 
@@ -101,13 +105,18 @@ function runDoctor() {
   });
 
   // Host capacity + derived ceilings.
+  const tuningLine = tuning.settings.map((s) => `${s.setting}=${s.value} [${s.source}]`).join(", ");
   checks.push({
     name: "host-capacity",
     level: lowRam ? "warn" : "ok",
-    detail: `platform=${platform}, ram=${totalmem ? (totalmem / GIB).toFixed(1) : "?"}GiB total / ${freemem ? (freemem / GIB).toFixed(1) : "?"}GiB free, cpus=${cpus}`,
+    detail: `platform=${platform}, ram=${totalmem ? (totalmem / GIB).toFixed(1) : "?"}GiB total / ${freemem ? (freemem / GIB).toFixed(1) : "?"}GiB free, cpus=${cpus}` +
+      (tuning.capacity ? ` | capacity tier: ${tuning.capacity}` : "") +
+      ` | tuning: ${tuningLine}`,
     recommendation: lowRam
       ? `Low-RAM host: render pinned to ${renderWorkers} worker(s); cap heavy concurrent encodes at ${encodeCap}. Run full renders in the background and expect long, blocking jobs.`
-      : null,
+      : (tuning.config_present
+        ? null
+        : `To tune any of these per machine, drop a .vob-config/host.json (e.g. {"capacity":"high"}) or set the VOB_* env in the MCP launch config. Defaults shown are RAM-derived.`),
     blocker: false,
     render_workers: renderWorkers,
     heavy_encode_concurrency: encodeCap,
@@ -150,6 +159,7 @@ function runDoctor() {
       heavy_encode_concurrency: encodeCap,
       gpu_mode: gpuMode || null,
     },
+    tuning,
     checks,
     advisories,
     blockers,

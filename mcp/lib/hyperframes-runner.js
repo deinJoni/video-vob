@@ -1,11 +1,11 @@
 "use strict";
 
-const os = require("os");
 const fs = require("fs");
 const path = require("path");
 const { spawnSync, execFileSync } = require("child_process");
 const { ERROR_CODES, ToolError } = require("./envelope.js");
 const { spawnWithShutdown, DEFAULT_MAX_OUTPUT_BYTES } = require("./spawn-with-shutdown.js");
+const hostProfile = require("./host-profile.js");
 
 const HYPERFRAMES_INSTALL_HINT =
   "video-vob drives the hyperframes CLI. It resolves the installed `hyperframes` once and runs it under this Node " +
@@ -73,7 +73,8 @@ function renderTimeoutMs(kind, durationSeconds) {
 //   unset, nothing set           -> darwin: "software"; else inherit
 // Returns the mode string to set, or null to leave the child env untouched.
 function resolveBrowserGpuMode() {
-  const knob = (process.env.VOB_BROWSER_GPU || "").trim().toLowerCase();
+  // env VOB_BROWSER_GPU > host.json browser_gpu (host-profile.js); no tier.
+  const knob = hostProfile.browserGpuKnob();
   if (knob === "off" || knob === "software" || knob === "swiftshader") return "software";
   if (knob === "on" || knob === "hardware" || knob === "gpu") return "hardware";
   if (knob === "auto") return "auto";
@@ -135,11 +136,6 @@ function hyperframesChildEnv() {
   return env;
 }
 
-// Hosts with less than this much total RAM are treated as "low-RAM" and get a
-// pinned single render worker by default (see renderWorkerArgs). An 8GB Mac
-// (~8.59e9 bytes) qualifies; a 16GB+ host does not.
-const LOW_RAM_BYTES = 10 * 1024 * 1024 * 1024;
-
 // Explicit render worker count.
 //
 // hyperframes auto-calibrates the worker count by timing sample frames whenever
@@ -150,35 +146,19 @@ const LOW_RAM_BYTES = 10 * 1024 * 1024 * 1024;
 // whole probe budget first (and, on older hyperframes, aborting the render).
 // Passing a POSITIVE INTEGER `--workers` SKIPS calibration entirely.
 //
-//   VOB_RENDER_WORKERS = <positive int>  -> ["--workers", n]  (skip calibration)
-//   VOB_RENDER_WORKERS = "auto"          -> []                (defer to hyperframes)
-//   VOB_RENDER_WORKERS unset, low-RAM    -> ["--workers", "1"](skip calibration)
-//   VOB_RENDER_WORKERS unset, roomy host -> []                (defer to hyperframes)
+// The count is resolved by host-profile.js (VOB_RENDER_WORKERS env > host.json
+// render_workers / capacity tier > RAM default: <10 GB -> fixed 1, else defer).
+// "defer" -> [] (hyperframes calibrates); a fixed n -> ["--workers", n].
 function renderWorkerArgs() {
-  const raw = (process.env.VOB_RENDER_WORKERS || "").trim().toLowerCase();
-  if (raw) {
-    if (raw === "auto") return [];
-    const n = Number.parseInt(raw, 10);
-    if (Number.isInteger(n) && n >= 1) return ["--workers", String(n)];
-    return [];
-  }
-  let totalmem = 0;
-  try { totalmem = os.totalmem(); } catch { totalmem = 0; }
-  if (totalmem > 0 && totalmem < LOW_RAM_BYTES) return ["--workers", "1"];
-  return [];
+  const rw = hostProfile.renderWorkers();
+  return rw.mode === "fixed" ? ["--workers", String(rw.n)] : [];
 }
 
-// Final-render quality default, gated like renderWorkerArgs:
-//   VOB_RENDER_QUALITY = "high"|"standard" -> that value;  "default" -> null (omit flag)
-//   unset: >=10 GB RAM -> "high"; low-RAM host -> null (hyperframes' standard)
+// Final-render quality default. Resolved by host-profile.js:
+//   VOB_RENDER_QUALITY env > host.json render_quality / capacity tier >
+//   RAM default (>=10 GB -> "high"; low-RAM host -> null = hyperframes standard).
 function defaultRenderQuality() {
-  const raw = (process.env.VOB_RENDER_QUALITY || "").trim().toLowerCase();
-  if (raw === "high" || raw === "standard") return raw;
-  if (raw === "default") return null;
-  let totalmem = 0;
-  try { totalmem = os.totalmem(); } catch { totalmem = 0; }
-  if (totalmem >= LOW_RAM_BYTES) return "high";
-  return null;
+  return hostProfile.renderQuality();
 }
 
 // --- Single binary resolution ------------------------------------------------

@@ -10,24 +10,14 @@
 // serial; this guards the multi-deliverable / overlay paths and is surfaced as
 // a recommendation by vob_doctor.)
 
-const os = require("os");
-
-const GIB = 1024 * 1024 * 1024;
+const { encodeConcurrency } = require("./host-profile.js");
 
 // Recommended simultaneous heavy (full-res H.264) encodes for this host.
-//   < 10 GB RAM -> 1   (the low-RAM single-worker tier)
-//   < 20 GB RAM -> 2
-//   else        -> 3
-// Override with VOB_ENCODE_CONCURRENCY (positive int).
+// Resolution (host-profile.js): VOB_ENCODE_CONCURRENCY env > host.json
+// encode_concurrency / capacity tier > RAM-derived default (<10 GB -> 1,
+// <20 GB -> 2, else 3). Tune per machine in .vob-config/host.json.
 function recommendedHeavyEncodeConcurrency() {
-  const override = Number.parseInt((process.env.VOB_ENCODE_CONCURRENCY || "").trim(), 10);
-  if (Number.isInteger(override) && override >= 1) return override;
-  let totalmem = 0;
-  try { totalmem = os.totalmem(); } catch { totalmem = 0; }
-  if (totalmem <= 0) return 1;
-  if (totalmem < 10 * GIB) return 1;
-  if (totalmem < 20 * GIB) return 2;
-  return 3;
+  return encodeConcurrency();
 }
 
 // Run `fn(item, index)` over `items` with at most `limit` in flight at once.

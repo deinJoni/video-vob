@@ -12,9 +12,12 @@ const fs = require("fs");
 const path = require("path");
 
 const { findTimeline, storyboardHasShorts } = require("./storyboard-schema.js");
+const hostProfile = require("./host-profile.js");
 
-const QC_VIDEO_HARD_CAP = 8;
-const QC_VIDEO_BUDGET = 6;
+// The <video>-element warn budget / hard cap are host-tunable (a big server
+// survives more concurrent <video> than an 8GB Mac). Resolved per-process by
+// host-profile.js: VOB_VIDEO_BUDGET/VOB_VIDEO_HARD_CAP env > host.json
+// video_budget/video_hard_cap / capacity tier > built-in 6 / 8.
 const QC_MASTER_DURATION_TOLERANCE_S = 0.5;
 const QC_MEDIA_START_TOLERANCE_S = 0.05;
 const QC_MIN_CAPTION_FONT_PX_VERTICAL = 56;
@@ -374,17 +377,19 @@ function runCompositionQc({ files, storyboard, sourceLinks, sceneClipLinks, chec
   }
 
   // --- E6/W1: <video> element count -------------------------------------------
-  if (videoCount > QC_VIDEO_HARD_CAP) {
+  const videoHardCap = hostProfile.videoHardCap();
+  const videoBudget = hostProfile.videoBudget();
+  if (videoCount > videoHardCap) {
     findings.push(makeFinding(
       "error",
       "vob/video_count_exceeds_hard_cap",
-      `composition has ${videoCount} <video> elements (hard cap ${QC_VIDEO_HARD_CAP}) — headless Chrome on the reference host cannot survive this; concatenate the A-roll spine into one clip`,
+      `composition has ${videoCount} <video> elements (hard cap ${videoHardCap}) — headless Chrome on this host cannot survive this; concatenate the A-roll spine into one clip (raise the cap in .vob-config/host.json on a roomier machine)`,
     ));
-  } else if (videoCount > QC_VIDEO_BUDGET) {
+  } else if (videoCount > videoBudget) {
     findings.push(makeFinding(
       "warning",
       "vob/video_count_over_budget",
-      `composition has ${videoCount} <video> elements (budget ${QC_VIDEO_BUDGET} on a low-RAM host) — consider concatenating spine clips`,
+      `composition has ${videoCount} <video> elements (budget ${videoBudget}) — consider concatenating spine clips (budget is host-tunable in .vob-config/host.json)`,
     ));
   }
 
@@ -521,8 +526,6 @@ function captionFontSizeFindings({ parsedFiles, cssFiles, effectiveMaster, findi
 }
 
 module.exports = {
-  QC_VIDEO_HARD_CAP,
-  QC_VIDEO_BUDGET,
   QC_MASTER_DURATION_TOLERANCE_S,
   QC_MEDIA_START_TOLERANCE_S,
   QC_MIN_CAPTION_FONT_PX_VERTICAL,
