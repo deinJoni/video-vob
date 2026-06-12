@@ -32,6 +32,7 @@ async function inspectSource(args) {
   }
   const skipTranscription = args && args.skip_transcription === true;
   const skipSceneDetection = args && args.skip_scene_detection === true;
+  const skipThumbnails = args && args.skip_thumbnails === true;
 
   // Read state outside the lock since this is a long-running operation
   // (transcription can take minutes). Hold the lock only for the final state
@@ -66,6 +67,7 @@ async function inspectSource(args) {
       thumb_interval_seconds: intervalSeconds,
       skip_transcription: skipTranscription,
       skip_scene_detection: skipSceneDetection,
+      skip_thumbnails: skipThumbnails,
     },
   });
 
@@ -79,6 +81,8 @@ async function inspectSource(args) {
         thumbs_dir: inspectThumbsDir(id),
         thumb_count: summary.thumb_count,
         thumb_failed_count: summary.thumb_failed_count || 0,
+        thumbnails_skipped: summary.thumbnails_skipped === true,
+        thumb_seek_modes: summary.thumb_seek_modes || [],
         thumb_interval_seconds: summary.thumb_interval_seconds,
         sample_thumb_paths: summary.sample_thumb_paths || [],
         contact_sheet_paths: summary.contact_sheet_paths || [],
@@ -131,6 +135,8 @@ async function inspectSource(args) {
       thumbs_dir: next.inspect.thumbs_dir,
       thumb_count: summary.thumb_count,
       thumb_failed_count: next.inspect.thumb_failed_count,
+      thumbnails_skipped: next.inspect.thumbnails_skipped,
+      thumb_seek_modes: next.inspect.thumb_seek_modes,
       thumb_interval_seconds: summary.thumb_interval_seconds,
       sample_thumb_paths: next.inspect.sample_thumb_paths,
       contact_sheet_paths: next.inspect.contact_sheet_paths,
@@ -168,7 +174,7 @@ async function inspectSource(args) {
 
 module.exports = Object.freeze({
   name: "vob_inspect_source",
-  description: "Analyze ingested sources: thumbnails (480w grid + contact sheet per file), per-file word-level transcripts (pluggable ASR, content-hash cached in transcript_cache/), clean-speech keep-spans, per-file segments (scene cuts + silence + per-segment energy/speech-rate) with 512w keyframes tiled into contact strips (strips/legend.json maps cells to segments), hook candidates, and inspect/digest.md — the compact INSPECT handoff. Re-running overwrites artifacts and resets user_acknowledged. Requires phase INSPECT. Long-running; timeouts scale with duration. skip_scene_detection:true skips the slowest pass; skip_transcription:true skips ASR.",
+  description: "Analyze ingested sources: thumbnails (480w grid + contact sheet per file), per-file word-level transcripts (pluggable ASR, content-hash cached in transcript_cache/), clean-speech keep-spans, per-file segments (scene cuts + silence + per-segment energy/speech-rate) with 512w keyframes tiled into contact strips (strips/legend.json maps cells to segments), hook candidates, and inspect/digest.md — the compact INSPECT handoff. Re-running overwrites artifacts and resets user_acknowledged. Requires phase INSPECT. Long-running; timeouts scale with duration. skip_scene_detection:true skips the slowest pass; skip_transcription:true skips ASR; skip_thumbnails:true skips the grid + contact sheets (segment keyframes/strips still extract). Long-GOP sources auto-switch single-frame extracts to keyframe-aligned fast seeks (one decoded frame per extract; result carries thumb_seek_modes + a thumbnails_keyframe_mode warning marking frame_K timestamps approximate).",
   inputSchema: {
     type: "object",
     properties: {
@@ -176,7 +182,7 @@ module.exports = Object.freeze({
       thumb_interval_seconds: {
         type: "number",
         minimum: 0.5,
-        description: `Interval between thumbnail extractions, in seconds. Default ${DEFAULT_THUMB_INTERVAL_SECONDS}s, scaled up on long sources (caps thumbs at ~120/file); explicit values are honored verbatim (grid hard-capped at 400 thumbs/file). Extraction is seek-based — cost scales with thumb count, not source length; thumbnail failures degrade to result warnings instead of aborting the run.`,
+        description: `Interval between thumbnail extractions, in seconds. Default ${DEFAULT_THUMB_INTERVAL_SECONDS}s, scaled up on long sources (caps thumbs at ~120/file); explicit values are honored verbatim (grid hard-capped at 400 thumbs/file). Extraction is seek-based — cost scales with thumb count, not source length (sparse-keyframe sources auto-degrade to keyframe-aligned seeks, reported in thumb_seek_modes); thumbnail failures degrade to result warnings instead of aborting the run.`,
       },
       skip_transcription: {
         type: "boolean",
@@ -185,6 +191,10 @@ module.exports = Object.freeze({
       skip_scene_detection: {
         type: "boolean",
         description: "Skip whole-stream scene-cut detection (the slowest pass; recommended for 30+ min single-shot sources). Never poisons the cache for a later full run.",
+      },
+      skip_thumbnails: {
+        type: "boolean",
+        description: "Skip the per-interval thumbnail grid and contact sheets entirely (thumb_count:0, thumbnails_skipped:true). Segment keyframes + contact strips — the classification basis — still extract. Escape valve for sources where even fast thumbnailing is unwanted; usually unnecessary now that long-GOP sources auto-switch to keyframe-aligned seeks. Default false.",
       },
     },
     required: ["project_id"],

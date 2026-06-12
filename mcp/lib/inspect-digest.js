@@ -338,8 +338,17 @@ function visualIndexSection(strips, thumbs) {
   lines.push("- per-segment stills (512w): inspect/segment_keyframes/file_<i>/seg_<n>.jpg");
   if (thumbCount > 0) {
     lines.push("- full thumbs (480w): inspect/thumbs/file_<i>/ · contact sheets: inspect/contact_sheet_file_<i>*.jpg");
+  } else if (thumbs && thumbs.skipped === true) {
+    lines.push("- full thumbs: skipped by request (skip_thumbnails) — ground from strips / per-segment stills");
   } else {
     lines.push("- full thumbs: none — ground from strips / per-segment stills");
+  }
+  const approx = thumbs && Array.isArray(thumbs.approximate) ? thumbs.approximate : [];
+  if (thumbCount > 0 && approx.length > 0) {
+    const desc = approx
+      .map((a) => `file ${a.file_index}${isNum(a.est_gop_seconds) ? ` (±~${a.est_gop_seconds}s)` : ""}`)
+      .join(", ");
+    lines.push(`NB: keyframe-aligned thumbs for ${desc} — frames are real and fine for grounding, but frame_K shows the nearest keyframe at/before its grid second; snap cut points to transcript/silence times.`);
   }
   if (failures > 0) {
     lines.push(`WARNING: ${failures} strip(s) failed to build — read the listed segment keyframes individually.`);

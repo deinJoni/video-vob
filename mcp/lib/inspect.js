@@ -41,7 +41,9 @@ const {
   buildSegmentStrips,
   extractSegmentKeyframes,
 } = require("./segment-signals.js");
-const { mapWithConcurrency, recommendedHeavyEncodeConcurrency } = require("./concurrency.js");
+const { mapWithConcurrency } = require("./concurrency.js");
+const { thumbConcurrency } = require("./host-profile.js");
+const { probeKeyframeInterval } = require("./ffprobe.js");
 const { rankHookCandidates, buildInspectDigest } = require("./inspect-digest.js");
 
 const THUMB_TIMEOUT_MS = 120 * 1000;
@@ -107,6 +109,20 @@ const TRANSCRIPT_CACHE_VERSION = "1.0";
 const LOW_CONFIDENCE_P = 0.55;
 const LOW_CONFIDENCE_MAX = 15;
 
+// Seek-mode auto-detection. Exact input seeks (-ss before -i) are "fast" only
+// to the previous keyframe — ffmpeg then DECODES FORWARD to the exact target,
+// so per-seek cost is ~one GOP decode. Dense GOPs (≤ the threshold) keep that
+// bounded; on sparse-GOP heavy sources (long-GOP HEVC interviews) every seek
+// silently decodes many seconds of high-bitrate video and the whole grid
+// degenerates into the full-stream decode the seek rework was meant to kill.
+// Files probed above the threshold switch to keyframe-aligned seeks
+// (-noaccurate_seek: emit the seek-landing keyframe, exactly one decoded frame
+// per extract) — drift is bounded by the GOP and reported, never silent.
+const THUMB_SEEK_GOP_THRESHOLD_SECONDS = 4;
+// Short files can't accumulate a pathological decode-forward bill; skip the
+// probe and keep exact seeks (bit-identical to prior behavior).
+const THUMB_SEEK_PROBE_MIN_DURATION_SECONDS = 60;
+
 function nowIso() {
   return new Date().toISOString();
 }
@@ -139,6 +155,36 @@ function pickSampleThumbs(thumbPaths, targetCount = DEFAULT_SAMPLE_THUMB_COUNT) 
   return Array.from(picks).sort((a, b) => a - b).map((i) => thumbPaths[i]);
 }
 
+// Resolve exact-vs-keyframe seeking for a file's single-frame extracts (grid
+// thumbs AND segment keyframes — both share the pathology). The probe is
+// demux-only (packet key flags over a few sampled windows, no decoding), so it
+// costs seconds where the wrong mode costs tens of minutes. Probe failure on a
+// long source picks keyframe mode: an unprobeable file is the last place to
+// bet on accurate decode-forward, and keyframe seeks are the cheap-safe side.
+// VOB_THUMB_SEEK_MODE=exact|keyframe forces one mode for every file.
+function resolveThumbSeekMode({ sourcePath, durationSeconds }) {
+  const knob = (process.env.VOB_THUMB_SEEK_MODE || "").trim().toLowerCase();
+  if (knob === "exact" || knob === "keyframe") {
+    return { mode: knob, est_gop_seconds: null, source: "env" };
+  }
+  if (!Number.isFinite(durationSeconds) || durationSeconds < THUMB_SEEK_PROBE_MIN_DURATION_SECONDS) {
+    return { mode: "exact", est_gop_seconds: null, source: "short_source" };
+  }
+  let probe = null;
+  try {
+    probe = probeKeyframeInterval(sourcePath, { durationSeconds });
+  } catch {
+    probe = null;
+  }
+  if (!probe) {
+    return { mode: "keyframe", est_gop_seconds: null, source: "probe_failed" };
+  }
+  if (probe.sparse || (Number.isFinite(probe.est_gop_seconds) && probe.est_gop_seconds > THUMB_SEEK_GOP_THRESHOLD_SECONDS)) {
+    return { mode: "keyframe", est_gop_seconds: probe.est_gop_seconds, source: "probe" };
+  }
+  return { mode: "exact", est_gop_seconds: probe.est_gop_seconds, source: "probe" };
+}
+
 function clearInspectDir(projectId) {
   const dir = inspectDir(projectId);
   if (fs.existsSync(dir)) {
@@ -159,10 +205,17 @@ function clearInspectDir(projectId) {
 // frame (stand-in) so the sequence stays contiguous without shifting later
 // frames; stand-in slots are reported, never silent.
 //
+// seekMode "exact" decodes from the previous keyframe to the precise grid
+// second (default; frame_K shows EXACTLY second (K-1)*interval). "keyframe"
+// adds -noaccurate_seek so each extract emits the seek-landing keyframe — one
+// decoded frame regardless of GOP length, at the cost of frame_K showing the
+// nearest keyframe AT/BEFORE its grid second (drift ≤ one GOP; the caller
+// reports it). The grid timestamps themselves never move in either mode.
+//
 // Never throws — failures degrade to warnings at the caller (INSPECT's real
 // payload is digest/segments/transcripts; triage images must not abort it).
-async function extractThumbnailsForFile({ projectId, fileIndex, sourcePath, intervalSeconds, durationSeconds = null }) {
-  const result = { paths: [], attempted: 0, failed: 0, skipped: 0, standins: [], truncated: 0, noDuration: false };
+async function extractThumbnailsForFile({ projectId, fileIndex, sourcePath, intervalSeconds, durationSeconds = null, seekMode = "exact" }) {
+  const result = { paths: [], attempted: 0, failed: 0, skipped: 0, standins: [], truncated: 0, noDuration: false, mode: seekMode };
   const fileSubdir = path.join(inspectThumbsDir(projectId), `file_${fileIndex}`);
   try {
     fs.mkdirSync(fileSubdir, { recursive: true });
@@ -201,9 +254,19 @@ async function extractThumbnailsForFile({ projectId, fileIndex, sourcePath, inte
   const startedAt = Date.now();
   let failureCount = 0;
 
-  // Single-frame decodes are far lighter than the heavy-encode tier; one above
-  // that ceiling (capped at 4) is safe even on the 8GB reference host.
-  const concurrency = Math.min(4, recommendedHeavyEncodeConcurrency() + 1);
+  // Single-frame decodes are far lighter than the heavy-encode tier; pool size
+  // is the host-profile thumb_concurrency (RAM default 2–4, tunable up on big
+  // hosts via .vob-config/host.json / VOB_THUMB_CONCURRENCY).
+  const concurrency = thumbConcurrency();
+  // Keyframe mode needs BOTH halves: -noaccurate_seek (input) emits from the
+  // seek-landing keyframe instead of decode-discarding up to the target, and
+  // -fps_mode passthrough (output) stops the sync layer from DROPPING those
+  // pre-target frames — without it ffmpeg silently decodes forward to the
+  // target anyway and writes the exact frame, costing the full GOP decode the
+  // mode exists to avoid (measured: ~6x on a 20s-GOP 35Mbps HEVC, worse as
+  // GOPs grow).
+  const seekInputArgs = seekMode === "keyframe" ? ["-noaccurate_seek"] : [];
+  const seekOutputArgs = seekMode === "keyframe" ? ["-fps_mode", "passthrough"] : [];
   const outcomes = await mapWithConcurrency(grid, concurrency, async (t, k) => {
     if (failureCount >= THUMB_FAILURE_BAIL || Date.now() - startedAt > passDeadlineMs) {
       return { ok: false, skipped: true };
@@ -217,9 +280,11 @@ async function extractThumbnailsForFile({ projectId, fileIndex, sourcePath, inte
         [
           "-y",
           ...inputAutorotateArgs(),
+          ...seekInputArgs,
           "-ss", String(t),
           "-i", sourcePath,
           "-frames:v", "1",
+          ...seekOutputArgs,
           "-vf", "scale=480:-2",
           "-q:v", "4",
           "-update", "1",
@@ -487,7 +552,7 @@ function writeDetectionCache(projectId, hash, sceneCuts, silences, sceneDetected
 // scene-cut + silence detection (cached) -> buildSegments -> transcript overlap
 // + energy aggregates -> representative keyframes -> contact strips. Returns a
 // per-file summary + roll-up counts + strip legend entries.
-async function segmentSourceFiles({ projectId, manifest, transcriptsByFile, skipSceneDetection = false }) {
+async function segmentSourceFiles({ projectId, manifest, transcriptsByFile, skipSceneDetection = false, seekModeByFile = new Map() }) {
   const fileSummaries = [];
   const stripEntries = [];
   const featuresByFile = new Map();
@@ -588,7 +653,14 @@ async function segmentSourceFiles({ projectId, manifest, transcriptsByFile, skip
     // B-roll speech invisible to classification).
     segments = attachTranscriptOverlap(segments, transcriptsByFile.get(i) || null);
     segments = attachAudioFeatures(segments, audioFeatures ? audioFeatures.energy_windows : null);
-    const kf = await extractSegmentKeyframes({ projectId, fileIndex: i, sourcePath: file.path, hasVideo, segments });
+    const kf = await extractSegmentKeyframes({
+      projectId,
+      fileIndex: i,
+      sourcePath: file.path,
+      hasVideo,
+      segments,
+      seekMode: (seekModeByFile.get(i) || {}).mode === "keyframe" ? "keyframe" : "exact",
+    });
     segments = kf.segments;
     totalKeyframes += kf.extracted;
     truncatedKeyframes += kf.truncated;
@@ -653,12 +725,33 @@ async function runInspect({ projectId, manifest, options = {} }) {
     : null;
   const skipTranscription = options.skip_transcription === true;
   const skipSceneDetection = options.skip_scene_detection === true;
+  const skipThumbnails = options.skip_thumbnails === true;
 
   if (!manifest || !Array.isArray(manifest.files) || manifest.files.length === 0) {
     throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, "manifest has no files to inspect");
   }
 
   clearInspectDir(projectId);
+
+  // Per-file seek mode for ALL single-frame extracts this run (grid thumbs AND
+  // segment keyframes — skip_thumbnails doesn't skip segmentation, so the mode
+  // is resolved regardless). Demux-only probe, a few seconds per long file.
+  const seekModeByFile = new Map();
+  for (let i = 0; i < manifest.files.length; i += 1) {
+    const file = manifest.files[i];
+    if (!file || typeof file.path !== "string") continue;
+    if (!(file.has_video === true || Number(file.video_streams) > 0)) continue;
+    const fileDuration = Number(file.duration_seconds);
+    seekModeByFile.set(i, resolveThumbSeekMode({
+      sourcePath: file.path,
+      durationSeconds: Number.isFinite(fileDuration) ? fileDuration : null,
+    }));
+  }
+  const thumbSeekModes = Array.from(seekModeByFile.entries()).map(([fileIndex, m]) => ({
+    file_index: fileIndex,
+    mode: m.mode,
+    est_gop_seconds: m.est_gop_seconds,
+  }));
 
   const inspectRootAbs = inspectDir(projectId);
   const thumbsRootAbs = inspectThumbsDir(projectId);
@@ -674,7 +767,9 @@ async function runInspect({ projectId, manifest, options = {} }) {
   const warnings = [];
   let thumbFailedCount = 0;
   let appliedThumbInterval = explicitInterval != null ? explicitInterval : DEFAULT_THUMB_INTERVAL_SECONDS;
-  for (let i = 0; i < manifest.files.length; i += 1) {
+  // skip_thumbnails skips the grid + contact sheets ONLY — segment keyframes
+  // and strips (the classification basis) still extract below.
+  for (let i = 0; !skipThumbnails && i < manifest.files.length; i += 1) {
     const file = manifest.files[i];
     if (!file || typeof file.path !== "string") continue;
     // Audio-only manifest entries (e.g. a narration .wav) have no frames to
@@ -689,6 +784,17 @@ async function runInspect({ projectId, manifest, options = {} }) {
         Math.ceil((Number.isFinite(fileDuration) ? fileDuration : 0) / MAX_DEFAULT_THUMBS_PER_FILE),
       );
     appliedThumbInterval = Math.max(appliedThumbInterval, intervalForFile);
+    const seekInfo = seekModeByFile.get(i) || { mode: "exact", est_gop_seconds: null };
+    if (seekInfo.mode === "keyframe") {
+      const gopNote = Number.isFinite(seekInfo.est_gop_seconds)
+        ? `est. keyframe interval ~${seekInfo.est_gop_seconds}s`
+        : "keyframe interval unmeasurable (sparse or probe failed)";
+      warnings.push({
+        code: "thumbnails_keyframe_mode",
+        file_index: i,
+        message: `file ${i} uses keyframe-aligned fast seeks (${gopNote}): thumbs are real frames and fine for visual grounding, but frame_K shows the nearest keyframe at/before second (K-1)*interval — treat thumb-derived timestamps as approximate and snap cut points to transcript/silence times`,
+      });
+    }
     let t;
     try {
       t = await extractThumbnailsForFile({
@@ -697,6 +803,7 @@ async function runInspect({ projectId, manifest, options = {} }) {
         sourcePath: file.path,
         intervalSeconds: intervalForFile,
         durationSeconds: Number.isFinite(fileDuration) ? fileDuration : null,
+        seekMode: seekInfo.mode,
       });
     } catch (error) {
       t = { paths: [], attempted: 1, failed: 1, skipped: 0, standins: [], truncated: 0, noDuration: false };
@@ -963,7 +1070,7 @@ async function runInspect({ projectId, manifest, options = {} }) {
   // segment is the unit downstream phases (classification, storyboard) consume
   // — not the raw file.
   const segmentation = await segmentSourceFiles({
-    projectId, manifest, transcriptsByFile, skipSceneDetection,
+    projectId, manifest, transcriptsByFile, skipSceneDetection, seekModeByFile,
   });
   const segmentsPathOut = segmentsPath(projectId);
   writeFileAtomic(segmentsPathOut, `${JSON.stringify({
@@ -1021,7 +1128,12 @@ async function runInspect({ projectId, manifest, options = {} }) {
         legendPath: stripsLegendPathOut,
         failures: segmentation.stripFailures,
       },
-      thumbs: { count: thumbPaths.length, failed: thumbFailedCount },
+      thumbs: {
+        count: thumbPaths.length,
+        failed: thumbFailedCount,
+        skipped: skipThumbnails,
+        approximate: thumbSeekModes.filter((m) => m.mode === "keyframe"),
+      },
       lowConfidenceWords: collectLowConfidenceWords(winnerWords),
       asr: { backend: asrBackend, skippedReason },
       sceneDetectionSkipped: skipSceneDetection,
@@ -1040,6 +1152,8 @@ async function runInspect({ projectId, manifest, options = {} }) {
     thumb_interval_seconds: appliedThumbInterval,
     thumb_count: thumbPaths.length,
     thumb_failed_count: thumbFailedCount,
+    thumbnails_skipped: skipThumbnails,
+    thumb_seek_modes: thumbSeekModes,
     thumbs_dir: thumbsRootAbs,
     thumb_paths: thumbPaths,
     sample_thumb_paths: pickSampleThumbs(thumbPaths),

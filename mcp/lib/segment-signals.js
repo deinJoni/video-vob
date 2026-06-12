@@ -5,6 +5,8 @@ const path = require("path");
 
 const { segmentKeyframesDir, inspectStripsDir, inspectStripPath, inspectStripListPath } = require("./paths.js");
 const { runFfmpegBlocking, inputAutorotateArgs } = require("./ffmpeg-runner.js");
+const { mapWithConcurrency } = require("./concurrency.js");
+const { thumbConcurrency } = require("./host-profile.js");
 
 const KEYFRAME_TIMEOUT_MS = 60 * 1000;
 // Bound the number of ffmpeg single-frame extracts per file. A pathological
@@ -104,8 +106,13 @@ function midpoint(seg) {
 // segment for a video-bearing file. Silent segments and audio-only files get
 // keyframe_path:null (silence is dropped before storyboard; audio has no
 // frames). Input-side -ss makes each extract fast; a representative frame
-// doesn't need frame-accurate seeking. Returns the enriched segments plus
-// counts so the caller can report any truncation.
+// doesn't need frame-accurate seeking — which is also why seekMode:"keyframe"
+// (-noaccurate_seek: emit the seek-landing keyframe, decode exactly one frame
+// instead of a keyframe-to-midpoint run) is safe here: on the sparse-GOP heavy
+// sources where INSPECT chooses it, the accurate decode-forward is what used
+// to eat the 60s per-extract budget. Extracts run pooled at the host's
+// thumb_concurrency. Returns the enriched segments plus counts so the caller
+// can report any truncation.
 async function extractSegmentKeyframes({
   projectId,
   fileIndex,
@@ -113,6 +120,7 @@ async function extractSegmentKeyframes({
   hasVideo,
   segments,
   maxKeyframes = DEFAULT_MAX_KEYFRAMES,
+  seekMode = "exact",
 }) {
   if (!Array.isArray(segments)) return { segments: [], extracted: 0, truncated: 0, failed: 0 };
   if (!hasVideo) {
@@ -127,36 +135,50 @@ async function extractSegmentKeyframes({
   const dir = path.join(segmentKeyframesDir(projectId), `file_${fileIndex}`);
   fs.mkdirSync(dir, { recursive: true });
 
-  let extracted = 0;
+  // First maxKeyframes non-silence segments get an extraction slot (same
+  // first-come cap as the old serial loop); the rest are truncated.
   let truncated = 0;
-  let failed = 0;
-  const out = [];
-  for (const seg of segments) {
-    if (seg.is_silence) {
-      out.push({ ...seg, keyframe_path: null });
-      continue;
-    }
-    if (extracted >= maxKeyframes) {
+  const jobs = [];
+  const plan = segments.map((seg) => {
+    if (seg.is_silence) return { seg, job: null };
+    if (jobs.length >= maxKeyframes) {
       truncated += 1;
-      out.push({ ...seg, keyframe_path: null });
-      continue;
+      return { seg, job: null };
     }
-    const outPath = path.join(dir, `seg_${seg.index}.jpg`);
+    const job = { seg, outPath: path.join(dir, `seg_${seg.index}.jpg`) };
+    jobs.push(job);
+    return { seg, job };
+  });
+
+  // Keyframe mode needs both halves — -noaccurate_seek (input) AND
+  // -fps_mode passthrough (output); without the latter ffmpeg's sync layer
+  // drops the pre-target frames and decodes forward anyway (see
+  // extractThumbnailsForFile in inspect.js).
+  const seekInputArgs = seekMode === "keyframe" ? ["-noaccurate_seek"] : [];
+  const seekOutputArgs = seekMode === "keyframe" ? ["-fps_mode", "passthrough"] : [];
+  const okByJob = new Map();
+  await mapWithConcurrency(jobs, thumbConcurrency(), async (job) => {
     // scale=512:-2: agent-facing classification evidence, downscaled at
     // extraction (full-res frames cost ~2.5–8× the vision tokens for zero
     // signal gain). Human-facing stills (snapshot_keyframes) stay full-res.
     const result = await runFfmpegBlocking(
-      ["-y", ...inputAutorotateArgs(), "-ss", String(midpoint(seg)), "-i", sourcePath, "-frames:v", "1", "-vf", "scale=512:-2", "-q:v", "3", outPath],
+      ["-y", ...inputAutorotateArgs(), ...seekInputArgs, "-ss", String(midpoint(job.seg)), "-i", sourcePath, "-frames:v", "1", ...seekOutputArgs, "-vf", "scale=512:-2", "-q:v", "3", job.outPath],
       { timeoutMs: KEYFRAME_TIMEOUT_MS },
     );
-    if (!result.timed_out && result.exit_code === 0 && fs.existsSync(outPath)) {
+    okByJob.set(job, !result.timed_out && result.exit_code === 0 && fs.existsSync(job.outPath));
+  });
+
+  let extracted = 0;
+  let failed = 0;
+  const out = plan.map(({ seg, job }) => {
+    if (!job) return { ...seg, keyframe_path: null };
+    if (okByJob.get(job)) {
       extracted += 1;
-      out.push({ ...seg, keyframe_path: outPath });
-    } else {
-      failed += 1;
-      out.push({ ...seg, keyframe_path: null });
+      return { ...seg, keyframe_path: job.outPath };
     }
-  }
+    failed += 1;
+    return { ...seg, keyframe_path: null };
+  });
   return { segments: out, extracted, truncated, failed };
 }
 

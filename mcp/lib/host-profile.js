@@ -36,9 +36,9 @@ const OVERRIDE_PATH = path.join(path.resolve(__dirname, "..", ".."), ".vob-confi
 // headless server may have no usable GPU), so it stays on its own knob /
 // platform default. render_quality null => omit the flag (hyperframes standard).
 const CAPACITY_TIERS = Object.freeze({
-  low:    Object.freeze({ render_workers: 1, encode_concurrency: 1, render_quality: null,   video_budget: 6,  video_hard_cap: 8 }),
-  medium: Object.freeze({ render_workers: 2, encode_concurrency: 2, render_quality: "high", video_budget: 10, video_hard_cap: 12 }),
-  high:   Object.freeze({ render_workers: 4, encode_concurrency: 4, render_quality: "high", video_budget: 14, video_hard_cap: 18 }),
+  low:    Object.freeze({ render_workers: 1, encode_concurrency: 1, render_quality: null,   video_budget: 6,  video_hard_cap: 8,  thumb_concurrency: 2 }),
+  medium: Object.freeze({ render_workers: 2, encode_concurrency: 2, render_quality: "high", video_budget: 10, video_hard_cap: 12, thumb_concurrency: 4 }),
+  high:   Object.freeze({ render_workers: 4, encode_concurrency: 4, render_quality: "high", video_budget: 14, video_hard_cap: 18, thumb_concurrency: 8 }),
 });
 
 // Built-in defaults when no capacity tier applies (the un-tunable historical
@@ -123,6 +123,21 @@ function resolveEncodeConcurrency() {
   return resolvePosInt({ envVar: "VOB_ENCODE_CONCURRENCY", key: "encode_concurrency", ramDefault: ramEncodeConcurrency });
 }
 
+// Single-frame seek extracts (INSPECT grid thumbs + segment keyframes) are
+// decode-only and far lighter than full-res encodes; the RAM default mirrors
+// the historical `min(4, encode_concurrency + 1)` outcomes (8GB -> 2,
+// 16GB -> 3, >=20GB -> 4) so unconfigured installs behave as before.
+function ramThumbConcurrency() {
+  const m = totalRam();
+  if (m <= 0 || m < LOW_RAM_BYTES) return 2;
+  if (m < MID_RAM_BYTES) return 3;
+  return 4;
+}
+
+function resolveThumbConcurrency() {
+  return resolvePosInt({ envVar: "VOB_THUMB_CONCURRENCY", key: "thumb_concurrency", ramDefault: ramThumbConcurrency });
+}
+
 // render_workers carries an "auto" sentinel (defer to hyperframes calibration)
 // in addition to a positive int. Returns { mode: "fixed", n } | { mode: "defer" }.
 function resolveRenderWorkers() {
@@ -185,6 +200,7 @@ function resolveVideoHardCap() {
 // --- public value getters (used by the consuming modules) --------------------
 
 function encodeConcurrency() { return resolveEncodeConcurrency().value; }
+function thumbConcurrency() { return resolveThumbConcurrency().value; }
 function renderWorkers() { return resolveRenderWorkers(); }            // { mode, n? }
 function renderQuality() { return resolveRenderQuality().value; }      // "high"|"standard"|null
 function browserGpuKnob() { return resolveBrowserGpuKnob().value; }    // raw knob string
@@ -201,6 +217,7 @@ function describe() {
   const gpu = resolveBrowserGpuKnob();
   const q = resolveRenderQuality();
   const enc = resolveEncodeConcurrency();
+  const thumb = resolveThumbConcurrency();
   const vb = resolveVideoBudget();
   const vhc = resolveVideoHardCap();
   return {
@@ -211,6 +228,7 @@ function describe() {
     settings: [
       { setting: "render_workers", value: rw.mode === "fixed" ? rw.n : "auto (hyperframes calibrates)", source: rw.source },
       { setting: "encode_concurrency", value: enc.value, source: enc.source },
+      { setting: "thumb_concurrency", value: thumb.value, source: thumb.source },
       { setting: "render_quality", value: q.value === null ? "(hyperframes standard)" : q.value, source: q.source },
       { setting: "browser_gpu", value: gpu.value || "(platform default)", source: gpu.source },
       { setting: "video_budget", value: vb.value, source: vb.source },
@@ -221,6 +239,7 @@ function describe() {
 
 module.exports = {
   encodeConcurrency,
+  thumbConcurrency,
   renderWorkers,
   renderQuality,
   browserGpuKnob,
