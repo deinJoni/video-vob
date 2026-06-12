@@ -17,6 +17,10 @@ path, and wait for the user to open it in an external player — you cannot disp
    short (COMPOSE.md defines the rule) — if it doesn't, you're about to render the WRONG short:
    back-edge to COMPOSE and compose the active short first. Tell the user which short this
    preview is ("previewing short k of N: <short_id>").
+   **Segmented render:** same check against `composition.segment_id` vs the active segment
+   (COMPOSE.md defines the rule). The preview renders ONE segment; its drift verification is
+   scoped to the segment's target, not the document total. Say which segment this is
+   ("previewing segment k of N: <segment_id>").
 
 2. Call `mcp__vob__vob_render_preview { project_id }`. On failure it throws — show a
    one-paragraph summary of the stderr (the error message includes the relevant tail) and ask

@@ -11,7 +11,7 @@ moment.
 ## Read sites
 | step | source | fields |
 |---|---|---|
-| 1 | `vob_read_state_summary` | `manifest{path,file_count,total_duration_seconds}`, `intent.answers`, `platform{...}`, `target_duration_seconds`, `inspect.classification` pool paths, `inspect.{clean_speech_path,digest_path,strips_legend_path,thumbs_dir,thumb_interval_seconds,thumb_count,transcript_path,segments_path}`, `brief`, `storyboard`, `style.derived_from` |
+| 1 | `vob_read_state_summary` | `manifest{path,file_count,total_duration_seconds}`, `intent.answers`, `platform{...}`, `video_type{canonical,source,lint_ruleset,segmentation,clean_cut,overlay_vocabulary}`, `target_duration_seconds`, `inspect.classification` pool paths, `inspect.{clean_speech_path,digest_path,strips_legend_path,thumbs_dir,thumb_interval_seconds,thumb_count,transcript_path,segments_path}`, `brief`, `storyboard{...,broll_gap_count,broll_gaps_path}`, `style.derived_from` |
 | 2 | `Read` `references/brief-design.md` | brief skeleton + tone→design table |
 | 7 | `vob_save_storyboard` result (via subagent) or summary | `storyboard.markdown_path`, `scene_count`, `plan_lint` |
 
@@ -72,6 +72,8 @@ moment.
    intent.target_platform: <canonical>            (raw: "<raw>")
    intent.platform_profile: width=<w> height=<h> fps=<fps> safe_top_px=<t> safe_bottom_px=<b> ideal_duration_s=<min>-<max> max_duration_s=<m>
    intent.target_duration_seconds: <seconds>
+   video_type: <summary.video_type.canonical>     (lint_ruleset=<lint_ruleset> clean_cut=<clean_cut> segmentation=<segmentation>)
+   overlay_vocabulary: <summary.video_type.overlay_vocabulary, comma-joined>
    fan_out: <N> shorts                            (omit the two fan_out lines entirely for a single video)
    fan_out.per_short_duration: <min>-<max>s       (from target_duration_range; or the single per-short figure)
    intent.tone: <tone>
@@ -114,8 +116,15 @@ moment.
    re-clarify intent?"
 
 7b. If the save result carried plan-lint `warnings[]`, present them with the plan as
-   `⚠ plan-lint:` lines — they are exactly the drift/hook/B-roll problems the user should rule
-   on at this gate.
+   `⚠ plan-lint:` lines — they are exactly the drift/hook/B-roll/overlay problems the user
+   should rule on at this gate.
+
+7c. **B-roll gap shopping list** (the save result carries `broll_gap_count > 0`): `Read`
+   `broll_gaps_path` (`plan/broll_gaps.json`) and present it as a concrete ask — one line per
+   gap: _"scene <scene_ref> wants ~<desired_duration_seconds>s of: <description>"_. Frame the
+   choice: "upload these N shots and I'll re-derive the plan (the cut gets the coverage it
+   wants), or approve as-is and the cut holds on the spine there." Gaps are warnings, never
+   blockers — `PLAN_BROLL_GAP_UNFILLED` does not stop the sign-off.
 
 8. Handle the response:
    - **Approve** → `mcp__vob__vob_confirm_brief { project_id }` AND `mcp__vob__vob_confirm_storyboard
@@ -127,6 +136,14 @@ moment.
      markdown), re-present.
    - **Re-clarify intent** → `vob_transition_phase` to `INTENT`, record the updated answer,
      transition back to PLAN, re-draft both halves.
+   - **Fill the b-roll gaps** (the user has/uploads more footage) →
+     `mcp__vob__vob_transition_phase { project_id, to_phase: "INGEST" }` (the sanctioned gap-
+     resolution back-edge), then `vob_ingest_file` with the EXTENDED drop (a folder containing
+     old + new files works best — re-probing unchanged files is hash-cached), re-walk
+     INGEST→INSPECT (re-run inspect + classification + ack; detection/ASR caches make the old
+     footage cheap)→INTENT (answers persist — transition straight through)→PLAN, then loop to
+     step 4: the storyboarder re-derives against the extended B-roll index and drops the filled
+     gaps.
 
 9. Do not call either confirm tool until the user has explicitly approved the plan. A vague
    "sounds good" is fine; silence or "let me think" is not. If the gate blocks with

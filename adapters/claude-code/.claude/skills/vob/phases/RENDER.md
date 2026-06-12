@@ -56,6 +56,30 @@ at the stderr log they can `tail -f` from another terminal.
       missing — record it or back-edge to produce it; override ONLY when the user explicitly
       wants to ship a partial set.
 
+4c. **Segmented cycle-then-assemble** (the summary has `render_plan.mode: "segmented"`). The
+   render you just ran produced a PARTIAL — the result carries `segment_id` and the mp4 lives
+   under `segment_renders/` (registry-recorded, archival-safe). After `vob_confirm_render` (it
+   also marks the segment's registry row confirmed):
+   1. **More segments left** (any `render_plan.segments[]` row with `rendered: false` or
+      `stale: true`) → transition `RENDER → COMPOSE` (auto-archives `renders/`; the partial is
+      NOT under `renders/`, so it survives by construction) and re-enter COMPOSE for the next
+      active segment.
+   2. **All segments rendered** → `mcp__vob__vob_assemble_video { project_id }` (optional:
+      `music_path` lays a looped, sidechain-ducked master music bed; `music_gain_db` default
+      −12). It joins the partials in plan order — lossless concat for hard cuts, a
+      duration-preserving 0.25s dip-to-black per `fade` boundary — ffprobe-verifies the joined
+      duration vs the plan total (treat `drift_exceeds_threshold` as a FAILED assembly), and the
+      assembled final BECOMES the render slot (confirmed:false). Surface `final_path` +
+      `verification` + which path it took (`concat_path: "copy"` = lossless).
+   3. The user reviews the ASSEMBLED final → `mcp__vob__vob_confirm_render` → transition to
+      PACKAGE. The gate blocks with `segments_missing_render` (a partial is missing/stale — its
+      message lists which; re-render those) or `video_not_assembled` (a segment was re-rendered
+      after the last assembly — re-run `vob_assemble_video`); both are overridable only for a
+      deliberate partial ship.
+   4. **Revising one segment later:** back-edge `RENDER → COMPOSE`, recompose/render exactly
+      that `segment_id`, then re-assemble (step 2) — a fresh partial invalidates the prior
+      assembly automatically.
+
 5. The RENDER→PACKAGE gate requires `render.confirmed === true`, the file at `mp4_path` on disk,
    AND a render from the current composition revision (`render_stale_composition` blocks a stale
    one — re-render, never override). The server refuses `override_reason` on

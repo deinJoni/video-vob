@@ -199,6 +199,75 @@ trimmed; offsets re-introduce the deep-seek failure mode.
 ### `vob/caption_font_size_small` (warning)
 A caption selector sets font-size below 56px. Use ≥56px on vertical/short-form output.
 
+### `vob/fps_mismatch` (warning)
+The storyboard's `target.fps` differs from the master root's `data-fps` (absent = 30, the
+hyperframes default). Set `data-fps="<target.fps>"` on the composition root — a 24fps cinematic
+plan rendered at 30 is a silent format miss.
+
+### `vob/cross_segment_clip_ref` (warning)
+Segmented render: a `./source/` ref resolves to ANOTHER render segment's clip. A segment
+composition implements exactly one segment — use only the scenes named in your
+`segment_scene_ids` (cross-segment footage duplicates content at assembly).
+
+### `vob/active_segment_unresolved` (warning)
+The composition's `segment_id` no longer matches the render plan (the storyboard changed since
+COMPOSE entry). The orchestrator re-enters COMPOSE to re-derive the plan; re-save with the
+current segment_id.
+
+### `vob/overlay_missing_element` (error)
+A planned typed overlay has no implementing element. Render the overlay and stamp the element
+with `data-vob-overlay-id="<overlay.id>"` — every object in `scene.overlays[]` is binding (same
+severity as a missing scene clip).
+
+### `vob/overlay_track_zero` / `vob/overlay_element_untimed` / `vob/unplanned_overlay_element` (warnings)
+The bound overlay element sits on `data-track-index="0"` (the video spine — move it to the
+planned track ≥1) / lacks `data-start` (it renders static; re-time scene-relative → master) /
+carries a `data-vob-overlay-id` the plan never declared (typo'd id, or an overlay the storyboard
+didn't ask for — remove it or fix the id).
+
+---
+
+## Overlay vocabulary — implementation patterns (schema 1.2)
+
+Each planned overlay type maps to a known HTML/CSS shape. Shared skeleton — a `class="clip"` div
+(except `pip`), timing re-based to master, the binding id stamped:
+
+```html
+<div id="lt-1-el" class="clip overlay-lower-third" data-vob-overlay-id="lt-1"
+     data-start="10.5" data-duration="2.5" data-track-index="2">…</div>
+```
+
+- **`title_card`** — full-width centered block, upper third on vertical; headline font from
+  `style.font` (Anton/Bebas for hype, Playfair for cinematic), 96–140px; entrance per
+  `motion.in` at the pacing speed. Content: `title` (+ optional `subtitle` at ~40% size).
+- **`lower_third`** — left- or anchor-aligned bar above `safe_bottom_px`: name 48–64px bold +
+  subtitle 32–40px on a translucent pill or accent-edged bar (`border-left: 8px solid
+  <accent>`); slide/fade in, hold `dwell_min_s`, exit before the scene cut.
+- **`callout`** — small pill/arrow label NEAR the thing it names (use `position.anchor` +
+  `offset_px`); 36–48px; never center-screen; keep up ≥1.2s.
+- **`kinetic_caption`** — NOT one element: a series of word-chunk `class="clip"` divs (3–5 words,
+  56px+ bold), each timed to its transcript words inside the scene's clip window; stamp the
+  `data-vob-overlay-id` on a wrapper div spanning the overlay window that CONTAINS the chunk
+  divs (the wrapper carries the timing of the whole window).
+- **`caption_block`** — one static caption div in the caption position/style (clean-pill
+  default); standard caption floors apply.
+- **`logo_bug`** — small (≤120px) corner mark inside the safe area, low opacity (0.85),
+  usually spans the whole scene window.
+- **`progress_bar`** — 4–8px bar at a safe edge; animate `transform: scaleX(0→1)` linearly
+  across the overlay window (CSS animation, `animation-duration` = overlay duration).
+- **`chapter_marker` / `section_title`** — like a restrained title_card at a section boundary:
+  index/kicker line + title; matches the brief's headline face; often paired with a `fade`
+  segment boundary.
+- **`data_viz`** — number counter or bar: big numeral (JetBrains Mono/IBM Plex Mono for
+  technical tone) + label; animate the count with a GSAP timeline registered to
+  `window.__timelines` ({paused:true}) or a CSS steps() trick; never fetch data — values come
+  from `content`.
+- **`cta` / `end_card`** — final-scene block: handle/text + accent button-shaped pill;
+  `end_card` may own the whole frame (solid/blurred bg) for the last 1.5–3s.
+- **`pip`** — a real `<video muted>` (inset 25–35% width, rounded corners, subtle shadow) on its
+  planned track; src is a normal `./source/<scene_id>-<k>.mp4` clip; COUNTS against the video
+  budget; `data-media-start="0"` like every scene clip.
+
 ---
 If your code isn't here, `lint_report_path` is ground truth — fix what the report's
 file/line/message says.

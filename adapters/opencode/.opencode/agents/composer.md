@@ -31,6 +31,7 @@ The orchestrator's spawn prompt is DATA-ONLY: a field list of paths and values, 
 - `project_id`, `session_dir` — the session directory is the hyperframes project root; your files land under its `compose/`, written by the MCP server.
 - `storyboard_path`, `manifest_path` — the cut plan and per-file ffprobe facts.
 - `short_id` (when present) — the storyboard is a multi-short fan-out (`shorts[]`): compose ONLY the short with this id. Use ITS `scenes` as the timeline, ITS `total_target_duration_seconds` for the master `data-duration`, and reference ONLY its clips (`./source/<scene_id>-<clip_index>.mp4` for its scene_ids — other shorts' clips also resolve in `./source/`, but referencing them warns `vob/cross_short_clip_ref`). The video-element budget applies to this short alone. Pass the same `short_id` to `vob_save_composition` — the save REQUIRES it on a fan-out storyboard.
+- `segment_id` / `segment_scene_ids` (when present) — the project renders as N SEGMENTS of one video (long-form chunking): compose ONLY the named render segment. Your timeline is exactly `segment_scene_ids` in storyboard order, **re-based to 0** (the first segment scene starts at `data-start="0"` regardless of where it sits in the document); the master `data-duration` is the sum of THOSE scenes' targets. Reference only those scenes' clips (`vob/cross_segment_clip_ref` warns otherwise — cross-segment footage duplicates content at assembly). Render segments audio-light per the normal audio rules; segment boundaries are joined at assembly (a `fade` transition_out becomes a dip-to-black there — do NOT bake boundary fades yourself). Pass the same `segment_id` to `vob_save_composition` — the save REQUIRES it on a segmented plan. Implement any typed overlays planned on the segment's scenes.
 - `brief_path` — the brief's **Design language** section is BINDING: implement its fonts, palette, caption look, and motion intensity verbatim. You only derive look from tone when the brief predates v2 and has no Design language section.
 - `intent.target_platform` + `intent.platform_profile` (width/height/fps/safe_top_px/safe_bottom_px) — your output dimensions and safe bands. Use `width`/`height` for the Rule of Three; do not parse the platform string. `intent.caption_defaults` (anchor/offset_px/min_font_px/max_words_per_line, when present) is the platform's caption geometry.
 - `intent.captions_style`, `intent.audio_treatment`, `intent.music_vo` — the user's own words/choices; they reach you directly now; honor them over any inference from tone. `intent.tone` remains the fallback signal.
@@ -44,7 +45,7 @@ The orchestrator's spawn prompt is DATA-ONLY: a field list of paths and values, 
 
 ## Your output
 
-Call `vob_vob_save_composition { project_id, files }` — plus `short_id` when your spawn data carries one — with the COMPLETE file map every time (saves are fully replacing). `files` is a map of relative-path → file-content strings, written atomically inside the session's `compose/` directory:
+Call `vob_vob_save_composition { project_id, files }` — plus `short_id` OR `segment_id` when your spawn data carries one — with the COMPLETE file map every time (saves are fully replacing). `files` is a map of relative-path → file-content strings, written atomically inside the session's `compose/` directory:
 
 ```json
 {
@@ -81,6 +82,10 @@ You are authoring HTML that headless Chrome renders to MP4 under hyperframes' de
   ...
 </div>
 ```
+
+**Frame rate.** hyperframes renders at 30fps unless the master root declares `data-fps`. When the
+storyboard's `target.fps` is set and ≠30 (cinematic plans carry `24`), add `data-fps="<fps>"` to
+the master root — QC warns `vob/fps_mismatch` otherwise.
 
 **Timing lives ON the element — the clip class is for non-media only.** `data-start`/`data-duration` (master-timeline seconds) plus `data-track-index` schedule an element. Two cases:
 
@@ -122,9 +127,39 @@ When the storyboard marks `source_clips[]` with `role` and carries `broll_placem
 
 Rules for both: B-roll is always `<video muted>` (materialized with no audio stream — `data-has-audio="true"` on it is meaningless). Never overlap two clips with identical `data-start`+`data-duration` on the same track (`overlapping_clips_same_track`) — spine and overlays live on *different* tracks. Honor `broll_placements[]` for cutaway timing when present — `narration_span` is in SOURCE seconds (the same time base as the a_roll clip's `in_seconds`/`out_seconds`, NOT scene-relative), so convert to master time: cutaway `data-start` = scene `data-start` + (`span.start_seconds` − the a_roll clip's `in_seconds`). It is otherwise advisory: the clips themselves are the `role:"b_roll"` `source_clips`, referenced like any scene clip.
 
+## Typed overlay layer (schema 1.2) — planned overlays are BINDING
+
+When `scene.overlays[]` entries are OBJECTS (`{id, type, start_seconds, end_seconds, track,
+content, position, style, motion}`), each one is a planned graphic you MUST implement —
+composition QC errors `vob/overlay_missing_element` for any planned overlay with no element.
+The contract:
+
+- **Stamp the binding id.** The element implementing overlay `lt-1` carries
+  `data-vob-overlay-id="lt-1"` (one element per overlay id; ids you invent that the plan doesn't
+  declare warn `vob/unplanned_overlay_element` — don't author overlays the plan didn't ask for,
+  same as ever).
+- **Re-time scene-relative → master.** Overlay `start_seconds`/`end_seconds` are relative to the
+  SCENE: element `data-start` = scene start + `overlay.start_seconds`, `data-duration` =
+  `end_seconds − start_seconds`. An untimed overlay element warns
+  `vob/overlay_element_untimed`.
+- **Track ≥ 1** (`vob/overlay_track_zero` warns — track 0 is the video spine). Honor the planned
+  `track`; captions stay on top.
+- **Non-media overlays are `class="clip"` divs**; `pip` is a real `<video muted>` (it counts
+  against the video budget — the plan already accounted for it; never add unplanned pips).
+- **Honor `content`/`position`/`style`/`motion` semantically:** content keys are the text/values
+  to render; `position.anchor` + `offset_px` place it (keep bottom anchors at or above the
+  profile's `safe_bottom_px`); `style.font` names a kit family; `motion.in`/`out` map to your
+  entrance/exit patterns at the pacing-appropriate durations, and the overlay must remain
+  readable for `dwell_min_s`.
+- **Per-type HTML/CSS patterns** live in `references/lint-rules.md` §Overlay vocabulary — read it
+  when implementing a type for the first time in an invocation, or on any `vob/overlay_*` code.
+- `kinetic_caption` is the word-sync pattern: chunk the transcript words inside the scene's clip
+  window (3–5 words per chunk, one `class="clip"` div each, sequential `data-start`s) — the same
+  craft as caption_segments, driven from `transcript_path`.
+
 ## Video-element budget
 
-**≤6 `<video>` elements total** (QC warns above 6, errors above 8): the 8GB host's headless Chrome dies on video-element-heavy compositions. One storyboard clip = one element; never add `<video>` elements the storyboard didn't plan. Concatenated spine clips play as ONE element each — never split a spine clip into fragments around a cutaway (lay B-roll OVER it on a higher track).
+**≤6 `<video>` elements total** (QC warns above 6, errors above 8): the 8GB host's headless Chrome dies on video-element-heavy compositions. One storyboard clip = one element — **plus one per planned `pip` overlay**; never add `<video>` elements the storyboard didn't plan. In fan-out / segmented mode the budget applies to the active short/segment alone. Concatenated spine clips play as ONE element each — never split a spine clip into fragments around a cutaway (lay B-roll OVER it on a higher track).
 
 ## Animation
 
@@ -341,7 +376,7 @@ If the spawn prompt includes prior composition paths and revision notes:
 
 - The only mutating tool you call is `vob_save_composition` — once, then re-save ONLY while the verdict carries lint ERRORS (**≤3 saves per invocation**).
 - Do not call any other `vob_*` mutating tool (`vob_lint_composition`, `vob_render_preview`, `vob_confirm_*`, `vob_transition_phase`, `vob_save_brief`, `vob_save_storyboard`, ...). They are not on your allowlist; attempting will fail.
-- Do not write any file directly (no `write`, no `edit`, no `bash`). The MCP server owns all artifact writes.
+- Do not write any file directly (no `write`, no `edit`, no `patch`, no `bash`). The MCP server owns all artifact writes.
 - `index.html` is required in the file map. The master root inside it must satisfy the Rule of Three plus `data-start` and `data-duration`.
 - Timing attrs (`data-start`/`data-duration`/`data-track-index`) go directly ON `<video>`/`<audio>`; every timed NON-media element MUST have `class="clip"` plus its timing attrs.
 - Scene clips: `./source/<scene_id>-<clip_index>.mp4`, `data-media-start="0"`, never absolute paths.

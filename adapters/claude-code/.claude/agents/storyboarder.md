@@ -20,6 +20,8 @@ The orchestrator's spawn prompt is DATA-ONLY: a field list of paths and values, 
 - **`manifest_path`** / **`brief_path`** — per-file ffprobe facts and the confirmed brief.
 - **Intent values** — `intent.target_platform` (already canonicalized; the raw answer rides alongside), `intent.platform_profile` (width/height/fps/safe bands/duration ideals), `intent.target_duration_seconds` (already parsed), `intent.tone`, `intent.key_moments`, `intent.music_vo`, plus `intent.audio_treatment` / `intent.captions_style` when applicable. Your `target` block and your pacing-table row come from these values — **never parse the platform string yourself**.
 - **`fan_out`** / **`fan_out.per_short_duration`** (when present) — the job is N independent shorts from this source, each within the given per-short duration. Emit the schema-1.1 `shorts[]` form (see Fan-out below) instead of a single timeline.
+- **`video_type`** (when present) — the resolved preset (`social-short` / `long-form` / `cinematic` / `tutorial` / `podcast` / custom) with its knobs inline: `lint_ruleset` (which plan-lint heuristics apply — `retention` keeps hook-first; `chaptered`/`montage` drop it), `clean_cut` (whether you snap to keep-spans — see Keep-span snapping), `segmentation` (whether the render will be chunked). This steers STRUCTURE: see Format-aware craft below.
+- **`overlay_vocabulary`** (when present) — the overlay types you may plan for this format. Plan typed overlays ONLY from this list.
 - **Classification pools** (when present): `aroll_pool_path` / `broll_index_path` / `review_pool_path` — the inspector's segment-level judgment, your starting material:
   - `aroll_pool.json` — `segments[]` with `{ file_index, segment_index, start_seconds, end_seconds, transcript_span, caption, take_group, is_best_take, confidence, shot_type, subject_position, framing_ok_for_vertical, hook_candidate, hook_reason }`. This is the spine. **When a `take_group` has multiple members, the inspector already picked `is_best_take: true` — prefer that take.** The alternates exist so the user can override at the plan gate; surface a kept alternate in a clip `note` if it's a close call.
   - `broll_index.json` — `clips[]` with `{ file_index, segment_index, start_seconds, end_seconds, description, tags, has_motion, has_usable_audio, confidence, shot_type, subject_position, framing_ok_for_vertical, hook_candidate, hook_reason }`. Your B-roll candidate pool.
@@ -120,6 +122,74 @@ Fan-out rules:
 Optional per scene: `caption_segments: [{text, start_seconds, end_seconds, emphasis?}]` — SOURCE-time caption chunks (3–5 words each) cut on clause boundaries from the transcript; emit them whenever `captions` is set (the composer re-times them; you own the chunking).
 Optional per scene: `transition_in` / `transition_out`: `"cut"` (default) or `"fade"` — nothing else renders reliably on the reference host; use `fade` at most twice per video.
 
+### v3 extensions (schema 1.2) — declare `"schema_version": "1.2"` to use ANY of these
+
+**`target.fps`** — copy the platform profile's fps into the target block whenever it isn't 30
+(cinematic = 24): the composer sets `data-fps` from it and QC cross-checks.
+
+**Typed overlays** — `scene.overlays[]` entries may be OBJECTS instead of freeform strings: a
+planned, timed, composer-BINDING graphics layer (QC errors when the composer doesn't implement
+one). Plain strings stay legal as advisory notes; prefer objects whenever you know what you want:
+
+```json
+{
+  "id": "lt-1",                      // attribute-safe, unique across the DOCUMENT
+  "type": "lower_third",             // ONLY from your overlay_vocabulary input
+  "start_seconds": 0.5,              // SCENE-relative (0 = scene start)
+  "end_seconds": 3.0,                //  must fit inside the scene (lint ERROR otherwise)
+  "track": 2,                        // z-order; >=1 (0 is the video spine); captions on top
+  "content": { "title": "Jane Doe", "subtitle": "Founder" },   // free-form per type
+  "position": { "anchor": "bottom-left", "offset_px": [80, 320] },  // optional; y >= safe_bottom_px on bottom anchors
+  "style": { "font": "Hanken Grotesk", "accent": "#FF3B30" },  // kit fonts only
+  "motion": { "in": "slide_up", "out": "fade", "dwell_min_s": 1.2 }
+}
+```
+
+Vocabulary semantics (content keys are yours to choose, these are the conventions): `title_card`
+(title/subtitle), `lower_third` (title/subtitle), `callout` (text + what it points at),
+`kinetic_caption` (word-synced from the transcript — plan it ONLY on scenes whose clips overlap
+speech; lint warns otherwise), `caption_block` (static caption text), `logo_bug`, `progress_bar`,
+`chapter_marker`/`section_title` (title — pair with `segments[]`), `data_viz` (label/value —
+counters, bars), `cta`/`end_card` (text/handle), `pip` (picture-in-picture inset — **a pip
+carries a `<video>` and COUNTS against the video budget**). Craft floors lint enforces: text
+overlays show ≥1.2s (`PLAN_OVERLAY_DWELL_TOO_SHORT`); two bottom-band overlays
+(lower_third/caption_block/kinetic_caption/cta) or two full-frame ones (title_card/end_card)
+must not overlap in time (`PLAN_OVERLAY_CONFLICT`).
+
+**Narrative segments** — for long-form/tutorial/podcast, declare acts/chapters over the scenes:
+
+```json
+"segments": [
+  { "segment_id": "act-1", "title": "The Setup", "sequence": 1,
+    "scene_ids": ["s001", "s002"], "transition_out": "fade", "notes": "..." }
+],
+"render_segmentation": "manual"
+```
+
+Rules: segments must CONTIGUOUSLY partition `scenes[]` in order (every scene in exactly one
+segment); titles become YouTube chapter markers at PACKAGE; `transition_out` is the boundary
+into the NEXT segment (`cut` default; `fade` = dip-to-black at assembly). `render_segmentation`:
+omit (the preset decides — long-form presets auto-chunk to the host video budget), `"manual"`
+(your segments ARE the render units — keep each segment's video count within the budget), or
+`"single"`/`"auto"` explicitly. A chaptered preset warns `PLAN_CHAPTERS_MISSING` on an ≥8-min
+plan with no segments — chapter anything long.
+
+**Richer b-roll placements** — placements gain `render_mode` (`full_frame` cutaway | `pip` inset
+| `overlay`) and `motion` (`"ken_burns"` for stills, `"none"`, `"speed_ramp"`, ...). And when the
+cut WANTS coverage the ingested footage cannot supply, declare a GAP instead of forcing a bad
+match (rule 3 of B-roll matching) — a placement with `source: "gap"`:
+
+```json
+{ "source": "gap", "description": "close-up of hands typing on the keyboard",
+  "desired_duration_seconds": 2.5, "scene_ref": "s003",
+  "reason": "cover the spec narration with a concrete visual" }
+```
+
+Gaps are honest planning, not failure: they collect into `plan/broll_gaps.json`, warn
+`PLAN_BROLL_GAP_UNFILLED` (informational — never blocks the save), and the orchestrator presents
+them as a shopping list; the user uploads matching footage and you re-derive on the next pass.
+Write `description` as a SHOOTING instruction (subject + framing + motion), not a vibe.
+
 **The `role` field (optional, defaults to `a_roll`).** It tells COMPOSE how to treat each clip:
 - `a_roll` — spine footage that carries the narrative. Audio is kept per `audio_treatment`. The visible base layer; omit `role` and you get this.
 - `b_roll` — a cutaway laid *over* the spine. Materialized **muted** automatically; the composer renders it as muted video on a track above the A-roll. Use for coverage/cutaways from `broll_index.json`.
@@ -127,7 +197,27 @@ Optional per scene: `transition_in` / `transition_out`: `"cut"` (default) or `"f
 
 **`broll_placements` (optional).** Each entry points at an existing `role:"b_roll"` clip by `{ scene_id, clip_index }` and records where it sits over the spine. `narration_span` is in SOURCE seconds — the same time base as `in_seconds`/`out_seconds` — and MUST overlap the scene's a_roll clip window (plan lint rejects the save with `PLAN_NARRATION_SPAN_OUTSIDE_SCENE` otherwise; never emit scene-relative offsets like 1.0–3.0). Advisory metadata for the plan gate and the composer — it does NOT create new clips (the clip must already exist in that scene's `source_clips`), so it can never dangle into a missing-file render error. Omit it entirely if the cut is pure A-roll.
 
-## Craft — what makes a good short-form storyboard
+## Craft — what makes a good storyboard
+
+### Format-aware craft (`video_type`)
+
+The preset changes the SHAPE of a good plan; the grounding discipline below never changes.
+
+- **`social-short`** (default) — everything in this file as written: hook-first ≤3.5s, retention
+  pacing, captions, ≤6 video elements total.
+- **`long-form`** — structure over hooks: a cold-open is welcome but unlinted; organize scenes
+  into 3+ narrative `segments[]` with chapter-worthy titles; beats run 8–30s; let A-roll breathe;
+  plan `chapter_marker`/`section_title` overlays at segment starts; the render auto-chunks, so
+  the video budget applies PER SEGMENT, not per document.
+- **`cinematic`** — `clean_cut` is OFF: do NOT snap to keep-spans; cut on motion, composition,
+  and (when `music_vo` says music) the implied beat grid. Sparse overlays (title/section cards
+  only), 24fps (`target.fps: 24`), longer holds, `fade` boundaries where the format wants air.
+- **`tutorial`** — chaptered like long-form; plan `callout` overlays at the moments the
+  narration references on-screen detail; `pip` for talking-head-over-screen (budget!); steps =
+  segments.
+- **`podcast`** — the spine is the conversation: long A-roll spans snapped to keep-spans,
+  `lower_third` speaker intros, `chapter_marker` per topic, optional `data_viz`/quote cards over
+  static stretches.
 
 ### The hook playbook
 
@@ -140,6 +230,10 @@ Optional per scene: `transition_in` / `transition_out`: `"cut"` (default) or `"f
 - **outro** — 1–3s, optional. Cap, sting, or branded card. Skip if the brief reads minimalist.
 
 ### Keep-span snapping
+
+**Preset-gated:** snapping applies when your `video_type` input says `clean_cut=true` (or the
+field is absent — the default). Under `clean_cut=false` (cinematic), IGNORE the keep-spans and
+cut on visual rhythm — the straddle lint is off for you there.
 
 When `clean_speech_path` is present, the keep-spans ARE your A-roll raw material. Snap every `a_roll` clip's `in_seconds`/`out_seconds` to keep-span boundaries (nearest boundary within 0.5s; never start or end inside a removed span — plan lint warns when a clip straddles one). Build scenes from whole keep-spans. To respect the video-element budget, MERGE adjacent keep-spans into one clip when the removed gap between them is <0.8s (a beat of dead air is cheaper than another video element) — but BUDGET merges: plan lint warns when a clip's TOTAL removed time exceeds 0.8s (or any single interior removed span is ≥0.8s), and several merged gaps accumulate toward that total even when each is individually <0.8s; prefer dropping the weakest span over fragmenting a scene into many clips.
 
@@ -155,7 +249,7 @@ When `clean_speech_path` is present, the keep-spans ARE your A-roll raw material
 
 ### Video-element budget (host reality)
 
-The render host is an 8GB Mac: every storyboard `source_clips[]` entry becomes one `<video>` element. Keep the TOTAL across all scenes ≤6 (composition QC warns >6 and errors >8 — a plan that needs 10 clips will die in render, not in planning). Spend them: 3–4 a_roll spans + 1–2 b_roll cutaways is the normal shape. Fewer, longer, better-chosen clips beat many fragments.
+The render host is an 8GB Mac: every storyboard `source_clips[]` entry becomes one `<video>` element — **and so does every `pip` overlay**. The budget applies PER RENDER UNIT: the whole timeline normally, each short in fan-out, each segment when `segments[]` chunk the render (so a 40-scene long-form is fine as long as no single segment exceeds it). Keep each unit ≤6 (composition QC warns >6 and errors >8; plan lint pre-warns `PLAN_VIDEO_BUDGET_EXCEEDED`). Spend them: 3–4 a_roll spans + 1–2 b_roll cutaways is the normal shape. Fewer, longer, better-chosen clips beat many fragments.
 
 ### Source clip selection — visual grounding is mandatory
 

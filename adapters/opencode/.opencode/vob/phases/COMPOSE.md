@@ -32,18 +32,33 @@ to the `composer` subagent; linting, snapshots, and transitions stay with you.
    keep-or-fresh question above applies only when `composition.short_id` matches the active
    short. Tell the user the progress ("composing short k of N: <short_id> — <title>").
 
+   **Segmented render (the summary has `render_plan.mode: "segmented"`):** the same active-unit
+   rule with segments — the **active segment** is the first row in `render_plan.segments[]`
+   (plan order) with `rendered: false` (a `stale: true` row counts as un-rendered — its partial
+   predates the current storyboard). If EVERY segment is rendered, it's a revision pass: use the
+   segment the user named, or `composition.segment_id` on a resume. When `composition.segment_id`
+   differs from the active segment, a fresh composer pass is MANDATORY. The composer spawn gets
+   `segment_id: <active>` and `vob_save_composition` REQUIRES it; QC scopes to that segment's
+   scenes (refs into other segments' clips warn `vob/cross_segment_clip_ref`). Tell the user the
+   progress ("composing segment k of N: <segment_id> — <title>"). Typed overlays planned on the
+   segment's scenes are BINDING: the composer must implement each and stamp
+   `data-vob-overlay-id` (QC errors `vob/overlay_missing_element` otherwise).
+
 3. **Delegate.** Record the invocation first: `vob_vob_log_composer_invocation
    { project_id, revision_notes? }` — omit `revision_notes` on the very first invocation; pass
    the user's exact words on a user-driven revision; pass rule codes on a lint/QC auto-retry.
    Spawn prompt is DATA-ONLY (no behavioral clauses — the agent .md owns behavior; if you are
    tempted to add an instruction, it belongs in the agent file). Fields with no value are passed
-   as the literal string `none`. Invoke the `composer` subagent with the `task` tool, passing:
+   as the literal string `none`:
+   Invoke the `composer` subagent with the `task` tool, passing:
    ```
    DATA
    project_id: <project_id>
    session_dir: ~/video-vob-sessions/<project_id>/
    storyboard_path: <storyboard.artifact_path>
    short_id: <active short_id | none>            (fan-out only: compose ONLY this short)
+   segment_id: <active segment_id | none>        (segmented render only: compose ONLY this render segment — pass it to vob_save_composition)
+   segment_scene_ids: <the active segment's scene_ids, comma-joined | none>
    brief_path: <brief.path>                      (its Design language section is BINDING)
    manifest_path: <manifest.path>
    transcript_path: <inspect.transcript_path | none>

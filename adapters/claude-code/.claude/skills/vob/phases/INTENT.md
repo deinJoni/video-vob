@@ -88,6 +88,26 @@ Per-key guidance (for the gaps you ask, or to sanity-check a proposal):
 5. **`music_vo`** — "Music, voiceover, both, or neither?"
    *Normalize to one of those four words when possible; otherwise record what the user said.*
 
+### The video-type beat (optional, skippable — v3)
+
+After platform + duration are recorded, read the summary's `video_type` block (`canonical` +
+`source`). When `source` is `"derived"`, PROPOSE it as one folded line in your batch — never a
+standalone interrogation: "I'll treat this as **long-form** (chaptered lint, auto-segmented
+render) based on youtube + 12 min — say 'cinematic', 'tutorial', 'podcast', or 'social short'
+to steer differently." React:
+- User confirms or stays silent on it → record nothing; the derivation stands (it is recomputed
+  live, so a later platform/duration change re-derives).
+- User names a type (or named one in the rough idea — e.g. "make a tutorial out of this") →
+  `vob_record_intent_answer { key: "video_type", value: <their words> }`. The server
+  canonicalizes (free text OK: "a cinematic montage" → `cinematic`; unrecognized stores
+  `canonical:null` and falls back to derivation — tell the user what was assumed).
+- `video_type` is OPTIONAL — it never appears in `missing_required_keys` and never blocks the
+  INTENT→PLAN gate.
+The preset matters downstream: `cinematic` turns clean-cut OFF and lints as a montage at 24fps;
+`long-form`/`tutorial`/`podcast` lint chaptered (hook-first OFF) and auto-segment the render;
+`social-short` is exactly the v2 rails. `vob_doctor { project_id }` shows the resolved preset +
+the available table (incl. user presets from `.vob-config/video-types.json`).
+
 ### Content-conditional follow-ups
 
 Inspect `missing_required_keys` from the latest `vob_record_intent_answer` result — do not

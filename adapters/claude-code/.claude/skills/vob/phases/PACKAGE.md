@@ -27,7 +27,11 @@ can ship as-is.
    - `<readme_path>` — human-readable summary"
    Note that the audio was loudness-normalized to −14 LUFS (disable with `VOB_NO_LOUDNORM=1` and
    re-package if the user objects) and the thumbnail is pulled from the hook scene (fallback:
-   10% mark).
+   10% mark). When the storyboard declared narrative `segments[]`, the manifest carries
+   `chapters[]` and the README has a paste-ready **Chapters** block (`0:00 Title` lines for the
+   YouTube description) — surface it. A segmented project packages its ASSEMBLED final exactly
+   like a single render (the tool refuses if assembly is missing/stale — re-run
+   `vob_assemble_video` first).
 
 3. Optionally `Read` the README and present a short excerpt (the Output and Lineage sections) so
    the user doesn't have to open the file.
