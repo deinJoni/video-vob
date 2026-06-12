@@ -7,12 +7,23 @@ const { intentAnswerRaw } = require("./intent-schema.js");
 const { inspectCleanSpeechPath } = require("./paths.js");
 const { parseDurationSpec, parseDurationToSeconds } = require("./platform-profiles.js");
 const { readJsonFile } = require("./storage.js");
-const { activeLintRules } = require("./video-types.js");
+const { activeLintRules, OVERLAY_TYPES } = require("./video-types.js");
+const hostProfile = require("./host-profile.js");
 
 const SCHEMA_VERSION = "1.0";
-// 1.1 adds the optional top-level shorts[] (multi-short fan-out). A document
-// with shorts[] MUST declare 1.1; scenes-form documents may use either.
-const SCHEMA_VERSIONS = Object.freeze(["1.0", "1.1"]);
+// 1.1 adds the optional top-level shorts[] (multi-short fan-out); a document
+// with shorts[] must declare 1.1 or later. 1.2 (v3) adds typed overlay objects,
+// the optional top-level segments[] (narrative acts/chapters that double as the
+// manual render-segmentation unit), render_segmentation, target.fps, and the
+// richer broll_placements (render_mode / motion / gap form) — all additive;
+// scenes-form 1.0 documents stay valid forever.
+const SCHEMA_VERSIONS = Object.freeze(["1.0", "1.1", "1.2"]);
+const SHORTS_SCHEMA_VERSIONS = Object.freeze(["1.1", "1.2"]);
+// Render segmentation policy: how COMPOSE/RENDER chunk the timeline. "single"
+// = one continuous composition (v2.1 path); "auto" = the engine chunks
+// consecutive scenes to the host <video> budget; "manual" = the declared
+// segments[] are the render units.
+const RENDER_SEGMENTATIONS = Object.freeze(["single", "auto", "manual"]);
 const PURPOSES = Object.freeze(["hook", "beat", "payoff", "outro"]);
 const PACINGS = Object.freeze(["fast", "medium", "slow"]);
 // Clip role: how the composer should treat a source clip.
@@ -31,6 +42,19 @@ const SCENE_TRANSITION_SET = new Set(SCENE_TRANSITIONS);
 
 function clipRoleOf(clip) {
   return clip && typeof clip.role === "string" && clip.role.trim() ? clip.role : "a_roll";
+}
+
+// <video> elements a scene costs the composition: one per source clip plus one
+// per planned PiP overlay (a pip carries a <video> by definition). The single
+// budget-accounting function — render-segments chunking and plan lint both use
+// it, so a PiP-heavy segment auto-splits and over-budget plans warn early.
+function sceneVideoCount(scene) {
+  if (!scene || typeof scene !== "object") return 0;
+  const clips = Array.isArray(scene.source_clips) ? scene.source_clips.length : 0;
+  const pips = Array.isArray(scene.overlays)
+    ? scene.overlays.filter((o) => o !== null && typeof o === "object" && !Array.isArray(o) && o.type === "pip").length
+    : 0;
+  return clips + pips;
 }
 
 function isPlainObject(value) {
@@ -76,6 +100,85 @@ function validateClip(clip, sceneIx, clipIx, errors, wherePrefix = "") {
   }
 }
 
+// --- Typed overlays (schema 1.2) ----------------------------------------------
+// scene.overlays[] entries are either legacy freeform STRINGS (advisory notes,
+// valid in every schema version) or typed OBJECTS — planned, timed, composer-
+// bound graphics. The composer stamps the implementing element with
+// data-vob-overlay-id="<id>", which composition QC enforces.
+const OVERLAY_TYPE_SET = new Set(OVERLAY_TYPES);
+const OVERLAY_ANCHORS = Object.freeze([
+  "top-left", "top-center", "top-right",
+  "center-left", "center", "center-right",
+  "bottom-left", "bottom-center", "bottom-right",
+]);
+const OVERLAY_ANCHOR_SET = new Set(OVERLAY_ANCHORS);
+// Attribute-friendly id (lands in data-vob-overlay-id and finding messages).
+const OVERLAY_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/;
+
+function validateOverlayObject(overlay, sceneIx, entryIx, errors, wherePrefix, typedOverlaysAllowed) {
+  const where = `${wherePrefix}scenes[${sceneIx}].overlays[${entryIx}]`;
+  if (!typedOverlaysAllowed) {
+    errors.push(`${where} is a typed overlay object — schema_version must be "1.2" (strings remain valid as freeform notes)`);
+    return;
+  }
+  if (!OVERLAY_ID_RE.test(String(overlay.id || ""))) {
+    errors.push(`${where}.id must be a short attribute-safe string (letters/digits/._:-, e.g. "lt-1")`);
+  }
+  if (!OVERLAY_TYPE_SET.has(overlay.type)) {
+    errors.push(`${where}.type must be one of: ${OVERLAY_TYPES.join(", ")}`);
+  }
+  if (!isFiniteNumber(overlay.start_seconds) || overlay.start_seconds < 0
+    || !isFiniteNumber(overlay.end_seconds) || overlay.end_seconds <= overlay.start_seconds) {
+    errors.push(`${where} must satisfy 0 <= start_seconds < end_seconds (SCENE-relative seconds)`);
+  }
+  if (overlay.track !== undefined && overlay.track !== null
+    && (!Number.isInteger(overlay.track) || overlay.track < 1)) {
+    errors.push(`${where}.track must be an integer >= 1 when present (track 0 is the video spine)`);
+  }
+  if (overlay.content !== undefined && overlay.content !== null && !isPlainObject(overlay.content)) {
+    errors.push(`${where}.content must be an object when present`);
+  }
+  if (overlay.position !== undefined && overlay.position !== null) {
+    const p = overlay.position;
+    if (!isPlainObject(p)) {
+      errors.push(`${where}.position must be an object when present`);
+    } else {
+      if (p.anchor !== undefined && p.anchor !== null && !OVERLAY_ANCHOR_SET.has(p.anchor)) {
+        errors.push(`${where}.position.anchor must be one of: ${OVERLAY_ANCHORS.join(", ")}`);
+      }
+      if (p.offset_px !== undefined && p.offset_px !== null
+        && (!Array.isArray(p.offset_px) || p.offset_px.length !== 2 || !p.offset_px.every((n) => isFiniteNumber(n)))) {
+        errors.push(`${where}.position.offset_px must be a [x, y] pair of finite numbers when present`);
+      }
+    }
+  }
+  if (overlay.style !== undefined && overlay.style !== null && !isPlainObject(overlay.style)) {
+    errors.push(`${where}.style must be an object when present`);
+  }
+  if (overlay.motion !== undefined && overlay.motion !== null) {
+    const m = overlay.motion;
+    if (!isPlainObject(m)) {
+      errors.push(`${where}.motion must be an object when present`);
+    } else {
+      for (const field of ["in", "out"]) {
+        if (m[field] !== undefined && m[field] !== null && !isNonEmptyString(m[field])) {
+          errors.push(`${where}.motion.${field} must be a non-empty string when present`);
+        }
+      }
+      if (m.dwell_min_s !== undefined && m.dwell_min_s !== null
+        && (!isFiniteNumber(m.dwell_min_s) || m.dwell_min_s <= 0)) {
+        errors.push(`${where}.motion.dwell_min_s must be a positive finite number when present`);
+      }
+    }
+  }
+}
+
+// Typed overlay objects from a scene (strings filtered out).
+function typedOverlaysOf(scene) {
+  if (!isPlainObject(scene) || !Array.isArray(scene.overlays)) return [];
+  return scene.overlays.filter((o) => isPlainObject(o));
+}
+
 // Optional per-scene caption_segments (SOURCE-time): the storyboarder's timed
 // caption plan. No cross-check against `captions` — that string stays the
 // human-readable summary.
@@ -99,7 +202,8 @@ function validateCaptionSegment(seg, sceneIx, segIx, errors, wherePrefix = "") {
   }
 }
 
-function validateScene(scene, ix, errors, wherePrefix = "") {
+function validateScene(scene, ix, errors, wherePrefix = "", opts = {}) {
+  const typedOverlaysAllowed = opts.typedOverlaysAllowed === true;
   const where = `${wherePrefix}scenes[${ix}]`;
   if (!isPlainObject(scene)) {
     errors.push(`${where} must be an object`);
@@ -126,12 +230,15 @@ function validateScene(scene, ix, errors, wherePrefix = "") {
     scene.source_clips.forEach((clip, clipIx) => validateClip(clip, ix, clipIx, errors, wherePrefix));
   }
   if (!Array.isArray(scene.overlays)) {
-    errors.push(`${where}.overlays must be an array of strings (may be empty)`);
+    errors.push(`${where}.overlays must be an array (may be empty) — freeform note strings, or typed overlay objects under schema 1.2`);
   } else {
     scene.overlays.forEach((entry, entryIx) => {
-      if (typeof entry !== "string") {
-        errors.push(`${where}.overlays[${entryIx}] must be a string`);
+      if (typeof entry === "string") return; // legacy freeform note — always valid
+      if (isPlainObject(entry)) {
+        validateOverlayObject(entry, ix, entryIx, errors, wherePrefix, typedOverlaysAllowed);
+        return;
       }
+      errors.push(`${where}.overlays[${entryIx}] must be a string note or a typed overlay object`);
     });
   }
   if (scene.captions !== null && scene.captions !== undefined && typeof scene.captions !== "string") {
@@ -235,7 +342,7 @@ function isSafeIdString(value) {
     && !/(?:^|\.)\.\.(?:\.|$)/.test(value);
 }
 
-function validateShort(short, ix, seenShortIds, errors) {
+function validateShort(short, ix, seenShortIds, errors, opts = {}) {
   const where = `shorts[${ix}]`;
   if (!isPlainObject(short)) {
     errors.push(`${where} must be an object`);
@@ -263,9 +370,145 @@ function validateShort(short, ix, seenShortIds, errors) {
   if (!Array.isArray(short.scenes) || short.scenes.length === 0) {
     errors.push(`${where}.scenes must be a non-empty array`);
   } else {
-    short.scenes.forEach((scene, sceneIx) => validateScene(scene, sceneIx, errors, `${where}.`));
+    short.scenes.forEach((scene, sceneIx) => validateScene(scene, sceneIx, errors, `${where}.`, opts));
   }
   validateBrollPlacementsList(short.broll_placements, short.scenes, `${where}.`, errors);
+}
+
+// --- Narrative segments (schema 1.2) -----------------------------------------
+// segments[]: acts/chapters/sections over the single-timeline scenes[]. They
+// are the PLANNING unit (chapter markers at PACKAGE) and, under
+// render_segmentation:"manual", the render unit. Constraints: scenes-form only
+// (mutually exclusive with shorts[] — a fan-out OF segmented videos is out of
+// scope for v3), and the segments must CONTIGUOUSLY partition scenes[] in
+// timeline order — every scene in exactly one segment, no reordering — so
+// concat-at-assembly is exactly the planned timeline.
+function validateSegments(input, errors) {
+  if (input.segments === undefined || input.segments === null) return;
+  if (!Array.isArray(input.segments) || input.segments.length === 0) {
+    errors.push("segments must be a non-empty array when present");
+    return;
+  }
+  if (input.schema_version === "1.0" || input.schema_version === "1.1") {
+    errors.push('schema_version must be "1.2" when segments[] is present');
+  }
+  if (input.shorts !== undefined && input.shorts !== null) {
+    errors.push("segments[] cannot be combined with shorts[] — segment a single timeline, or fan out shorts, not both");
+    return;
+  }
+  const scenes = Array.isArray(input.scenes) ? input.scenes : [];
+  const sceneOrder = scenes
+    .map((scene) => (isPlainObject(scene) && isNonEmptyString(scene.scene_id) ? scene.scene_id : null));
+  const seenSegmentIds = new Set();
+  const coveredSceneIds = [];
+  input.segments.forEach((segment, ix) => {
+    const where = `segments[${ix}]`;
+    if (!isPlainObject(segment)) {
+      errors.push(`${where} must be an object`);
+      return;
+    }
+    if (!isSafeIdString(segment.segment_id)) {
+      errors.push(`${where}.segment_id must be a non-empty path-safe string`);
+    } else if (seenSegmentIds.has(segment.segment_id)) {
+      errors.push(`${where}.segment_id "${segment.segment_id}" duplicates an earlier segment`);
+    } else {
+      seenSegmentIds.add(segment.segment_id);
+    }
+    if (!isNonEmptyString(segment.title)) {
+      errors.push(`${where}.title must be a non-empty string (it becomes the chapter title)`);
+    }
+    if (!Number.isInteger(segment.sequence) || segment.sequence !== ix + 1) {
+      errors.push(`${where}.sequence must equal ${ix + 1} (1-based, monotonically increasing)`);
+    }
+    if (!Array.isArray(segment.scene_ids) || segment.scene_ids.length === 0) {
+      errors.push(`${where}.scene_ids must be a non-empty array of scene_id strings`);
+    } else {
+      segment.scene_ids.forEach((sceneId, sIx) => {
+        if (!isNonEmptyString(sceneId)) {
+          errors.push(`${where}.scene_ids[${sIx}] must be a non-empty string`);
+        } else {
+          coveredSceneIds.push(sceneId);
+        }
+      });
+    }
+    if (segment.transition_out !== undefined && segment.transition_out !== null
+      && !SCENE_TRANSITION_SET.has(segment.transition_out)) {
+      errors.push(`${where}.transition_out must be one of: ${SCENE_TRANSITIONS.join(", ")} (omit for default cut)`);
+    }
+    if (segment.notes !== undefined && segment.notes !== null && typeof segment.notes !== "string") {
+      errors.push(`${where}.notes must be a string when present`);
+    }
+  });
+  // Contiguous full partition: the concatenation of scene_ids in segment order
+  // must equal scenes[] order exactly.
+  if (sceneOrder.every((id) => id !== null) && coveredSceneIds.length > 0) {
+    const expected = sceneOrder.join(" ");
+    const got = coveredSceneIds.join(" ");
+    if (expected !== got) {
+      const missing = sceneOrder.filter((id) => !coveredSceneIds.includes(id));
+      const unknown = coveredSceneIds.filter((id) => !sceneOrder.includes(id));
+      const dupes = coveredSceneIds.filter((id, i) => coveredSceneIds.indexOf(id) !== i);
+      const detail = [
+        missing.length ? `uncovered scenes: ${missing.join(", ")}` : null,
+        unknown.length ? `unknown scene_ids: ${unknown.join(", ")}` : null,
+        dupes.length ? `scenes in more than one segment: ${[...new Set(dupes)].join(", ")}` : null,
+        !missing.length && !unknown.length && !dupes.length ? "scene order differs from scenes[]" : null,
+      ].filter(Boolean).join("; ");
+      errors.push(`segments[] must contiguously partition scenes[] in timeline order — ${detail}`);
+    }
+  }
+}
+
+function validateRenderSegmentation(input, errors) {
+  const value = input.render_segmentation;
+  if (value === undefined || value === null) return;
+  if (!RENDER_SEGMENTATIONS.includes(value)) {
+    errors.push(`render_segmentation must be one of: ${RENDER_SEGMENTATIONS.join(", ")}`);
+    return;
+  }
+  if (input.schema_version === "1.0" || input.schema_version === "1.1") {
+    errors.push('schema_version must be "1.2" when render_segmentation is present');
+  }
+  if (value === "manual" && (!Array.isArray(input.segments) || input.segments.length === 0)) {
+    errors.push('render_segmentation "manual" requires segments[] — declare the render units');
+  }
+  if (input.shorts !== undefined && input.shorts !== null && value !== "single") {
+    errors.push("render_segmentation does not apply to a shorts[] fan-out — each short is already its own render");
+  }
+}
+
+function storyboardHasSegments(parsed) {
+  return isPlainObject(parsed) && Array.isArray(parsed.segments) && parsed.segments.length > 0;
+}
+
+// Normalized narrative-segment view (scenes resolved, durations summed).
+// [] when no segments are declared or the document is malformed.
+function storyboardSegments(parsed) {
+  if (!storyboardHasSegments(parsed)) return [];
+  const sceneById = new Map();
+  (Array.isArray(parsed.scenes) ? parsed.scenes : []).forEach((scene) => {
+    if (isPlainObject(scene) && isNonEmptyString(scene.scene_id)) sceneById.set(scene.scene_id, scene);
+  });
+  return parsed.segments
+    .filter(isPlainObject)
+    .map((segment, ix) => {
+      const sceneIds = Array.isArray(segment.scene_ids) ? segment.scene_ids.filter(isNonEmptyString) : [];
+      const scenes = sceneIds.map((id) => sceneById.get(id)).filter(isPlainObject);
+      const duration = scenes.reduce(
+        (acc, s) => acc + (isFiniteNumber(s.target_duration_seconds) ? s.target_duration_seconds : 0),
+        0,
+      );
+      return {
+        segment_id: isNonEmptyString(segment.segment_id) ? segment.segment_id : null,
+        title: isNonEmptyString(segment.title) ? segment.title : null,
+        sequence: Number.isInteger(segment.sequence) ? segment.sequence : ix + 1,
+        scene_ids: sceneIds,
+        scenes,
+        target_duration_seconds: duration > 0 ? duration : null,
+        transition_out: isNonEmptyString(segment.transition_out) ? segment.transition_out : "cut",
+        notes: typeof segment.notes === "string" ? segment.notes : null,
+      };
+    });
 }
 
 // Normalized timeline view — THE accessor for code that must work in both
@@ -350,8 +593,8 @@ function validateStoryboard(input) {
     errors.push(`schema_version must be one of: ${SCHEMA_VERSIONS.map((v) => `"${v}"`).join(", ")}`);
   }
   const hasShorts = input.shorts !== undefined && input.shorts !== null;
-  if (hasShorts && input.schema_version !== "1.1") {
-    errors.push('schema_version must be "1.1" when shorts[] is present');
+  if (hasShorts && !SHORTS_SCHEMA_VERSIONS.includes(input.schema_version)) {
+    errors.push(`schema_version must be one of: ${SHORTS_SCHEMA_VERSIONS.map((v) => `"${v}"`).join(", ")} when shorts[] is present`);
   }
   if (!isNonEmptyString(input.project_id)) {
     errors.push("project_id must be a non-empty string");
@@ -388,6 +631,7 @@ function validateStoryboard(input) {
       errors.push("target.fps must be a positive finite number when present (e.g. 24, 25, 30, 50, 60)");
     }
   }
+  const sceneOpts = { typedOverlaysAllowed: input.schema_version === "1.2" };
   if (hasShorts) {
     // Fan-out form: shorts[] carries the timelines; the top-level timeline
     // fields must be absent (one source of truth).
@@ -395,7 +639,7 @@ function validateStoryboard(input) {
       errors.push("shorts must be a non-empty array when present");
     } else {
       const seenShortIds = new Set();
-      input.shorts.forEach((short, ix) => validateShort(short, ix, seenShortIds, errors));
+      input.shorts.forEach((short, ix) => validateShort(short, ix, seenShortIds, errors, sceneOpts));
     }
     for (const field of ["scenes", "total_target_duration_seconds", "broll_placements"]) {
       if (input[field] !== undefined) {
@@ -406,12 +650,35 @@ function validateStoryboard(input) {
     if (!Array.isArray(input.scenes) || input.scenes.length === 0) {
       errors.push("scenes must be a non-empty array");
     } else {
-      input.scenes.forEach((scene, ix) => validateScene(scene, ix, errors));
+      input.scenes.forEach((scene, ix) => validateScene(scene, ix, errors, "", sceneOpts));
     }
     if (!isFiniteNumber(input.total_target_duration_seconds) || input.total_target_duration_seconds <= 0) {
       errors.push("total_target_duration_seconds must be a positive finite number");
     }
     validateBrollPlacements(input, errors);
+  }
+  validateSegments(input, errors);
+  validateRenderSegmentation(input, errors);
+  // Typed overlay ids are DOCUMENT-global (they become data-vob-overlay-id
+  // element bindings; QC matches by id across the whole composition).
+  {
+    const seenOverlayIds = new Map();
+    for (const timeline of storyboardTimelines(input)) {
+      timeline.scenes.forEach((scene, ix) => {
+        for (const overlay of typedOverlaysOf(scene)) {
+          if (!isNonEmptyString(overlay.id)) continue;
+          const at = timeline.short_id !== null
+            ? `shorts["${timeline.short_id}"].scenes[${ix}]`
+            : `scenes[${ix}]`;
+          const prior = seenOverlayIds.get(overlay.id);
+          if (prior) {
+            errors.push(`overlay id "${overlay.id}" at ${at} duplicates ${prior} — overlay ids must be unique across the document`);
+          } else {
+            seenOverlayIds.set(overlay.id, at);
+          }
+        }
+      });
+    }
   }
   if (input.notes !== undefined && input.notes !== null && typeof input.notes !== "string") {
     errors.push("notes must be a string when present");
@@ -1116,6 +1383,7 @@ function validateStoryboardContent(parsed, state) {
 module.exports = {
   SCHEMA_VERSION,
   SCHEMA_VERSIONS,
+  RENDER_SEGMENTATIONS,
   PURPOSES,
   PACINGS,
   CLIP_ROLES,
@@ -1126,8 +1394,12 @@ module.exports = {
   expectedTimelineDurationSeconds,
   findTimeline,
   lintStoryboardPlan,
+  sceneVideoCount,
+  storyboardHasSegments,
   storyboardHasShorts,
+  storyboardSegments,
   storyboardTimelines,
+  typedOverlaysOf,
   validateStoryboard,
   validateStoryboardContent,
 };

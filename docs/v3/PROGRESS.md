@@ -6,7 +6,7 @@ Branch: `v3/general-video`. Each pillar is committed separately and walker-verif
 | Pillar | Status | Walker phase | Commit |
 |---|---|---|---|
 | P1 — Format & presets | **done, walker-verified** | `general` | (this commit) |
-| P2 — Segmented render + assembly | pending | `longform` | — |
+| P2 — Segmented render + assembly | **done, walker-verified (real renders)** | `longform` | (this commit) |
 | P3 — Overlay layer (schema 1.2) | pending | `overlays` | — |
 | P4 — B-roll gaps + PLAN→INGEST | pending | `gaps` | — |
 | Adapters (claude-code + opencode) | pending | boot drift guard | — |
@@ -89,3 +89,14 @@ Decisions made during implementation. PRD-locked decisions are not repeated here
   `vob/fps_mismatch` fires without `data-fps` and clears with `data-fps="24"`, save-time
   merged lint `clean`). Regression: `setup` and `fanout` phases both green (derived
   `social-short` reproduces v2.1 retention lint byte-for-byte).
+- **2026-06-12 — P2 verified with REAL renders.** `node scripts/m5-walker.js longform` green
+  end-to-end on the 28.5s source: schema-1.2 `segments[]` negatives (partition/order/
+  version gating, manual-without-segments) unit-smoked; COMPOSE entry stamped the manual
+  2-segment plan; `save_composition{segment_id}` required/validated + `vob/cross_segment_clip_ref`
+  warned; per-segment REAL preview+full renders (drift expectation = segment target, 0.021s
+  actual); partials landed in `segment_renders/` and SURVIVED the RENDER→COMPOSE archival
+  back-edge; `vob_assemble_video` refused while unrendered (missing list), then joined via
+  the re-encode path (fade boundary ⇒ dip-to-black) with **0.034s drift** on the 10s
+  document; `video_not_assembled` blocked RENDER→PACKAGE pre-assembly; the assembled final
+  became the render slot, was confirmed, packaged with YouTube chapters (`0:00 The Setup |
+  0:05 The Payoff`), and reached ITERATE. Regression: `setup` + `fanout` still green.

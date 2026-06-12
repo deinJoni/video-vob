@@ -92,7 +92,7 @@ function isAbsoluteSrc(value) {
   return value.startsWith("/") || /^file:/i.test(value) || /^[A-Za-z]:\\/.test(value);
 }
 
-// runCompositionQc({ files, storyboard, sourceLinks, sceneClipLinks, checkTargetsOnDisk, activeShortId })
+// runCompositionQc({ files, storyboard, sourceLinks, sceneClipLinks, checkTargetsOnDisk, activeShortId, activeSegment })
 //   files            [{ relPath, content }] — only .html/.css entries are inspected
 //   storyboard       parsed storyboard.json object | null (null = unreadable/missing)
 //   sourceLinks      resolveSourceLinks(id) tuples (may be [])
@@ -101,9 +101,12 @@ function isAbsoluteSrc(value) {
 //   activeShortId    fan-out: the short this composition targets — scopes the
 //                    scene-coverage/master-duration checks to that short's
 //                    scenes and flags refs into OTHER shorts' clips
+//   activeSegment    segmented render: { segment_id, scene_ids } — same scoping
+//                    for the render segment this composition implements
 // => { findings: [{severity, rule, message, file, line, column, source:"vob"}],
-//      error_count, warning_count, expected_source_names, active_short_id }
-function runCompositionQc({ files, storyboard, sourceLinks, sceneClipLinks, checkTargetsOnDisk, activeShortId = null }) {
+//      error_count, warning_count, expected_source_names, active_short_id,
+//      active_segment_id }
+function runCompositionQc({ files, storyboard, sourceLinks, sceneClipLinks, checkTargetsOnDisk, activeShortId = null, activeSegment = null }) {
   const findings = [];
   const fileList = Array.isArray(files)
     ? files.filter((f) => f && typeof f.relPath === "string" && typeof f.content === "string")
@@ -114,10 +117,17 @@ function runCompositionQc({ files, storyboard, sourceLinks, sceneClipLinks, chec
     .map((f) => ({ relPath: f.relPath, content: f.content, tags: extractTags(f.content) }));
 
   const sb = storyboard && typeof storyboard === "object" && !Array.isArray(storyboard) ? storyboard : null;
-  // Storyboard-conformance scope: in fan-out the active short's scenes; the
-  // whole document otherwise. activeSceneIdSet non-null marks fan-out scoping.
+  // Storyboard-conformance scope: the active short's scenes in fan-out, the
+  // active render segment's scenes in segmented mode, the whole document
+  // otherwise. activeSceneIdSet non-null marks scoped mode; scopeKind labels
+  // the cross-reference warning.
   let scenes = [];
   let activeSceneIdSet = null;
+  let scopeKind = null; // "short" | "segment"
+  const segmentScope = activeSegment && typeof activeSegment === "object" && !Array.isArray(activeSegment)
+    && typeof activeSegment.segment_id === "string" && Array.isArray(activeSegment.scene_ids)
+    ? activeSegment
+    : null;
   if (sb !== null) {
     if (storyboardHasShorts(sb)) {
       const timeline = findTimeline(sb, activeShortId);
@@ -126,12 +136,32 @@ function runCompositionQc({ files, storyboard, sourceLinks, sceneClipLinks, chec
         activeSceneIdSet = new Set(
           scenes.map((s) => (s && typeof s.scene_id === "string" ? s.scene_id : null)).filter(Boolean),
         );
+        scopeKind = "short";
       } else {
         findings.push(makeFinding(
           "warning",
           "vob/active_short_unresolved",
           `fan-out storyboard but no matching short for short_id ${activeShortId === null ? "(none)" : `"${activeShortId}"`} — skipped the scoped storyboard-conformance checks (master duration, scene coverage)`,
         ));
+      }
+    } else if (segmentScope !== null) {
+      const allScenes = Array.isArray(sb.scenes) ? sb.scenes : [];
+      const wanted = new Set(segmentScope.scene_ids.filter((id) => typeof id === "string" && id));
+      const scoped = allScenes.filter((s) => s && typeof s.scene_id === "string" && wanted.has(s.scene_id));
+      if (scoped.length === segmentScope.scene_ids.length && scoped.length > 0) {
+        scenes = scoped;
+        activeSceneIdSet = new Set(scoped.map((s) => s.scene_id));
+        scopeKind = "segment";
+      } else {
+        // Plan/storyboard drifted apart (back-edge re-save without COMPOSE
+        // re-entry) — fall back to whole-document checks rather than
+        // mis-scoping against a dead segment.
+        findings.push(makeFinding(
+          "warning",
+          "vob/active_segment_unresolved",
+          `render segment "${segmentScope.segment_id}" no longer matches the storyboard scenes — re-enter COMPOSE to re-derive the render plan; ran whole-document conformance checks instead`,
+        ));
+        scenes = allScenes;
       }
     } else {
       scenes = Array.isArray(sb.scenes) ? sb.scenes : [];
@@ -267,13 +297,21 @@ function runCompositionQc({ files, storyboard, sourceLinks, sceneClipLinks, chec
             ));
           }
           if (activeSceneIdSet && !activeSceneIdSet.has(link.scene_id)) {
-            findings.push(makeFinding(
-              "warning",
-              "vob/cross_short_clip_ref",
-              `src "./source/${name}" (${f.relPath}:${tag.line}) references scene clip ${link.scene_id}-${link.clip_index} belonging to ANOTHER short — a fan-out composition should use only the active short's clips (active: ${activeShortId})`,
-              f.relPath,
-              tag.line,
-            ));
+            findings.push(scopeKind === "segment"
+              ? makeFinding(
+                "warning",
+                "vob/cross_segment_clip_ref",
+                `src "./source/${name}" (${f.relPath}:${tag.line}) references scene clip ${link.scene_id}-${link.clip_index} belonging to ANOTHER render segment — a segment composition should use only its own scenes' clips (active segment: ${segmentScope.segment_id}); cross-segment footage duplicates content at assembly`,
+                f.relPath,
+                tag.line,
+              )
+              : makeFinding(
+                "warning",
+                "vob/cross_short_clip_ref",
+                `src "./source/${name}" (${f.relPath}:${tag.line}) references scene clip ${link.scene_id}-${link.clip_index} belonging to ANOTHER short — a fan-out composition should use only the active short's clips (active: ${activeShortId})`,
+                f.relPath,
+                tag.line,
+              ));
           }
         } else if (sourceNames.has(name)) {
           const sourceAbs = sourceNames.get(name);
@@ -461,12 +499,13 @@ function runCompositionQc({ files, storyboard, sourceLinks, sceneClipLinks, chec
     warning_count: warningCount,
     // Every legal ./source/ name, for callers that want to hand the composer
     // the full list on an unresolved-ref rejection (the findings cap at 6).
-    // In fan-out, scene_clips is the ACTIVE short's clip list.
+    // In fan-out / segmented mode, scene_clips is the ACTIVE scope's clip list.
     expected_source_names: {
       scene_clips: expectedClipNameList,
       sources: [...sourceNames.keys()],
     },
     active_short_id: activeShortId,
+    active_segment_id: segmentScope ? segmentScope.segment_id : null,
   };
 }
 

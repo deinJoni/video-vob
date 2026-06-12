@@ -3,13 +3,14 @@
 const fs = require("fs");
 const { PHASE_VALUES, LEGACY_PHASE_ALIASES } = require("./constants.js");
 const { ERROR_CODES, ToolError } = require("./envelope.js");
-const { sessionDir, statePath, assertSafeProjectId, inspectSummaryPath, transcodedClipsDir } = require("./paths.js");
+const { sessionDir, statePath, assertSafeProjectId, inspectSummaryPath, storyboardPath, transcodedClipsDir } = require("./paths.js");
 const { withSessionLock, writeFileAtomic, readJsonFile } = require("./storage.js");
 const { getGate } = require("./phase-gates.js");
 const { archiveForIteration, currentIterationVersion, isArchivalTransition } = require("./archival.js");
 const { missingIntentKeys } = require("./intent-schema.js");
 const { materializeSceneClips } = require("./clip-materialize.js");
 const { summarizeActiveVideoType } = require("./video-types.js");
+const { deriveRenderPlan, validSegmentRenders } = require("./render-segments.js");
 
 // INTENT -> PLAN -> COMPOSE: the former BRIEF and STORYBOARD phases are merged
 // into a single PLAN phase (one human gate that presents intent summary +
@@ -383,6 +384,57 @@ function summarizeComposition(slot) {
     revision_count: intOr(c.revision_count, 0),
     // Fan-out: which short the current composition implements.
     short_id: strOrNull(c.short_id),
+    // Segmented render: which render segment it implements.
+    segment_id: strOrNull(c.segment_id),
+  };
+}
+
+// Segmented-render plan digest: per-segment rendered/confirmed/stale flags so
+// the orchestrator computes the active segment on resume without re-deriving.
+function summarizeRenderPlan(state) {
+  const plan = asSlot(state.render_plan);
+  if (!plan || plan.mode !== "segmented") return null;
+  const { byId, missing } = validSegmentRenders(state);
+  const registry = asSlot(state.segment_renders) || {};
+  return {
+    mode: "segmented",
+    segmentation: strOrNull(plan.segmentation),
+    video_budget: intOr(plan.video_budget, null),
+    segment_count: arrOr(plan.segments).length,
+    segments: arrOr(plan.segments).map((s) => {
+      const seg = asSlot(s) || {};
+      const valid = typeof seg.segment_id === "string" ? byId.get(seg.segment_id) || null : null;
+      const raw = typeof seg.segment_id === "string" ? asSlot(registry[seg.segment_id]) : null;
+      return {
+        segment_id: strOrNull(seg.segment_id),
+        title: strOrNull(seg.title),
+        scene_count: arrOr(seg.scene_ids).length,
+        target_duration_seconds: numOr(seg.target_duration_seconds, null),
+        video_count: intOr(seg.video_count, null),
+        transition_out: strOrNull(seg.transition_out) || "cut",
+        rendered: Boolean(valid),
+        confirmed: Boolean(valid && valid.confirmed === true),
+        // had a partial but it no longer counts (storyboard revision / scene
+        // set changed, or the file vanished)
+        stale: Boolean(!valid && raw),
+      };
+    }),
+    missing_segment_ids: missing,
+  };
+}
+
+function summarizeAssembly(state) {
+  const a = asSlot(state.assembly);
+  if (!a) return null;
+  const render = asSlot(state.render);
+  return {
+    final_path: strOrNull(a.final_path),
+    assembled_at: strOrNull(a.assembled_at),
+    segment_count: arrOr(a.segment_ids).length,
+    // The RENDER->PACKAGE gate requires the assembled final to BE the current
+    // render — false here means a segment was re-rendered since assembly.
+    is_current_render: Boolean(render && strOrNull(render.mp4_path) && a.final_path === render.mp4_path),
+    verification: asSlot(a.verification),
   };
 }
 
@@ -473,6 +525,8 @@ function buildStateSummary(state, projectId) {
       ? { generated_at: strOrNull(transcoded.generated_at), ...clipsDigest(projectId, transcoded) }
       : null,
     composition: summarizeComposition(state.composition),
+    render_plan: summarizeRenderPlan(state),
+    assembly: summarizeAssembly(state),
     preview: summarizePreview(state.preview),
     render: summarizeRender(state.render),
     package: summarizePackage(state.package),
@@ -574,11 +628,23 @@ async function transitionPhase(args) {
     // changed. Cutting before the state write means the user is never advanced
     // into COMPOSE with a half-prepared compose/source/ tree.
     let transcodedClips = null;
+    let renderPlan = null;
     if (toPhase === "COMPOSE") {
       transcodedClips = await materializeSceneClips({
         projectId: id,
         audioTreatment: readAudioTreatment(state),
       });
+      // Derive the render plan (v3 segmented render) from the storyboard on
+      // disk + the active preset. Recomputed on EVERY COMPOSE entry: same
+      // storyboard + same budget => same plan; a changed storyboard re-chunks
+      // and the registry's revision binding invalidates stale partials.
+      let sbDoc = null;
+      try {
+        sbDoc = readJsonFile(storyboardPath(id));
+      } catch {
+        sbDoc = null;
+      }
+      renderPlan = deriveRenderPlan({ storyboard: sbDoc, state });
     }
 
     const ts = nowIso();
@@ -603,6 +669,21 @@ async function transitionPhase(args) {
     if (transcodedClips) {
       next.transcoded_clips = transcodedClips;
     }
+    if (toPhase === "COMPOSE") {
+      if (renderPlan && renderPlan.mode === "segmented") {
+        const sbRevision = state.storyboard && Number.isInteger(state.storyboard.revision_count)
+          ? state.storyboard.revision_count
+          : null;
+        next.render_plan = { ...renderPlan, derived_at: ts, storyboard_revision: sbRevision };
+      } else {
+        // The plan resolved to a single continuous render — drop any stale
+        // segmented machinery from a prior storyboard shape so gates and the
+        // summary never reason from a dead plan.
+        delete next.render_plan;
+        delete next.segment_renders;
+        delete next.assembly;
+      }
+    }
     const archiveEvents = archive
       ? [{
           kind: "iteration_archived",
@@ -619,10 +700,20 @@ async function transitionPhase(args) {
           summary: transcodedClips.summary,
         }]
       : [];
+    const renderPlanEvents = renderPlan && renderPlan.mode === "segmented"
+      ? [{
+          kind: "render_plan_derived",
+          at: ts,
+          segmentation: renderPlan.segmentation,
+          segment_count: renderPlan.segments.length,
+          segment_ids: renderPlan.segments.map((s) => s.segment_id),
+        }]
+      : [];
     next.history = [
       ...(Array.isArray(state.history) ? state.history : []),
       ...archiveEvents,
       ...clipEvents,
+      ...renderPlanEvents,
       {
         kind: "transition",
         from,

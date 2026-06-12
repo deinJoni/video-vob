@@ -81,6 +81,22 @@ function renderPackageReadme(manifest) {
     lines.push("");
   }
 
+  // Chapters (v3 long-form): from the storyboard's narrative segments. The
+  // stamp list is paste-ready for a YouTube description (chapters need the
+  // first stamp at 0:00 and ≥3 entries to show).
+  if (Array.isArray(manifest.chapters) && manifest.chapters.length > 0) {
+    lines.push("## Chapters");
+    lines.push("");
+    for (const ch of manifest.chapters) {
+      lines.push(`${ch.youtube_stamp} ${ch.title}`);
+    }
+    lines.push("");
+    if (manifest.chapters.length < 3) {
+      lines.push("_(YouTube shows chapters only with 3+ entries starting at 0:00 — fewer are kept here for navigation/reference.)_");
+      lines.push("");
+    }
+  }
+
   lines.push("## Target");
   lines.push("");
   lines.push(`- ${targetSummary(manifest.target)}`);
@@ -105,6 +121,12 @@ function renderPackageReadme(manifest) {
     lines.push("## Lineage");
     lines.push("");
     const l = manifest.lineage;
+    if (manifest.video_type && manifest.video_type.canonical) {
+      lines.push(`- Video type: ${manifest.video_type.canonical} (${manifest.video_type.source})`);
+    }
+    if (manifest.assembly && Number.isFinite(manifest.assembly.segment_count)) {
+      lines.push(`- Assembled from ${manifest.assembly.segment_count} render segment(s): ${manifest.assembly.segment_ids.join(", ")}${manifest.assembly.concat_path === "copy" ? " (lossless concat)" : ""}`);
+    }
     if (Number.isFinite(l.storyboard_revision)) lines.push(`- Storyboard revision: ${l.storyboard_revision}`);
     if (Number.isFinite(l.composition_revision)) lines.push(`- Composition revision: ${l.composition_revision}`);
     if (Number.isFinite(l.preview_revision)) lines.push(`- Preview revision: ${l.preview_revision}`);

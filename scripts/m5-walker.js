@@ -1120,6 +1120,226 @@ async function runGeneral() {
   console.log(`\n=== general final phase: ${final.phase}   video_type: ${final.video_type.canonical} [${final.video_type.source}]`);
 }
 
+// ---------------------------------------------------------------------------
+// v3 `longform` walker phase — the P2 executable spec: schema-1.2 segments[],
+// manual render segmentation, per-segment compose/QC scoping + the
+// {segment_id} cycle with REAL renders (preview + full per segment), the
+// segment_renders registry surviving the RENDER→COMPOSE auto-archival,
+// vob_assemble_video (fade boundary => duration-preserving re-encode path),
+// the video_not_assembled gate, and PACKAGE chapters.
+
+async function runLongform() {
+  const LF = `${PROJECT_ID}-longform`;
+  console.log(`=== v3 longform walker (segmented render + assembly) — project: ${LF}`);
+
+  const boot = await bootstrapToPlan({
+    projectId: LF,
+    target: { format: "youtube", duration: "10 seconds" },
+    intentAnswers: {
+      target_platform: "youtube",
+      target_duration: "10s",
+      tone: "calm documentary",
+      key_moments: "none in particular",
+      music_vo: "neither",
+      video_type: "long-form",
+    },
+    briefBody: `# Brief: ${LF}\n\n## Target\n- segmented long-form fixture, 2 acts × 5s\n\n## Design language\n- Typography: headline Hanken Grotesk; captions Inter\n- Palette: bg #000, text #FFF\n- Motion: medium\n`,
+  });
+  const D = boot.file0.duration_seconds;
+  const srcPath = boot.file0.path || SOURCE;
+
+  // 1. Schema-1.2 segmented storyboard: 2 acts × (2s+3s) = 10s total; act-1
+  //    exits on a fade so assembly MUST take the re-encode (dip-to-black) path
+  //    and still land drift-exact.
+  const wins = {
+    a1: placeWindow({ keepSpans: null, len: 2, preferStart: D * 0.05, durationSeconds: D }),
+    a2: placeWindow({ keepSpans: null, len: 3, preferStart: D * 0.28, durationSeconds: D }),
+    b1: placeWindow({ keepSpans: null, len: 2, preferStart: D * 0.55, durationSeconds: D }),
+    b2: placeWindow({ keepSpans: null, len: 3, preferStart: D * 0.78, durationSeconds: D }),
+  };
+  const lfSb = {
+    schema_version: "1.2",
+    project_id: LF,
+    generated_at: new Date().toISOString(),
+    source: { manifest_path: boot.summary.manifest.path, brief_path: boot.savedBrief.brief_path },
+    target: { platform: "youtube_long", duration_seconds: 10, tone: "calm documentary" },
+    scenes: [
+      generalScene({ sceneId: "a101", sequence: 1, purpose: "beat", win: wins.a1, targetSeconds: 2, sourcePath: srcPath }),
+      generalScene({ sceneId: "a102", sequence: 2, purpose: "beat", win: wins.a2, targetSeconds: 3, sourcePath: srcPath }),
+      generalScene({ sceneId: "b101", sequence: 3, purpose: "beat", win: wins.b1, targetSeconds: 2, sourcePath: srcPath }),
+      generalScene({ sceneId: "b102", sequence: 4, purpose: "payoff", win: wins.b2, targetSeconds: 3, sourcePath: srcPath }),
+    ],
+    total_target_duration_seconds: 10,
+    segments: [
+      { segment_id: "act-1", title: "The Setup", sequence: 1, scene_ids: ["a101", "a102"], transition_out: "fade" },
+      { segment_id: "act-2", title: "The Payoff", sequence: 2, scene_ids: ["b101", "b102"] },
+    ],
+    render_segmentation: "manual",
+    notes: "Longform walker fixture — 2 render segments, fade boundary, chapters.",
+  };
+  const savedSb = await step("save storyboard (1.2 segments[], manual segmentation)", () =>
+    call("vob_save_storyboard", { project_id: LF, content: lfSb }),
+  );
+  assert(savedSb.plan_lint.error_count === 0, "longform storyboard reported plan-lint errors");
+  await step("confirm storyboard", () => call("vob_confirm_storyboard", { project_id: LF }));
+
+  // 2. COMPOSE entry derives + stamps the render plan.
+  const toCompose = await step("transition PLAN→COMPOSE (pre-cut + render plan)", () =>
+    call("vob_transition_phase", { project_id: LF, to_phase: "COMPOSE" }),
+  );
+  assert(toCompose.clips && toCompose.clips.clip_count === 4, `expected 4 clips, got ${JSON.stringify(toCompose.clips)}`);
+  {
+    const rp = toCompose.phase_summary.render_plan;
+    assert(rp && rp.mode === "segmented" && rp.segmentation === "manual" && rp.segment_count === 2,
+      `render plan not stamped: ${JSON.stringify(rp)}`);
+    assert(rp.segments[0].segment_id === "act-1" && rp.segments[0].rendered === false,
+      `unexpected plan digest: ${JSON.stringify(rp.segments)}`);
+    console.log(`   plan: ${rp.segments.map((s) => `${s.segment_id}(${s.target_duration_seconds}s/${s.video_count}v)`).join(" + ")}`);
+  }
+
+  const segView = (ids, total) => ({
+    scenes: lfSb.scenes.filter((s) => ids.includes(s.scene_id)),
+    total_target_duration_seconds: total,
+  });
+  const compAct1 = composition(segView(["a101", "a102"], 5), { width: 1920, height: 1080 });
+  const compAct2 = composition(segView(["b101", "b102"], 5), { width: 1920, height: 1080 });
+
+  // 3. Negative saves: segment_id required / validated; cross-segment refs warn.
+  await step("save composition (missing segment_id rejected)", async () => {
+    const err = await expectError("vob_save_composition", { project_id: LF, files: compAct1 }, /INVALID_ARGUMENTS/);
+    assert(err.details && Array.isArray(err.details.valid_segment_ids)
+      && err.details.valid_segment_ids.join(",") === "act-1,act-2",
+      `expected valid_segment_ids, got ${JSON.stringify(err.details)}`);
+  });
+  await step("save composition (unknown segment_id rejected)", () =>
+    expectError("vob_save_composition", { project_id: LF, files: compAct1, segment_id: "act-9" }, /INVALID_ARGUMENTS/),
+  );
+  await step("save composition (cross-segment ref warns)", async () => {
+    const cross = {
+      "index.html": compAct1["index.html"].replace(
+        '<div id="hook-overlay"',
+        '<video id="stray" class="full-bleed" src="./source/b101-0.mp4" muted data-start="0" data-duration="1" data-track-index="2" data-media-start="0" data-playback-start="0"></video>\n  <div id="hook-overlay"',
+      ),
+    };
+    const saved = await call("vob_save_composition", { project_id: LF, files: cross, segment_id: "act-1" });
+    assert(saved.qc.findings.some((f) => f.rule === "vob/cross_segment_clip_ref"),
+      `expected vob/cross_segment_clip_ref warning, got ${JSON.stringify(saved.qc.findings.map((f) => f.rule))}`);
+  });
+
+  // 4. Assemble refuses while nothing is rendered.
+  await step("assemble refused (nothing rendered yet)", async () => {
+    const err = await expectError("vob_assemble_video", { project_id: LF }, /STATE_CONFLICT/);
+    assert(err.details && Array.isArray(err.details.missing_segment_ids)
+      && err.details.missing_segment_ids.join(",") === "act-1,act-2",
+      `expected both segments missing, got ${JSON.stringify(err.details)}`);
+  });
+
+  // 5. Segment cycle helper: clean save → lint clean → PREVIEW (real draft
+  //    render, drift scoped to the segment) → confirm → RENDER (real full
+  //    render into segment_renders/) → confirm (registry mirror).
+  async function renderSegment(segmentId, files, expectSeconds) {
+    const saved = await step(`save composition (${segmentId})`, () =>
+      call("vob_save_composition", { project_id: LF, files, segment_id: segmentId }),
+    );
+    assert(saved.segment_id === segmentId, `save result missing segment_id ${segmentId}`);
+    if (saved.lint_status === "errors") throw new Error(`${segmentId} lint errors — see report`);
+    await step(`transition COMPOSE→PREVIEW (${segmentId})`, () =>
+      call("vob_transition_phase", { project_id: LF, to_phase: "PREVIEW" }),
+    );
+    const preview = await step(`render preview (${segmentId}, REAL)`, () =>
+      call("vob_render_preview", { project_id: LF }),
+    );
+    assert(preview.verification && preview.verification.expected_duration_seconds === expectSeconds,
+      `preview drift expectation should be the segment target ${expectSeconds}s, got ${JSON.stringify(preview.verification)}`);
+    console.log(`   preview ${preview.render_duration_seconds.toFixed(1)}s wall, drift ${preview.verification.duration_drift_seconds}s`);
+    await step(`confirm preview (${segmentId})`, () => call("vob_confirm_preview", { project_id: LF }));
+    await step(`transition PREVIEW→RENDER (${segmentId})`, () =>
+      call("vob_transition_phase", { project_id: LF, to_phase: "RENDER" }),
+    );
+    const render = await step(`render full (${segmentId}, REAL)`, () =>
+      call("vob_render_full", { project_id: LF, quality: "standard" }),
+    );
+    assert(render.segment_id === segmentId, `render result missing segment_id`);
+    assert(/segment_renders/.test(render.mp4_path), `partial must land in segment_renders/, got ${render.mp4_path}`);
+    console.log(`   partial ${render.mp4_path.split("/").pop()} (${render.render_duration_seconds.toFixed(1)}s wall, drift ${render.verification.duration_drift_seconds}s)`);
+    await step(`confirm render (${segmentId})`, () => call("vob_confirm_render", { project_id: LF }));
+    const s = await call("vob_read_state_summary", { project_id: LF });
+    const row = s.render_plan.segments.find((x) => x.segment_id === segmentId);
+    assert(row && row.rendered === true && row.confirmed === true,
+      `registry row not rendered+confirmed for ${segmentId}: ${JSON.stringify(row)}`);
+    return render;
+  }
+
+  const render1 = await renderSegment("act-1", compAct1, 5);
+
+  // 6. The cycle back-edge: RENDER→COMPOSE auto-archives renders/ — the
+  //    partial in segment_renders/ MUST survive.
+  await step("back-edge RENDER→COMPOSE (partial survives archival)", async () => {
+    const r = await call("vob_transition_phase", { project_id: LF, to_phase: "COMPOSE" });
+    assert(r.archived, "expected the back-edge to archive renders/");
+    assert(fs.existsSync(render1.mp4_path), `act-1 partial vanished after archival: ${render1.mp4_path}`);
+    const s = await call("vob_read_state_summary", { project_id: LF });
+    const row = s.render_plan.segments.find((x) => x.segment_id === "act-1");
+    assert(row && row.rendered === true, `act-1 registry entry lost after back-edge: ${JSON.stringify(row)}`);
+  });
+
+  await renderSegment("act-2", compAct2, 5);
+
+  // 7. RENDER→PACKAGE blocks until assembled.
+  await step("RENDER→PACKAGE blocked (video_not_assembled)", async () => {
+    const err = await expectError("vob_transition_phase", { project_id: LF, to_phase: "PACKAGE" }, /STATE_CONFLICT/);
+    const text = JSON.stringify(err.details || {}) + err.message;
+    assert(/video_not_assembled/.test(text), `expected video_not_assembled, got ${text.slice(0, 300)}`);
+  });
+
+  // 8. Assemble: fade boundary forces the re-encode path; dip-to-black keeps
+  //    the join drift-exact vs the 10s document total.
+  const assembled = await step("assemble video (fade boundary, re-encode path)", () =>
+    call("vob_assemble_video", { project_id: LF }),
+  );
+  assert(assembled.segment_ids.join(",") === "act-1,act-2", `wrong segment order: ${assembled.segment_ids}`);
+  assert(assembled.concat_path === "filter", `fade boundary must take the filter path, got ${assembled.concat_path}`);
+  assert(assembled.verification && Math.abs(assembled.verification.duration_drift_seconds) <= 0.5,
+    `assembled drift exceeds 0.5s: ${JSON.stringify(assembled.verification)}`);
+  console.log(`   final: ${assembled.final_path.split("/").pop()}   drift ${assembled.verification.duration_drift_seconds}s   path ${assembled.concat_path}`);
+  {
+    const s = await call("vob_read_state_summary", { project_id: LF });
+    assert(s.assembly && s.assembly.is_current_render === true, `assembly not current render: ${JSON.stringify(s.assembly)}`);
+    assert(s.render.mp4_path === assembled.final_path, "render slot must be the assembled final");
+  }
+
+  // 9. Confirm the assembled final → PACKAGE with chapters → ITERATE.
+  await step("confirm render (assembled final)", () => call("vob_confirm_render", { project_id: LF }));
+  await step("transition RENDER→PACKAGE", () =>
+    call("vob_transition_phase", { project_id: LF, to_phase: "PACKAGE" }),
+  );
+  const pkg = await step("package output (chapters from narrative segments)", () =>
+    call("vob_package_output", { project_id: LF }),
+  );
+  {
+    const manifest = JSON.parse(fs.readFileSync(pkg.manifest_path, "utf8"));
+    assert(Array.isArray(manifest.chapters) && manifest.chapters.length === 2,
+      `expected 2 chapters, got ${JSON.stringify(manifest.chapters)}`);
+    assert(manifest.chapters[0].start_seconds === 0 && manifest.chapters[0].youtube_stamp === "0:00"
+      && manifest.chapters[1].start_seconds === 5 && manifest.chapters[1].youtube_stamp === "0:05",
+      `chapter stamps wrong: ${JSON.stringify(manifest.chapters)}`);
+    assert(manifest.video_type && manifest.video_type.canonical === "long-form",
+      `manifest video_type wrong: ${JSON.stringify(manifest.video_type)}`);
+    assert(manifest.assembly && manifest.assembly.segment_count === 2, "manifest assembly block missing");
+    const readme = fs.readFileSync(pkg.readme_path, "utf8");
+    assert(/## Chapters/.test(readme) && /0:00 The Setup/.test(readme) && /0:05 The Payoff/.test(readme),
+      "README chapters section missing/wrong");
+    console.log(`   chapters: ${manifest.chapters.map((c) => `${c.youtube_stamp} ${c.title}`).join(" | ")}`);
+  }
+  await step("transition PACKAGE→ITERATE", () =>
+    call("vob_transition_phase", { project_id: LF, to_phase: "ITERATE" }),
+  );
+  await step("finalize iteration", () => call("vob_finalize_iteration", { project_id: LF }));
+
+  const final = await call("vob_read_state_summary", { project_id: LF });
+  console.log(`\n=== longform final phase: ${final.phase}   assembled drift: ${assembled.verification.duration_drift_seconds}s`);
+}
+
 async function main() {
   const phase = process.argv[2] || "all";
   if (phase === "fanout") {
@@ -1128,6 +1348,10 @@ async function main() {
   }
   if (phase === "general") {
     await runGeneral();
+    return;
+  }
+  if (phase === "longform") {
+    await runLongform();
     return;
   }
   console.log(`=== M5 walker v2 — phase: ${phase} — project: ${PROJECT_ID}`);

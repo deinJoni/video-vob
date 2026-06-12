@@ -26,9 +26,11 @@ const {
   LOUDNORM_TARGET,
 } = require("../ffmpeg-runner.js");
 const { normalizeLoudnessInPlace } = require("../loudnorm.js");
-const { storyboardHasShorts, storyboardTimelines } = require("../storyboard-schema.js");
+const { storyboardHasSegments, storyboardHasShorts, storyboardSegments, storyboardTimelines } = require("../storyboard-schema.js");
+const { renderPlanOf } = require("../render-segments.js");
 const { stderrTail } = require("../spawn-with-shutdown.js");
 const { thumbnailTimestampPercent, canonicalizePlatform } = require("../platform-profiles.js");
+const { resolveActiveVideoType } = require("../video-types.js");
 const { renderPackageReadme } = require("../package-readme.js");
 
 const PROJECT_ROOT = path.resolve(__dirname, "..", "..", "..");
@@ -88,6 +90,40 @@ function sessionRelative(projectId, absPath) {
   return path.relative(sessionDir(projectId), absPath);
 }
 
+// YouTube chapter stamp: M:SS under an hour, H:MM:SS above.
+function youtubeStamp(seconds) {
+  const total = Math.max(0, Math.round(seconds));
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  return h > 0
+    ? `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`
+    : `${m}:${String(s).padStart(2, "0")}`;
+}
+
+// Chapter markers from the storyboard's NARRATIVE segments (acts/chapters) —
+// start times are cumulative scene durations at each segment boundary. null
+// when the storyboard declares no segments (or is unreadable/malformed).
+function chaptersFromStoryboard(sb) {
+  if (!sb || !storyboardHasSegments(sb)) return null;
+  const segments = storyboardSegments(sb);
+  if (segments.length === 0) return null;
+  const chapters = [];
+  let cursor = 0;
+  for (const segment of segments) {
+    if (segment.target_duration_seconds === null) return null; // malformed scene durations
+    chapters.push({
+      segment_id: segment.segment_id,
+      title: segment.title || segment.segment_id,
+      start_seconds: Math.round(cursor * 1000) / 1000,
+      youtube_stamp: youtubeStamp(cursor),
+      duration_seconds: segment.target_duration_seconds,
+    });
+    cursor += segment.target_duration_seconds;
+  }
+  return chapters;
+}
+
 function cleanupOnFailure(pkgRoot) {
   try {
     fs.rmSync(pkgRoot, { recursive: true, force: true });
@@ -121,6 +157,30 @@ async function packageOutput(args) {
       `this is a multi-short fan-out project${shortIds.length > 0 ? ` (shorts: ${shortIds.join(", ")})` : ""} — the deliverables set is the output, not a single-timeline package. Record each rendered short via vob_import_deliverable { deliverables:[{path, title, short_id}], normalize:true, set_phase:false }; deliverables/manifest.json is the package manifest.`,
       { fan_out: true, short_ids: shortIds },
     );
+  }
+
+  // Segmented-render guard — also BEFORE any wipe: packaging a segment PARTIAL
+  // as the final would silently ship a fraction of the video. The package is
+  // legal only once the assembled final IS the current render.
+  const segmentedPlan = renderPlanOf(state);
+  if (segmentedPlan) {
+    const assembly = state.assembly && typeof state.assembly === "object" && !Array.isArray(state.assembly)
+      ? state.assembly
+      : null;
+    const renderSlot = state.render && typeof state.render === "object" && !Array.isArray(state.render)
+      ? state.render
+      : null;
+    const assembledIsCurrent = assembly && renderSlot
+      && typeof assembly.final_path === "string" && assembly.final_path
+      && assembly.final_path === renderSlot.mp4_path
+      && fs.existsSync(assembly.final_path);
+    if (!assembledIsCurrent) {
+      throw new ToolError(
+        ERROR_CODES.STATE_CONFLICT,
+        "this is a segmented-render project and the segments have not been assembled into a final (or a segment was re-rendered since the last assembly) — render every segment, run vob_assemble_video, confirm the assembled final, then package.",
+        { segmented: true, assembly_final_path: assembly ? assembly.final_path || null : null },
+      );
+    }
   }
 
   const render = state.render && typeof state.render === "object" && !Array.isArray(state.render)
@@ -274,14 +334,35 @@ async function packageOutput(args) {
     ? Math.round((summary.duration_seconds - expectedDurationSeconds) * 1000) / 1000
     : null;
 
+  // v3 lineage: the resolved video-type preset + chapter markers from the
+  // storyboard's narrative segments + the assembly record when segmented.
+  const videoType = resolveActiveVideoType(state);
+  const chapters = chaptersFromStoryboard(sbForGuard);
+  const assemblySlot = state.assembly && typeof state.assembly === "object" && !Array.isArray(state.assembly)
+    ? state.assembly
+    : null;
+
   const manifest = {
-    manifest_version: "1.1",
+    manifest_version: "1.2",
     video_vob_version: readVideoVobVersion(),
     project_id: id,
     title: id,
     iteration_version: iterationVersion,
     packaged_at: packagedAt,
     target: state.target == null ? null : state.target,
+    video_type: { canonical: videoType.canonical, source: videoType.source },
+    ...(chapters ? { chapters } : {}),
+    ...(assemblySlot
+      ? {
+        assembly: {
+          segment_count: Array.isArray(assemblySlot.segment_ids) ? assemblySlot.segment_ids.length : null,
+          segment_ids: Array.isArray(assemblySlot.segment_ids) ? assemblySlot.segment_ids : [],
+          concat_path: assemblySlot.concat_path || null,
+          assembled_at: assemblySlot.assembled_at || null,
+          music: assemblySlot.music || null,
+        },
+      }
+      : {}),
     video: {
       path: "final.mp4",
       duration_seconds: Number.isFinite(summary.duration_seconds) ? summary.duration_seconds : null,

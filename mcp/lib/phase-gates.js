@@ -6,6 +6,7 @@ const { readJsonFile } = require("./storage.js");
 const { missingIntentKeys } = require("./intent-schema.js");
 const { composeDir, deliverablesDir, inspectSummaryPath, packageDir, packageFinalMp4Path, packageManifestPath, packageReadmePath, packageThumbnailPath, storyboardPath } = require("./paths.js");
 const { storyboardHasShorts, storyboardTimelines } = require("./storyboard-schema.js");
+const { renderPlanOf, validSegmentRenders } = require("./render-segments.js");
 
 // True when a project carries externally-imported deliverables (the
 // vob_import_deliverable escape hatch) that are on disk — its real output lives
@@ -462,6 +463,40 @@ function renderToPackage(state) {
         { composition_revision: compRev, composition_revision_rendered: renderRev },
       ),
     ]);
+  }
+  // Segmented render completeness: leaving RENDER for PACKAGE means the WHOLE
+  // video exists — every plan segment rendered (valid, revision-bound partial)
+  // AND the partials assembled into the final that IS the current render.
+  // Both overridable (shipping a deliberate partial is an audit-recorded
+  // decision), mirroring the fan-out backstop below.
+  const renderPlan = renderPlanOf(state);
+  if (renderPlan) {
+    const { missing, stale } = validSegmentRenders(state);
+    if (missing.length > 0) {
+      return block([
+        blocker(
+          "segments_missing_render",
+          `segmented render: ${missing.length} segment(s) have no valid rendered partial (${missing.join(", ")})${stale.length > 0 ? ` — ${stale.join(", ")} are stale (storyboard changed since they rendered)` : ""}. Cycle COMPOSE→PREVIEW→RENDER per segment (vob_save_composition {segment_id} → vob_render_preview → vob_confirm_preview → vob_render_full → vob_confirm_render → back-edge RENDER→COMPOSE), then vob_assemble_video.`,
+          { missing_segment_ids: missing, stale_segment_ids: stale },
+        ),
+      ]);
+    }
+    const assembly = state.assembly && typeof state.assembly === "object" && !Array.isArray(state.assembly)
+      ? state.assembly
+      : null;
+    const assembledIsCurrent = assembly
+      && typeof assembly.final_path === "string" && assembly.final_path
+      && assembly.final_path === render.mp4_path
+      && fs.existsSync(assembly.final_path);
+    if (!assembledIsCurrent) {
+      return block([
+        blocker(
+          "video_not_assembled",
+          "segmented render: every segment partial is rendered but the final has not been assembled (or a segment was re-rendered since the last assembly) — call vob_assemble_video, then vob_confirm_render on the assembled final.",
+          assembly ? { assembly_final_path: assembly.final_path || null, current_render_path: render.mp4_path } : {},
+        ),
+      ]);
+    }
   }
   // Fan-out completeness: leaving RENDER for PACKAGE means the SET is done —
   // every storyboard short needs a deliverable record. Overridable: shipping a

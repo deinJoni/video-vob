@@ -11,6 +11,7 @@ const { validateCompositionFiles, htmlAndCssEntries } = require("../composition-
 const { recreateSourceSymlinks, resolveSceneClipLinks, resolveSourceLinks, injectFontKit } = require("../source-symlink.js");
 const { runCompositionQc } = require("../composition-qc.js");
 const { findTimeline, storyboardHasShorts, storyboardTimelines } = require("../storyboard-schema.js");
+const { planSegmentById, renderPlanOf } = require("../render-segments.js");
 // The save-time lint IS the gate lint — one implementation, one report format,
 // one revision binding (see the post-commit block in saveComposition).
 const lintCompositionTool = require("./lint-composition.js");
@@ -63,6 +64,15 @@ async function saveComposition(args) {
   const shortId = typeof (args && args.short_id) === "string" && args.short_id.trim() !== ""
     ? args.short_id.trim()
     : null;
+  const segmentIdArg = typeof (args && args.segment_id) === "string" && args.segment_id.trim() !== ""
+    ? args.segment_id.trim()
+    : null;
+  if (shortId && segmentIdArg) {
+    throw new ToolError(
+      ERROR_CODES.INVALID_ARGUMENTS,
+      "short_id and segment_id are mutually exclusive — a composition implements either a fan-out short or a render segment, never both",
+    );
+  }
   if (storyboard) {
     if (storyboardHasShorts(storyboard)) {
       const validIds = storyboardTimelines(storyboard).map((t) => t.short_id).filter(Boolean);
@@ -88,6 +98,37 @@ async function saveComposition(args) {
     }
   }
 
+  // Segmented-render scoping: a segmented render plan (stamped at COMPOSE
+  // entry) requires segment_id — the render segment this composition
+  // implements; without a plan, segment_id is forbidden. Mirrors short_id.
+  const statePre = readSessionStateStrict(id);
+  const renderPlan = renderPlanOf(statePre);
+  let activeSegment = null;
+  if (renderPlan) {
+    const validIds = renderPlan.segments.map((s) => s.segment_id);
+    if (!segmentIdArg) {
+      throw new ToolError(
+        ERROR_CODES.INVALID_ARGUMENTS,
+        `this project renders as ${renderPlan.segments.length} segments — pass segment_id for the render segment this composition implements (one of: ${validIds.join(", ")})`,
+        { valid_segment_ids: validIds },
+      );
+    }
+    const planSegment = planSegmentById(statePre, segmentIdArg);
+    if (!planSegment) {
+      throw new ToolError(
+        ERROR_CODES.INVALID_ARGUMENTS,
+        `unknown segment_id "${segmentIdArg}" — the render plan defines: ${validIds.join(", ")}`,
+        { valid_segment_ids: validIds },
+      );
+    }
+    activeSegment = { segment_id: planSegment.segment_id, scene_ids: planSegment.scene_ids };
+  } else if (segmentIdArg) {
+    throw new ToolError(
+      ERROR_CODES.INVALID_ARGUMENTS,
+      `segment_id "${segmentIdArg}" given but this project has no segmented render plan (single continuous render) — omit segment_id`,
+    );
+  }
+
   const qc = runCompositionQc({
     files: htmlAndCssEntries(verdict.normalized),
     storyboard,
@@ -95,6 +136,7 @@ async function saveComposition(args) {
     sceneClipLinks: resolveSceneClipLinks(id),
     checkTargetsOnDisk: true, // clips were materialized at COMPOSE entry; missing = real problem
     activeShortId: shortId,
+    activeSegment,
   });
   if (qc.error_count > 0) {
     const hasUnresolvedRef = qc.findings.some((f) => f.rule === "vob/unresolved_source_ref");
@@ -166,6 +208,7 @@ async function saveComposition(args) {
         lint_ran_at: null,
         revision_count: revisionCount,
         ...(shortId ? { short_id: shortId } : {}),
+        ...(segmentIdArg ? { segment_id: segmentIdArg } : {}),
         // errors never stored — they reject before the lock
         qc: { error_count: 0, warning_count: qc.warning_count, findings: qc.findings.slice(0, 10) },
         fonts: { linked: fontResult.linked, css_path: fontResult.linked ? "fonts.css" : null },
@@ -190,6 +233,7 @@ async function saveComposition(args) {
           at: ts,
           revision_count: revisionCount,
           ...(shortId ? { short_id: shortId } : {}),
+          ...(segmentIdArg ? { segment_id: segmentIdArg } : {}),
           file_count: writtenRelPaths.length,
           total_bytes: verdict.total_bytes,
           source_link_count: symlinkResult.links.length,
@@ -211,6 +255,7 @@ async function saveComposition(args) {
       lint_status: "unknown",
       revision_count: revisionCount,
       ...(shortId ? { short_id: shortId } : {}),
+      ...(segmentIdArg ? { segment_id: segmentIdArg } : {}),
       qc: { error_count: 0, warning_count: qc.warning_count, findings: qc.findings.slice(0, 10) },
       fonts_linked: fontResult.linked,
     };
@@ -242,7 +287,7 @@ async function saveComposition(args) {
 
 module.exports = Object.freeze({
   name: "vob_save_composition",
-  description: "Save the hyperframes composition: map of relative-path → content (index.html required; .html/.css/.js/.json/.svg; ≤64 files, ≤256KiB each, ≤1MiB total). Fully replacing. The engine recreates ./source/ symlinks and the ./fonts.css font kit, runs static QC (errors reject with details.qc_findings), resets preview/render confirmation, bumps revision_count — then runs the FULL merged lint (hyperframes lint + static QC, same engine as vob_lint_composition) on the committed files, stamps composition.lint_status, and returns the verdict: lint_status ('clean'|'warnings_only'|'errors') + lint.findings_summary (≤10) + lint.report_path. Fix errors and re-save until clean. If the lint binary itself fails, the save still succeeds with lint_status 'unknown' + lint_error. Fan-out: when the storyboard has shorts[], short_id is REQUIRED (the short this composition implements) — QC scopes scene coverage/master duration to that short and warns on refs into other shorts' clips.",
+  description: "Save the hyperframes composition: map of relative-path → content (index.html required; .html/.css/.js/.json/.svg; ≤64 files, ≤256KiB each, ≤1MiB total). Fully replacing. The engine recreates ./source/ symlinks and the ./fonts.css font kit, runs static QC (errors reject with details.qc_findings), resets preview/render confirmation, bumps revision_count — then runs the FULL merged lint (hyperframes lint + static QC, same engine as vob_lint_composition) on the committed files, stamps composition.lint_status, and returns the verdict: lint_status ('clean'|'warnings_only'|'errors') + lint.findings_summary (≤10) + lint.report_path. Fix errors and re-save until clean. If the lint binary itself fails, the save still succeeds with lint_status 'unknown' + lint_error. Fan-out: when the storyboard has shorts[], short_id is REQUIRED (the short this composition implements) — QC scopes scene coverage/master duration to that short and warns on refs into other shorts' clips. Segmented render: when state.render_plan is segmented (long-form chunking, stamped at COMPOSE entry), segment_id is REQUIRED — QC scopes to that render segment's scenes and warns on cross-segment clip refs. short_id and segment_id are mutually exclusive.",
   inputSchema: {
     type: "object",
     properties: {
@@ -251,6 +296,11 @@ module.exports = Object.freeze({
         type: "string",
         minLength: 1,
         description: "Fan-out only: the storyboard short this composition implements. Required when the storyboard has shorts[]; forbidden otherwise.",
+      },
+      segment_id: {
+        type: "string",
+        minLength: 1,
+        description: "Segmented render only: the render-plan segment this composition implements. Required when state.render_plan is segmented; forbidden otherwise.",
       },
       files: {
         type: "object",

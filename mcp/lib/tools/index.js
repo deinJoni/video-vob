@@ -24,6 +24,7 @@ const TOOL_MODULES = Object.freeze([
   require("./confirm-preview.js"),
   require("./render-full.js"),
   require("./confirm-render.js"),
+  require("./assemble-video.js"),
   require("./package-output.js"),
   require("./import-deliverable.js"),
   require("./finalize-iteration.js"),

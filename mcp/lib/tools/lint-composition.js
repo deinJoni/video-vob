@@ -12,6 +12,7 @@ const { stderrTail } = require("../spawn-with-shutdown.js");
 const { parseLintReport } = require("../lint-report.js");
 const { runCompositionQc } = require("../composition-qc.js");
 const { resolveSceneClipLinks, resolveSourceLinks } = require("../source-symlink.js");
+const { planSegmentById } = require("../render-segments.js");
 
 const SEVERITY_ORDER = { error: 0, warning: 1, info: 2 };
 const SOURCE_ORDER = { vob: 0, hyperframes: 1 };
@@ -187,12 +188,20 @@ async function lintComposition(args) {
     storyboard = null;
   }
   if (storyboard && (typeof storyboard !== "object" || Array.isArray(storyboard))) storyboard = null;
-  // Fan-out: scope the QC re-run to the short this composition implements
-  // (stamped at save time) — otherwise the gate-feeding lint would silently
-  // lose scene-coverage/master-duration on a shorts[] storyboard.
+  // Fan-out / segmented render: scope the QC re-run to the short or render
+  // segment this composition implements (stamped at save time) — otherwise
+  // the gate-feeding lint would silently lose scene-coverage/master-duration
+  // on a shorts[] storyboard or a chunked long-form plan.
   const activeShortId = typeof composition.short_id === "string" && composition.short_id !== ""
     ? composition.short_id
     : null;
+  const stampedSegmentId = typeof composition.segment_id === "string" && composition.segment_id !== ""
+    ? composition.segment_id
+    : null;
+  const planSegment = stampedSegmentId ? planSegmentById(state, stampedSegmentId) : null;
+  const activeSegment = planSegment
+    ? { segment_id: planSegment.segment_id, scene_ids: planSegment.scene_ids }
+    : (stampedSegmentId ? { segment_id: stampedSegmentId, scene_ids: [] } : null); // unresolved -> QC warns
   const qc = runCompositionQc({
     files: qcFiles,
     storyboard,
@@ -200,6 +209,7 @@ async function lintComposition(args) {
     sceneClipLinks: resolveSceneClipLinks(id),
     checkTargetsOnDisk: true,
     activeShortId,
+    activeSegment,
   });
 
   // Dedupe: vob QC deliberately pre-empts a few hyperframes rules — drop the

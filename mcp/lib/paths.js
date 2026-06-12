@@ -268,6 +268,40 @@ function rendersDir(projectId) {
   return path.join(sessionDir(projectId), "renders");
 }
 
+// Segment partials (v3 segmented render) live at the SESSION ROOT, deliberately
+// NOT under renders/: the per-segment cycle runs RENDER→COMPOSE back-edges, and
+// any back-edge out of RENDER auto-archives renders/ — partials parked there
+// would be swept mid-cycle and dangle the segment registry. Same rationale as
+// deliverables/. The ASSEMBLED final still lands in renders/ (it IS the cut).
+function segmentRendersDir(projectId) {
+  return path.join(sessionDir(projectId), "segment_renders");
+}
+
+function assertSafeSegmentId(segmentId) {
+  if (typeof segmentId !== "string" || !segmentId.trim()) {
+    throw new Error("segment_id must be a non-empty string");
+  }
+  const trimmed = segmentId.trim();
+  if (/[\/\\]/.test(trimmed) || /(?:^|\.)\.\.(?:\.|$)/.test(trimmed)) {
+    throw new Error(`segment_id contains invalid path characters: ${trimmed}`);
+  }
+  return trimmed;
+}
+
+function segmentRenderPath(projectId, segmentId, stamp) {
+  if (typeof stamp !== "string" || !/^[A-Za-z0-9._-]+$/.test(stamp)) {
+    throw new Error(`segmentRenderPath requires a safe stamp, got ${stamp}`);
+  }
+  return path.join(segmentRendersDir(projectId), `${assertSafeSegmentId(segmentId)}-${stamp}.mp4`);
+}
+
+function segmentRenderLogPath(projectId, segmentId, stamp) {
+  if (typeof stamp !== "string" || !/^[A-Za-z0-9._-]+$/.test(stamp)) {
+    throw new Error(`segmentRenderLogPath requires a safe stamp, got ${stamp}`);
+  }
+  return path.join(segmentRendersDir(projectId), `${assertSafeSegmentId(segmentId)}-${stamp}.log`);
+}
+
 function packageDir(projectId) {
   return path.join(sessionDir(projectId), "package");
 }
@@ -353,6 +387,10 @@ module.exports = {
   previewDir,
   renderStderrLogPath,
   rendersDir,
+  assertSafeSegmentId,
+  segmentRenderLogPath,
+  segmentRenderPath,
+  segmentRendersDir,
   segmentCacheDir,
   segmentCachePath,
   segmentKeyframePath,
