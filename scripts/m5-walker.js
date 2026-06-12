@@ -296,6 +296,30 @@ function composition(sb, opts = {}) {
         );
       }
     }
+    // Typed overlays (schema 1.2): SCENE-relative timings re-timed to master;
+    // each element stamped data-vob-overlay-id (the QC binding). pip carries a
+    // <video>; everything else is a class="clip" div.
+    if (Array.isArray(scene.overlays)) {
+      for (const o of scene.overlays) {
+        if (o === null || typeof o !== "object" || Array.isArray(o)) continue;
+        const start = round3(cursor + o.start_seconds);
+        const dur = round3(o.end_seconds - o.start_seconds);
+        if (o.type === "pip") {
+          captionDivs.push(
+            `  <video id="${o.id}-el" class="pip-inset" src="./source/${scene.scene_id}-0.mp4" muted
+         data-vob-overlay-id="${o.id}" data-start="${start}" data-duration="${dur}" data-track-index="${o.track || 1}"
+         data-media-start="0" data-playback-start="0"></video>`,
+          );
+        } else {
+          const text = o.content && typeof o.content === "object"
+            ? Object.values(o.content).filter((v) => typeof v === "string").join(" — ") || o.type
+            : o.type;
+          captionDivs.push(
+            `  <div id="${o.id}-el" class="clip caption" data-vob-overlay-id="${o.id}" data-start="${start}" data-duration="${dur}" data-track-index="${o.track || 2}"><span>${text}</span></div>`,
+          );
+        }
+      }
+    }
     cursor += scene.target_duration_seconds;
   }
   const index = `<!doctype html>
@@ -308,6 +332,7 @@ function composition(sb, opts = {}) {
 html, body { width: ${W}px; height: ${H}px; background: #000; font-family: "Inter", sans-serif; }
 #master-root { position: relative; width: ${W}px; height: ${H}px; overflow: hidden; }
 video.full-bleed { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; display: block; }
+video.pip-inset { position: absolute; right: 40px; top: 120px; width: 30%; border-radius: 16px; object-fit: cover; }
 .clip { position: absolute; inset: 0; }
 .overlay { display: flex; align-items: center; justify-content: center; pointer-events: none; }
 .hook-title {
@@ -1340,6 +1365,206 @@ async function runLongform() {
   console.log(`\n=== longform final phase: ${final.phase}   assembled drift: ${assembled.verification.duration_drift_seconds}s`);
 }
 
+// ---------------------------------------------------------------------------
+// v3 `overlays` walker phase — the P3 executable spec: typed overlay objects
+// (schema 1.2), the new plan-lint codes (bounds error; dwell/conflict/
+// kinetic-no-speech/budget warnings), the QC element binding
+// (vob/overlay_missing_element error; track-zero/unplanned warnings), and the
+// storyboard.md rendering. No renders.
+
+async function runOverlays() {
+  const OV = `${PROJECT_ID}-overlays`;
+  console.log(`=== v3 overlays walker (typed overlay layer) — project: ${OV}`);
+
+  const boot = await bootstrapToPlan({
+    projectId: OV,
+    target: { format: "tiktok", duration: "10s" },
+    intentAnswers: {
+      target_platform: "tiktok",
+      target_duration: "10s",
+      tone: "energetic",
+      key_moments: "none in particular",
+      music_vo: "neither",
+    },
+    briefBody: `# Brief: ${OV}\n\n## Target\n- 10s tiktok with a planned overlay layer\n\n## Design language\n- Typography: headline Anton; captions Inter 900\n- Palette: bg #000, text #FFF, accent #FFD60A\n- Motion: fast-snap\n`,
+  });
+  const D = boot.file0.duration_seconds;
+  const srcPath = boot.file0.path || SOURCE;
+  let transcript = null;
+  if (boot.inspect.speech_detected && boot.inspect.transcript_path && fs.existsSync(boot.inspect.transcript_path)) {
+    try { transcript = JSON.parse(fs.readFileSync(boot.inspect.transcript_path, "utf8")); } catch { transcript = null; }
+  }
+  const speech = boot.inspect.speech_detected === true && Array.isArray(transcript) && transcript.length > 0;
+  const windows = planWindows({ durationSeconds: D, transcript });
+
+  const mkOverlayScene = (sceneId, sequence, purpose, win, targetSeconds, overlays, pacing) => ({
+    scene_id: sceneId,
+    sequence,
+    purpose,
+    target_duration_seconds: targetSeconds,
+    summary: `${purpose} window at ${win ? win.in : "n/a"}s`,
+    source_clips: win
+      ? [{ manifest_file_index: 0, source_path: srcPath, in_seconds: win.in, out_seconds: win.out }]
+      : [],
+    overlays,
+    captions: null,
+    pacing,
+  });
+
+  const goodSb = {
+    schema_version: "1.2",
+    project_id: OV,
+    generated_at: new Date().toISOString(),
+    source: { manifest_path: boot.summary.manifest.path, brief_path: boot.savedBrief.brief_path },
+    target: { platform: "tiktok", duration_seconds: 10, tone: "energetic" },
+    scenes: [
+      mkOverlayScene("o001", 1, "hook", { ...windows.hook, out: round3(windows.hook.in + 2) }, 2, [
+        {
+          id: "tc-1", type: "title_card", start_seconds: 0.2, end_seconds: 1.8, track: 2,
+          content: { title: "WALKER OVERLAYS" },
+          style: { font: "Anton", accent: "#FFD60A" },
+          motion: { in: "slide_up", out: "fade" },
+        },
+      ], "fast"),
+      mkOverlayScene("o002", 2, "beat", { ...windows.beat, out: round3(windows.beat.in + 5) }, 5, [
+        {
+          id: "lt-1", type: "lower_third", start_seconds: 0.5, end_seconds: 2.0, track: 2,
+          content: { title: "Jane Walker", subtitle: "Fixture" },
+          position: { anchor: "bottom-left", offset_px: [80, 320] },
+        },
+        // starts after lt-1 ends — same bottom-band group, NO overlap, no conflict
+        { id: "kc-1", type: "kinetic_caption", start_seconds: 2.2, end_seconds: 4.7, track: 3 },
+      ], "medium"),
+      mkOverlayScene("o003", 3, "payoff", { ...windows.payoff, out: round3(windows.payoff.in + 3) }, 3, [
+        { id: "pip-1", type: "pip", start_seconds: 0.4, end_seconds: 2.6, track: 1 },
+        { id: "cta-1", type: "cta", start_seconds: 0.5, end_seconds: 2.2, track: 2, content: { text: "follow for part 2" } },
+      ], "fast"),
+    ],
+    total_target_duration_seconds: 10,
+    notes: "Overlay walker fixture — typed overlay layer, plan-lint-clean.",
+  };
+
+  // 1. Schema negatives.
+  await step("save storyboard (typed overlay under 1.0 rejected)", async () => {
+    const old = JSON.parse(JSON.stringify(goodSb));
+    old.schema_version = "1.0";
+    const err = await expectError("vob_save_storyboard", { project_id: OV, content: old }, /INVALID_ARGUMENTS/);
+    assert((err.details.schema_errors || []).some((m) => /typed overlay object.*1\.2/.test(String(m))),
+      `expected the 1.2 gating error, got ${JSON.stringify(err.details.schema_errors)}`);
+  });
+  await step("save storyboard (unknown overlay type rejected)", async () => {
+    const bad = JSON.parse(JSON.stringify(goodSb));
+    bad.scenes[0].overlays[0].type = "hologram";
+    const err = await expectError("vob_save_storyboard", { project_id: OV, content: bad }, /INVALID_ARGUMENTS/);
+    assert((err.details.schema_errors || []).some((m) => /type must be one of/.test(String(m))),
+      `expected the vocabulary error, got ${JSON.stringify(err.details.schema_errors)}`);
+  });
+  await step("save storyboard (duplicate overlay id rejected)", async () => {
+    const bad = JSON.parse(JSON.stringify(goodSb));
+    bad.scenes[2].overlays[1].id = "tc-1";
+    const err = await expectError("vob_save_storyboard", { project_id: OV, content: bad }, /INVALID_ARGUMENTS/);
+    assert((err.details.schema_errors || []).some((m) => /overlay id "tc-1".*duplicates/.test(String(m))),
+      `expected the duplicate-id error, got ${JSON.stringify(err.details.schema_errors)}`);
+  });
+
+  // 2. Plan-lint negative: out-of-bounds timing is an ERROR (rejects the save).
+  await step("save storyboard (overlay out of bounds rejected)", async () => {
+    const bad = JSON.parse(JSON.stringify(goodSb));
+    bad.scenes[0].overlays[0].end_seconds = 4.0; // scene is 2s
+    const err = await expectError("vob_save_storyboard", { project_id: OV, content: bad }, /INVALID_ARGUMENTS/);
+    assert((err.details.plan_errors || []).some((f) => f && f.code === "PLAN_OVERLAY_OUT_OF_BOUNDS"),
+      `expected PLAN_OVERLAY_OUT_OF_BOUNDS, got ${JSON.stringify(err.details.plan_errors)}`);
+  });
+
+  // 3. Warnings fixture: dwell, conflict, kinetic-without-speech, PiP budget.
+  await step("save storyboard (overlay warnings fixture)", async () => {
+    const warny = JSON.parse(JSON.stringify(goodSb));
+    warny.scenes[0].overlays[0].end_seconds = 0.5; // 0.3s title_card -> dwell
+    warny.scenes[1].overlays[1] = { // overlap lt-1 in the bottom band -> conflict
+      id: "cb-1", type: "caption_block", start_seconds: 1.0, end_seconds: 3.0, track: 3,
+    };
+    warny.scenes.push(mkOverlayScene("o004", 4, "beat", null, 2, [
+      { id: "kc-9", type: "kinetic_caption", start_seconds: 0.2, end_seconds: 1.8, track: 3 },
+    ], "medium"));
+    warny.scenes.push(mkOverlayScene("o005", 5, "beat", { ...windows.payoff, out: round3(windows.payoff.in + 2) }, 2, [
+      { id: "p1", type: "pip", start_seconds: 0.1, end_seconds: 1.9, track: 1 },
+      { id: "p2", type: "pip", start_seconds: 0.1, end_seconds: 1.9, track: 2 },
+      { id: "p3", type: "pip", start_seconds: 0.1, end_seconds: 1.9, track: 4 },
+    ], "medium"));
+    warny.total_target_duration_seconds = 14;
+    const saved = await call("vob_save_storyboard", { project_id: OV, content: warny });
+    const codes = (saved.plan_lint.warnings || []).map((w) => w.code);
+    for (const code of ["PLAN_OVERLAY_DWELL_TOO_SHORT", "PLAN_OVERLAY_CONFLICT", "PLAN_VIDEO_BUDGET_EXCEEDED"]) {
+      assert(codes.includes(code), `expected ${code}, got ${JSON.stringify(codes)}`);
+    }
+    if (speech) {
+      assert(codes.includes("PLAN_KINETIC_CAPTION_NO_SPEECH"),
+        `expected PLAN_KINETIC_CAPTION_NO_SPEECH on the clip-less scene, got ${JSON.stringify(codes)}`);
+    }
+    console.log(`\n   overlay warnings: ${codes.filter((c) => /OVERLAY|VIDEO_BUDGET|KINETIC/.test(c)).join(", ")}`);
+  });
+
+  // 4. Good save: none of the overlay warnings fire; markdown renders the layer.
+  const savedGood = await step("save storyboard (typed overlays, plan-lint-clean)", () =>
+    call("vob_save_storyboard", { project_id: OV, content: goodSb }),
+  );
+  {
+    assert(savedGood.plan_lint.error_count === 0, "good overlay storyboard reported plan errors");
+    const codes = (savedGood.plan_lint.warnings || []).map((w) => w.code);
+    for (const code of ["PLAN_OVERLAY_DWELL_TOO_SHORT", "PLAN_OVERLAY_CONFLICT", "PLAN_OVERLAY_OUT_OF_BOUNDS", "PLAN_VIDEO_BUDGET_EXCEEDED", "PLAN_KINETIC_CAPTION_NO_SPEECH"]) {
+      assert(!codes.includes(code), `good doc must not warn ${code}: ${JSON.stringify(codes)}`);
+    }
+    const md = fs.readFileSync(savedGood.markdown_path, "utf8");
+    assert(/\*\*\[title_card\]\*\* `tc-1`/.test(md) && /\*\*\[pip\]\*\* `pip-1`/.test(md),
+      "storyboard.md missing typed overlay rendering");
+  }
+  await step("confirm storyboard", () => call("vob_confirm_storyboard", { project_id: OV }));
+  await step("transition PLAN→COMPOSE", () =>
+    call("vob_transition_phase", { project_id: OV, to_phase: "COMPOSE" }),
+  );
+
+  // 5. QC binding: a planned overlay with no implementing element REJECTS.
+  const goodComp = composition(goodSb);
+  await step("save composition (missing overlay element rejected)", async () => {
+    const broken = { "index.html": goodComp["index.html"].replace(/^.*data-vob-overlay-id="lt-1".*$\n/m, "") };
+    assert(!/data-vob-overlay-id="lt-1"/.test(broken["index.html"]), "fixture surgery failed — lt-1 still present");
+    const err = await expectError("vob_save_composition", { project_id: OV, files: broken }, /INVALID_ARGUMENTS/);
+    const rules = (err.details.qc_findings || []).map((f) => f.rule);
+    assert(rules.includes("vob/overlay_missing_element"), `expected vob/overlay_missing_element, got ${JSON.stringify(rules)}`);
+  });
+
+  // 6. QC warnings: spine-track overlay + composer-invented overlay id.
+  await step("save composition (track-zero + unplanned overlay warn)", async () => {
+    const warny = {
+      "index.html": goodComp["index.html"]
+        .replace('data-vob-overlay-id="tc-1" data-start="0.2" data-duration="1.6" data-track-index="2"',
+          'data-vob-overlay-id="tc-1" data-start="0.2" data-duration="1.6" data-track-index="0"')
+        .replace(
+          '<div id="hook-overlay"',
+          '<div id="ghost" class="clip caption" data-vob-overlay-id="ghost-1" data-start="0.5" data-duration="1" data-track-index="2"><span>ghost</span></div>\n  <div id="hook-overlay"',
+        ),
+    };
+    const saved = await call("vob_save_composition", { project_id: OV, files: warny });
+    const rules = saved.qc.findings.map((f) => f.rule);
+    assert(rules.includes("vob/overlay_track_zero"), `expected vob/overlay_track_zero, got ${JSON.stringify(rules)}`);
+    assert(rules.includes("vob/unplanned_overlay_element"), `expected vob/unplanned_overlay_element, got ${JSON.stringify(rules)}`);
+  });
+
+  // 7. Clean save: every planned overlay bound, no overlay findings, lint runs.
+  const savedComp = await step("save composition (overlay layer, QC-clean)", () =>
+    call("vob_save_composition", { project_id: OV, files: goodComp }),
+  );
+  {
+    const rules = savedComp.qc.findings.map((f) => f.rule);
+    assert(!rules.some((r) => /overlay/.test(r)), `clean save must carry no overlay findings, got ${JSON.stringify(rules)}`);
+    console.log(`   lint_status: ${savedComp.lint_status || "(infra fallback)"}   qc warnings: ${savedComp.qc.warning_count}`);
+    if (savedComp.lint_status === "errors") throw new Error("overlay composition lint failed");
+  }
+
+  const final = await call("vob_read_state_summary", { project_id: OV });
+  console.log(`\n=== overlays final phase: ${final.phase}`);
+}
+
 async function main() {
   const phase = process.argv[2] || "all";
   if (phase === "fanout") {
@@ -1352,6 +1577,10 @@ async function main() {
   }
   if (phase === "longform") {
     await runLongform();
+    return;
+  }
+  if (phase === "overlays") {
+    await runOverlays();
     return;
   }
   console.log(`=== M5 walker v2 — phase: ${phase} — project: ${PROJECT_ID}`);

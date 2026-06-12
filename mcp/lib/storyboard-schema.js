@@ -1065,6 +1065,148 @@ function warnKeyMomentCoverage(scenes, state, warnings) {
   }
 }
 
+// --- Typed-overlay plan lint (P3) ---------------------------------------------
+// Overlay timings are SCENE-relative. Bounds violations are errors (the
+// overlay would render outside its scene); the rest are craft warnings the
+// human rules on at the plan gate.
+const OVERLAY_DWELL_DEFAULT_S = 1.2;
+const OVERLAY_BOUNDS_TOLERANCE_S = 0.05;
+// Types that carry text the viewer must READ (dwell floor applies).
+const OVERLAY_TEXT_TYPES = new Set([
+  "title_card", "lower_third", "callout", "caption_block", "chapter_marker",
+  "section_title", "data_viz", "cta", "end_card",
+]);
+// Types that fight for the same screen real estate: overlapping two from one
+// group reads as collision.
+const OVERLAY_CONFLICT_GROUPS = Object.freeze([
+  { name: "bottom-band", types: new Set(["lower_third", "caption_block", "kinetic_caption", "cta"]) },
+  { name: "full-frame", types: new Set(["title_card", "end_card"]) },
+]);
+
+function overlayLabel(overlay) {
+  return `${overlay.type || "?"} "${overlay.id || "?"}"`;
+}
+
+function platformProfileFromState(state) {
+  const answers = state && isPlainObject(state.intent) && isPlainObject(state.intent.answers)
+    ? state.intent.answers
+    : null;
+  const tp = answers ? answers.target_platform : null;
+  return isPlainObject(tp) && isPlainObject(tp.profile) ? tp.profile : null;
+}
+
+function lintOverlays(scenes, ctx, errors, warnings) {
+  const resolveTranscript = typeof ctx.transcriptForFileIndex === "function" ? ctx.transcriptForFileIndex : null;
+  const hasTranscript = Array.isArray(ctx.transcript) && ctx.transcript.length > 0;
+  const profile = platformProfileFromState(ctx.state);
+  scenes.forEach((scene, ix) => {
+    if (!isPlainObject(scene)) return;
+    const overlays = typedOverlaysOf(scene).filter(
+      (o) => isFiniteNumber(o.start_seconds) && isFiniteNumber(o.end_seconds) && o.end_seconds > o.start_seconds,
+    );
+    if (overlays.length === 0) return;
+    const sceneDur = isFiniteNumber(scene.target_duration_seconds) ? scene.target_duration_seconds : null;
+
+    for (const overlay of overlays) {
+      // Bounds (error): the composer re-times scene-relative -> master; an
+      // overlay past the scene end would bleed into the next scene or vanish.
+      if (sceneDur !== null && overlay.end_seconds > sceneDur + OVERLAY_BOUNDS_TOLERANCE_S) {
+        errors.push({
+          code: "PLAN_OVERLAY_OUT_OF_BOUNDS",
+          message: `scenes[${ix}] overlay ${overlayLabel(overlay)} runs ${round1(overlay.start_seconds)}–${round1(overlay.end_seconds)}s but the scene is only ${round1(sceneDur)}s — overlay timings are scene-relative and must fit inside the scene`,
+          scene_index: ix,
+          scene_id: sceneIdOf(scene),
+          overlay_id: overlay.id || null,
+          data: { start_seconds: overlay.start_seconds, end_seconds: overlay.end_seconds, scene_duration_seconds: sceneDur },
+        });
+      }
+      // Readability dwell (warning) on text-bearing types.
+      const dwellMin = isPlainObject(overlay.motion) && isFiniteNumber(overlay.motion.dwell_min_s)
+        ? overlay.motion.dwell_min_s
+        : OVERLAY_DWELL_DEFAULT_S;
+      const dur = overlay.end_seconds - overlay.start_seconds;
+      if (OVERLAY_TEXT_TYPES.has(overlay.type) && dur < dwellMin) {
+        warnings.push({
+          code: "PLAN_OVERLAY_DWELL_TOO_SHORT",
+          message: `scenes[${ix}] overlay ${overlayLabel(overlay)} shows for only ${round1(dur)}s — text needs ≥${round1(dwellMin)}s to read`,
+          scene_index: ix,
+          scene_id: sceneIdOf(scene),
+          overlay_id: overlay.id || null,
+          data: { duration_seconds: dur, dwell_min_s: dwellMin },
+        });
+      }
+      // Safe-area (warning): a bottom-anchored overlay with a y-offset inside
+      // the platform's bottom UI band gets eaten by platform chrome.
+      if (profile && isPlainObject(overlay.position) && typeof overlay.position.anchor === "string"
+        && overlay.position.anchor.startsWith("bottom")
+        && Array.isArray(overlay.position.offset_px) && isFiniteNumber(overlay.position.offset_px[1])
+        && isFiniteNumber(profile.safe_bottom_px)
+        && overlay.position.offset_px[1] < profile.safe_bottom_px) {
+        warnings.push({
+          code: "PLAN_OVERLAY_SAFE_AREA",
+          message: `scenes[${ix}] overlay ${overlayLabel(overlay)} anchors ${overlay.position.anchor} at y-offset ${overlay.position.offset_px[1]}px — inside the platform's ${profile.safe_bottom_px}px bottom safe band (platform UI covers it)`,
+          scene_index: ix,
+          scene_id: sceneIdOf(scene),
+          overlay_id: overlay.id || null,
+          data: { offset_px: overlay.position.offset_px, safe_bottom_px: profile.safe_bottom_px },
+        });
+      }
+      // Kinetic captions sync to the transcript — a scene with no spoken words
+      // has nothing to sync.
+      if (overlay.type === "kinetic_caption" && hasTranscript && resolveTranscript
+        && !clipHasSpokenWords(scene, resolveTranscript)) {
+        warnings.push({
+          code: "PLAN_KINETIC_CAPTION_NO_SPEECH",
+          message: `scenes[${ix}] plans a kinetic_caption (${overlayLabel(overlay)}) but none of the scene's clips overlap transcript words — there is no speech to word-sync`,
+          scene_index: ix,
+          scene_id: sceneIdOf(scene),
+          overlay_id: overlay.id || null,
+        });
+      }
+    }
+
+    // Conflicting-type overlap (warning): two overlays from one real-estate
+    // group active at the same moment.
+    for (const group of OVERLAY_CONFLICT_GROUPS) {
+      const members = overlays.filter((o) => group.types.has(o.type));
+      for (let a = 0; a < members.length; a += 1) {
+        for (let b = a + 1; b < members.length; b += 1) {
+          const x = members[a];
+          const y = members[b];
+          if (x.start_seconds < y.end_seconds && y.start_seconds < x.end_seconds) {
+            warnings.push({
+              code: "PLAN_OVERLAY_CONFLICT",
+              message: `scenes[${ix}] overlays ${overlayLabel(x)} and ${overlayLabel(y)} overlap in time and both occupy the ${group.name} — they will collide on screen`,
+              scene_index: ix,
+              scene_id: sceneIdOf(scene),
+              data: { overlay_ids: [x.id || null, y.id || null], group: group.name },
+            });
+          }
+        }
+      }
+    }
+  });
+}
+
+// Per-render-unit <video> budget (warning): clips + planned PiP overlays. The
+// caller picks the unit — the whole timeline normally, each declared segment
+// when segments[] chunk the render, each short in fan-out (its scenes view).
+function warnVideoBudget(scenes, label, warnings) {
+  const budget = hostProfile.videoBudget();
+  const count = scenes.reduce((acc, s) => acc + sceneVideoCount(s), 0);
+  if (count > budget) {
+    const pips = scenes.reduce(
+      (acc, s) => acc + typedOverlaysOf(s).filter((o) => o.type === "pip").length,
+      0,
+    );
+    warnings.push({
+      code: "PLAN_VIDEO_BUDGET_EXCEEDED",
+      message: `${label} plans ${count} <video> elements (${pips} from PiP overlays) against the host budget of ${budget} — composition QC will warn/error at COMPOSE; merge clips or drop PiPs`,
+      data: { video_count: count, pip_count: pips, budget },
+    });
+  }
+}
+
 function warnCleanSpeechStraddles(scenes, cleanSpeech, warnings) {
   if (!isPlainObject(cleanSpeech) || !Array.isArray(cleanSpeech.keep_spans)) return;
   const removedEntries = Array.isArray(cleanSpeech.removed) ? cleanSpeech.removed : [];
@@ -1119,11 +1261,18 @@ function lintStoryboardPlan(parsed, context) {
   lintManifestBounds(scenes, ctx.manifest, errors);
   lintCaptionsOnSilent(scenes, ctx.transcript, errors, ctx.transcriptForFileIndex);
   lintBrollPlacements(parsed, scenes, sceneById, errors);
+  lintOverlays(scenes, ctx, errors, warnings);
 
   warnHookShape(scenes, warnings, disabled);
   warnDurations(parsed, scenes, ctx.targetSeconds, warnings);
   warnBrollHolds(scenes, warnings);
   warnBrollRepeats(parsed, sceneById, warnings);
+  // Budget per render unit: when segments[] chunk the render, the caller
+  // (validateStoryboardContent) checks each segment instead — the whole-doc
+  // sum may legitimately exceed the budget there.
+  if (!storyboardHasSegments(parsed)) {
+    warnVideoBudget(scenes, "the timeline", warnings);
+  }
   // Fan-out runs key-moment coverage ONCE document-globally (a moment covered
   // by ANY short counts), not per short — see validateStoryboardContent.
   if (ctx.suppress_key_moment_check !== true) {
@@ -1341,6 +1490,12 @@ function validateStoryboardContent(parsed, state) {
     warnings.push(...result.warnings);
     if (lintRules.chapter_rules) {
       lintChapterRules(parsed, warnings);
+    }
+    // Segments chunk the render: the budget applies PER SEGMENT.
+    if (storyboardHasSegments(parsed)) {
+      for (const segment of storyboardSegments(parsed)) {
+        warnVideoBudget(segment.scenes, `segment "${segment.segment_id}"`, warnings);
+      }
     }
     return { ok: errors.length === 0, errors, warnings };
   }

@@ -11,7 +11,7 @@
 const fs = require("fs");
 const path = require("path");
 
-const { findTimeline, storyboardHasShorts } = require("./storyboard-schema.js");
+const { findTimeline, storyboardHasShorts, typedOverlaysOf } = require("./storyboard-schema.js");
 const hostProfile = require("./host-profile.js");
 
 // The <video>-element warn budget / hard cap are host-tunable (a big server
@@ -431,6 +431,72 @@ function runCompositionQc({ files, storyboard, sourceLinks, sceneClipLinks, chec
             `storyboard scene "${scene.scene_id}" (sequence ${scene.sequence}) has no clip element referencing ./source/${scene.scene_id}-*.mp4 — the scene would be missing from the render`,
           ));
         }
+      }
+    }
+  }
+
+  // --- Typed overlay binding (P3) ----------------------------------------------
+  // Every PLANNED typed overlay (scoped scenes) must have an implementing
+  // element stamped data-vob-overlay-id="<id>" — the plan is the binding
+  // layer, same severity as scene coverage. Extra checks ride as warnings:
+  // spine-track overlays, untimed elements, and composer-invented ids.
+  if (sb !== null) {
+    const planned = [];
+    for (const scene of scenes) {
+      if (!scene || typeof scene.scene_id !== "string") continue;
+      for (const overlay of typedOverlaysOf(scene)) {
+        if (overlay && typeof overlay.id === "string" && overlay.id) planned.push({ scene, overlay });
+      }
+    }
+    const elementsByOverlayId = new Map();
+    for (const f of parsedFiles) {
+      for (const tag of f.tags) {
+        const oid = tag.attrs["data-vob-overlay-id"];
+        if (typeof oid === "string" && oid !== "" && !elementsByOverlayId.has(oid)) {
+          elementsByOverlayId.set(oid, { file: f.relPath, tag });
+        }
+      }
+    }
+    for (const { scene, overlay } of planned) {
+      const el = elementsByOverlayId.get(overlay.id);
+      if (!el) {
+        findings.push(makeFinding(
+          "error",
+          "vob/overlay_missing_element",
+          `planned overlay ${overlay.type} "${overlay.id}" (scene "${scene.scene_id}") has no implementing element — render it and stamp the element with data-vob-overlay-id="${overlay.id}"`,
+        ));
+        continue;
+      }
+      const track = Number(el.tag.attrs["data-track-index"]);
+      if (Number.isFinite(track) && track === 0) {
+        findings.push(makeFinding(
+          "warning",
+          "vob/overlay_track_zero",
+          `overlay "${overlay.id}" sits on data-track-index="0" (${el.file}:${el.tag.line}) — track 0 is the video spine; overlays belong on higher tracks`,
+          el.file,
+          el.tag.line,
+        ));
+      }
+      if (!("data-start" in el.tag.attrs)) {
+        findings.push(makeFinding(
+          "warning",
+          "vob/overlay_element_untimed",
+          `overlay element for "${overlay.id}" (${el.file}:${el.tag.line}) has no data-start — it renders static for the whole composition instead of its planned ${overlay.start_seconds}–${overlay.end_seconds}s window`,
+          el.file,
+          el.tag.line,
+        ));
+      }
+    }
+    const plannedIds = new Set(planned.map((p) => p.overlay.id));
+    for (const [oid, el] of elementsByOverlayId) {
+      if (!plannedIds.has(oid)) {
+        findings.push(makeFinding(
+          "warning",
+          "vob/unplanned_overlay_element",
+          `element carries data-vob-overlay-id="${oid}" (${el.file}:${el.tag.line}) but the plan's active scope declares no such overlay — a typo'd id, or an overlay the storyboard didn't ask for`,
+          el.file,
+          el.tag.line,
+        ));
       }
     }
   }

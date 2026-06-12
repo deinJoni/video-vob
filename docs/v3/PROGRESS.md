@@ -7,7 +7,7 @@ Branch: `v3/general-video`. Each pillar is committed separately and walker-verif
 |---|---|---|---|
 | P1 — Format & presets | **done, walker-verified** | `general` | (this commit) |
 | P2 — Segmented render + assembly | **done, walker-verified (real renders)** | `longform` | (this commit) |
-| P3 — Overlay layer (schema 1.2) | pending | `overlays` | — |
+| P3 — Overlay layer (schema 1.2) | **done, walker-verified** | `overlays` | (this commit) |
 | P4 — B-roll gaps + PLAN→INGEST | pending | `gaps` | — |
 | Adapters (claude-code + opencode) | pending | boot drift guard | — |
 | Version bump + docs + regression | pending | `setup`/`fanout` re-run | — |
@@ -100,3 +100,13 @@ Decisions made during implementation. PRD-locked decisions are not repeated here
   document; `video_not_assembled` blocked RENDER→PACKAGE pre-assembly; the assembled final
   became the render slot, was confirmed, packaged with YouTube chapters (`0:00 The Setup |
   0:05 The Payoff`), and reached ITERATE. Regression: `setup` + `fanout` still green.
+- **2026-06-12 — P3 verified.** `node scripts/m5-walker.js overlays` green: schema rejections
+  (typed overlay under 1.0; unknown type vs vocabulary; document-global duplicate id);
+  `PLAN_OVERLAY_OUT_OF_BOUNDS` rejects the save; the warnings fixture fired
+  `PLAN_OVERLAY_DWELL_TOO_SHORT` + `PLAN_OVERLAY_CONFLICT` (bottom-band group) +
+  `PLAN_KINETIC_CAPTION_NO_SPEECH` (clip-less scene) + `PLAN_VIDEO_BUDGET_EXCEEDED`
+  (PiPs counted); the clean doc fired none and storyboard.md renders the typed layer; QC
+  rejected a save missing a planned overlay element (`vob/overlay_missing_element`),
+  warned on track-zero + composer-invented ids, and the fully-bound overlay composition
+  (incl. a PiP `<video>`) saved with merged lint `clean`. Regression: setup/fanout/general
+  green.

@@ -80,7 +80,28 @@ function renderScene(scene, heading = "##") {
 
   if (Array.isArray(scene.overlays) && scene.overlays.length > 0) {
     lines.push("**Overlays:**");
-    scene.overlays.forEach((entry) => lines.push(`  - ${entry}`));
+    scene.overlays.forEach((entry) => {
+      if (entry !== null && typeof entry === "object" && !Array.isArray(entry)) {
+        // Typed overlay (schema 1.2): planned, timed, composer-bound.
+        const win = `${formatTimecode(entry.start_seconds)} → ${formatTimecode(entry.end_seconds)}`;
+        const content = entry.content && typeof entry.content === "object"
+          ? Object.entries(entry.content)
+            .filter(([, v]) => typeof v === "string" || typeof v === "number")
+            .slice(0, 3)
+            .map(([k, v]) => `${k}: "${v}"`)
+            .join(", ")
+          : "";
+        const pos = entry.position && typeof entry.position === "object" && entry.position.anchor
+          ? ` @ ${entry.position.anchor}`
+          : "";
+        const motion = entry.motion && typeof entry.motion === "object" && (entry.motion.in || entry.motion.out)
+          ? ` (${[entry.motion.in ? `in: ${entry.motion.in}` : null, entry.motion.out ? `out: ${entry.motion.out}` : null].filter(Boolean).join(", ")})`
+          : "";
+        lines.push(`  - **[${entry.type}]** \`${entry.id}\` ${win}${pos}${content ? ` — ${content}` : ""}${motion}`);
+      } else {
+        lines.push(`  - ${entry}`);
+      }
+    });
     lines.push("");
   }
 
