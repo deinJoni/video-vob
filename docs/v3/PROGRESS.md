@@ -1,18 +1,44 @@
 # v3.0 build progress — General Video
 
-Tracking doc for the v3 build (see `PRD.md`). Updated as each pillar lands.
-Branch: `v3/general-video`. Each pillar is committed separately and walker-verified.
+Tracking doc for the v3 build (see `PRD.md`). **BUILD COMPLETE — v3.0.0.**
+Branch: `v3/general-video`. Each pillar was committed separately and walker-verified.
 
 | Pillar | Status | Walker phase | Commit |
 |---|---|---|---|
-| P1 — Format & presets | **done, walker-verified** | `general` | (this commit) |
-| P2 — Segmented render + assembly | **done, walker-verified (real renders)** | `longform` | (this commit) |
-| P3 — Overlay layer (schema 1.2) | **done, walker-verified** | `overlays` | (this commit) |
-| P4 — B-roll gaps + PLAN→INGEST | **done, walker-verified** | `gaps` | (this commit) |
-| Adapters (claude-code + opencode) | pending | boot drift guard | — |
-| Version bump + docs + regression | pending | `setup`/`fanout` re-run | — |
+| P1 — Format & presets | **done, walker-verified** | `general` | c46a8e8 |
+| P2 — Segmented render + assembly | **done, walker-verified (real renders)** | `longform` | 41de687 |
+| P3 — Overlay layer (schema 1.2) | **done, walker-verified** | `overlays` | b663fe3 |
+| P4 — B-roll gaps + PLAN→INGEST | **done, walker-verified** | `gaps` | 369778d |
+| Adapters (claude-code + opencode) | **done, boot drift guard green** | server boot | fbf13c6 |
+| Version 3.0.0 + docs + full regression | **done** | all 6 phases | (this commit) |
 
 Walker source for verification: `~/vob-share/hackabob_clips/01_hackabob_spa.mp4` (28.5s, speech).
+
+## PRD success criteria → status
+
+- ✅ Long-form renders end-to-end via segmented render + assembly on the reference Mac, drift
+  < 0.5s (0.034s measured), reaching PACKAGE with chapters. (Verified with a 2-segment fixture;
+  the machinery is length-independent — segments chunk to the host budget.)
+- ✅ Cinematic 24fps with clean-cut OFF and montage lint, no hook-first false positives
+  (`general` walker, fixture asserted both directions).
+- ✅ Typed overlay plan (lower-third + kinetic captions + pip + cta + title) saves, lints, and
+  passes the new QC binding; merged save-time lint `clean` (`overlays` walker).
+- ✅ B-roll gap emitted at PLAN, footage re-ingested via PLAN→INGEST, gap auto-resolves
+  (`gaps` walker).
+- ✅ User-defined preset in `.vob-config/video-types.json` resolved + reported by `vob_doctor`
+  (`general` walker, `VOB_VIDEO_TYPES_FILE` test seam).
+- ✅ No regression: `setup` + `fanout` walkers green throughout; pre-v3 storyboards/sessions
+  unchanged (schema 1.0/1.1 accepted; string overlays legal; no `video_type` ⇒ derived
+  `social-short` = byte-for-byte v2.1 lint behavior).
+
+## Still open (deliberately deferred, per PRD non-goals / stretch)
+
+- `vob_resolve_broll_gap` helper (stretch in PRD §Pillar4 — MVP is re-ingest + re-derive, shipped).
+- Guided preset-authoring UX (PRD §9.6 — MVP is hand-editing `video-types.example.json`, shipped).
+- First LIVE `/vob` run of the v3 features (walker-verified only; same status v2.1 shipped with).
+- Per-segment preview renders are required by the flow (preview.confirmed gates render_full per
+  cycle) — fine for quality, costs one draft render per segment; a future "fast-path" could let
+  the user opt out after segment 1.
 
 ---
 
