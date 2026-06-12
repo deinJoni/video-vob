@@ -1,8 +1,12 @@
 "use strict";
 
+const fs = require("fs");
+
 const { ERROR_CODES, ToolError } = require("../envelope.js");
 const {
   assertSafeProjectId,
+  brollGapsPath,
+  planDir,
   statePath,
   storyboardMarkdownPath,
   storyboardPath,
@@ -11,6 +15,7 @@ const { withSessionLock, writeFileAtomic } = require("../storage.js");
 const { readSessionStateStrict } = require("../session-state.js");
 const {
   allStoryboardScenes,
+  collectBrollGaps,
   storyboardHasShorts,
   storyboardTimelines,
   validateStoryboard,
@@ -101,6 +106,24 @@ function saveStoryboard(args) {
     writeFileAtomic(mdFile, mdText);
 
     const ts = nowIso();
+
+    // B-roll gap shopping list — regenerated on EVERY save so it can never go
+    // stale: gaps come and go with the placements that declare them. The file
+    // exists (possibly empty) from the first save that ever carried a gap.
+    const brollGaps = collectBrollGaps(storyboard);
+    const gapsFile = brollGapsPath(id);
+    if (brollGaps.length > 0 || fs.existsSync(gapsFile)) {
+      fs.mkdirSync(planDir(id), { recursive: true });
+      writeFileAtomic(gapsFile, `${JSON.stringify({
+        generated_at: ts,
+        project_id: id,
+        storyboard_revision: (state.storyboard && Number.isInteger(state.storyboard.revision_count)
+          ? state.storyboard.revision_count
+          : 0) + 1,
+        gap_count: brollGaps.length,
+        gaps: brollGaps,
+      }, null, 2)}\n`);
+    }
     const prevStoryboard = state.storyboard && typeof state.storyboard === "object" && !Array.isArray(state.storyboard)
       ? state.storyboard
       : null;
@@ -138,6 +161,8 @@ function saveStoryboard(args) {
         scene_count: sceneCount,
         total_duration_seconds: totalDurationSeconds,
         ...(fanOut ? { short_count: timelines.length, shorts: shortsDigest } : {}),
+        broll_gap_count: brollGaps.length,
+        ...(brollGaps.length > 0 ? { broll_gaps_path: gapsFile } : {}),
         plan_lint: {
           error_count: 0,
           warning_count: planWarnings.length,
@@ -162,6 +187,8 @@ function saveStoryboard(args) {
       scene_count: sceneCount,
       total_duration_seconds: totalDurationSeconds,
       ...(fanOut ? { short_count: timelines.length, shorts: shortsDigest } : {}),
+      broll_gap_count: brollGaps.length,
+      ...(brollGaps.length > 0 ? { broll_gaps_path: gapsFile } : {}),
       plan_lint: {
         error_count: 0,
         warning_count: planWarnings.length,
@@ -173,7 +200,7 @@ function saveStoryboard(args) {
 
 module.exports = Object.freeze({
   name: "vob_save_storyboard",
-  description: "Save the storyboard (content may be a JSON object or string). Schema 1.0 = one timeline (scenes[] + total_target_duration_seconds); schema 1.1 additionally allows the multi-short fan-out form: top-level shorts[] of {short_id, title, sequence, total_target_duration_seconds, scenes[], broll_placements?, notes?} with the top-level timeline fields omitted and scene_ids globally unique. Validates shape, then runs plan lint (per short in fan-out; findings carry short_id): errors (out-of-range clips, captions-on-silent, narration-span violations, duplicate scene_ids) reject the save; warnings (hook placement/length, duration drift or per-short range, b_roll holds, key-moment coverage, clean-speech straddles) return in plan_lint, persist to state, and render into storyboard.md for the plan gate. Any save resets confirmed:false and bumps revision_count.",
+  description: "Save the storyboard (content may be a JSON object or string). Schema 1.0 = one timeline (scenes[] + total_target_duration_seconds); 1.1 adds the multi-short fan-out form (top-level shorts[], scene_ids globally unique); 1.2 adds typed overlay objects in scene.overlays[], narrative segments[] (+ render_segmentation single|auto|manual), target.fps, and richer broll_placements (render_mode full_frame|pip|overlay, motion, and the GAP form: {source:'gap', description, desired_duration_seconds, scene_ref} when the ingested footage lacks coverage — gaps collect into plan/broll_gaps.json and warn PLAN_BROLL_GAP_UNFILLED, resolved by ingesting more footage via the PLAN→INGEST back-edge). Validates shape, then runs plan lint (ruleset from the active video-type preset; per short in fan-out): errors (out-of-range clips, captions-on-silent, narration-span violations, duplicate scene_ids, overlay out-of-bounds) reject the save; warnings (hook placement/length under retention, duration drift or per-short range, b_roll holds, key-moment coverage, clean-speech straddles when clean_cut, overlay dwell/conflict/safe-area, video budget incl. PiPs, chapters-missing) return in plan_lint, persist to state, and render into storyboard.md for the plan gate. Any save resets confirmed:false and bumps revision_count.",
   inputSchema: {
     type: "object",
     properties: {
@@ -199,6 +226,6 @@ module.exports = Object.freeze({
   browser_access: false,
   scope_required: false,
   sensitive_output: false,
-  session_artifacts_written: ["storyboard.json", "storyboard.md", "state.json"],
+  session_artifacts_written: ["storyboard.json", "storyboard.md", "plan/broll_gaps.json", "state.json"],
   hook_required: false,
 });

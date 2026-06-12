@@ -32,19 +32,27 @@ function renderClip(clip) {
 
 function renderBrollPlacements(placements, heading = "##") {
   const lines = [];
-  lines.push(`${heading} B-roll placements (${placements.length})`);
+  const gapCount = placements.filter((p) => p && p.source === "gap").length;
+  lines.push(`${heading} B-roll placements (${placements.length})${gapCount > 0 ? ` — ⚠ ${gapCount} unfilled gap(s)` : ""}`);
   lines.push("");
-  lines.push("_Cutaways laid over the A-roll/narration spine. Each references a `role:\"b_roll\"` clip already in the scenes above._");
+  lines.push("_Cutaways laid over the A-roll/narration spine. Each references a `role:\"b_roll\"` clip already in the scenes above — or declares a **GAP**: coverage the ingested footage can't supply (upload matching footage and re-ingest to fill it)._");
   lines.push("");
   placements.forEach((p, ix) => {
-    const clip = p && p.clip ? p.clip : {};
-    const ref = `${clip.scene_id || "?"}[${Number.isInteger(clip.clip_index) ? clip.clip_index : "?"}]`;
     const span = p && p.narration_span
       ? ` over narration ${formatTimecode(p.narration_span.start_seconds)}→${formatTimecode(p.narration_span.end_seconds)}`
       : (typeof p.insert_at_seconds === "number" ? ` at ${formatTimecode(p.insert_at_seconds)}` : "");
-    const transition = p && typeof p.transition === "string" && p.transition.trim() ? ` (${p.transition.trim()})` : "";
     const reason = p && typeof p.reason === "string" && p.reason.trim() ? ` — ${p.reason.trim()}` : "";
-    lines.push(`${ix + 1}. clip ${ref}${span}${transition}${reason}`);
+    if (p && p.source === "gap") {
+      const want = Number.isFinite(p.desired_duration_seconds) ? formatSeconds(p.desired_duration_seconds) : "?";
+      lines.push(`${ix + 1}. **GAP** for scene ${p.scene_ref || "?"}: _"${p.description || "?"}"_ (~${want})${span}${reason}`);
+      return;
+    }
+    const clip = p && p.clip ? p.clip : {};
+    const ref = `${clip.scene_id || "?"}[${Number.isInteger(clip.clip_index) ? clip.clip_index : "?"}]`;
+    const mode = p && typeof p.render_mode === "string" && p.render_mode !== "full_frame" ? ` **[${p.render_mode.toUpperCase()}]**` : "";
+    const motion = p && typeof p.motion === "string" && p.motion.trim() && p.motion !== "none" ? ` ~${p.motion.trim()}` : "";
+    const transition = p && typeof p.transition === "string" && p.transition.trim() ? ` (${p.transition.trim()})` : "";
+    lines.push(`${ix + 1}. clip ${ref}${mode}${span}${motion}${transition}${reason}`);
   });
   lines.push("");
   return lines.join("\n");

@@ -201,6 +201,18 @@ function renderStderrLogPath(projectId, kind, stamp) {
   return path.join(rendersDir(projectId), `${kind}-${stamp}.log`);
 }
 
+// PLAN-phase artifacts beyond the storyboard itself. plan/broll_gaps.json is
+// the b-roll "shopping list": coverage the cut wants that the ingested footage
+// can't supply (placements with source:"gap"), regenerated on every storyboard
+// save and surfaced at the plan gate.
+function planDir(projectId) {
+  return path.join(sessionDir(projectId), "plan");
+}
+
+function brollGapsPath(projectId) {
+  return path.join(planDir(projectId), "broll_gaps.json");
+}
+
 function storyboardPath(projectId) {
   return path.join(sessionDir(projectId), "storyboard.json");
 }
@@ -353,7 +365,9 @@ module.exports = {
   assertSafeProjectId,
   assertSafeSceneId,
   briefPath,
+  brollGapsPath,
   brollIndexPath,
+  planDir,
   reviewPoolPath,
   composeDir,
   composeSourceDir,

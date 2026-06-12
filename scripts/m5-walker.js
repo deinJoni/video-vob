@@ -1565,6 +1565,185 @@ async function runOverlays() {
   console.log(`\n=== overlays final phase: ${final.phase}`);
 }
 
+// ---------------------------------------------------------------------------
+// v3 `gaps` walker phase — the P4 executable spec: richer planned b-roll
+// (render_mode/motion), the gap shopping-list form (source:"gap"),
+// plan/broll_gaps.json emission + the PLAN_BROLL_GAP_UNFILLED warning, the
+// PLAN→INGEST back-edge loop (re-ingest → INSPECT → INTENT → PLAN), and gap
+// auto-resolution on the next save. No renders.
+
+async function runGaps() {
+  const GP = `${PROJECT_ID}-gaps`;
+  console.log(`=== v3 gaps walker (planned b-roll + shopping list) — project: ${GP}`);
+
+  const boot = await bootstrapToPlan({
+    projectId: GP,
+    target: { format: "tiktok", duration: "8s" },
+    intentAnswers: {
+      target_platform: "tiktok",
+      target_duration: "8s",
+      tone: "energetic",
+      key_moments: "none in particular",
+      music_vo: "neither",
+    },
+    briefBody: `# Brief: ${GP}\n\n## Target\n- 8s tiktok; b-roll plan with one coverage gap\n\n## Design language\n- Typography: headline Anton; captions Inter 900\n- Palette: bg #000, text #FFF\n- Motion: fast-snap\n`,
+  });
+  const D = boot.file0.duration_seconds;
+  const srcPath = boot.file0.path || SOURCE;
+  let transcript = null;
+  if (boot.inspect.speech_detected && boot.inspect.transcript_path && fs.existsSync(boot.inspect.transcript_path)) {
+    try { transcript = JSON.parse(fs.readFileSync(boot.inspect.transcript_path, "utf8")); } catch { transcript = null; }
+  }
+  const windows = planWindows({ durationSeconds: D, transcript });
+  const brollWin = placeWindow({ keepSpans: null, len: 2, preferStart: D * 0.85, durationSeconds: D });
+
+  const gapSb = {
+    schema_version: "1.2",
+    project_id: GP,
+    generated_at: new Date().toISOString(),
+    source: { manifest_path: boot.summary.manifest.path, brief_path: boot.savedBrief.brief_path },
+    target: { platform: "tiktok", duration_seconds: 8, tone: "energetic" },
+    scenes: [
+      {
+        scene_id: "g001", sequence: 1, purpose: "hook", target_duration_seconds: 2,
+        summary: `Cold open at ${windows.hook.in}s.`,
+        source_clips: [{ manifest_file_index: 0, source_path: srcPath, in_seconds: windows.hook.in, out_seconds: windows.hook.out }],
+        overlays: [], captions: null, pacing: "fast",
+      },
+      {
+        scene_id: "g002", sequence: 2, purpose: "beat", target_duration_seconds: 3,
+        summary: `Core beat at ${windows.beat.in}s with a planned PiP cutaway.`,
+        source_clips: [
+          { manifest_file_index: 0, source_path: srcPath, in_seconds: windows.beat.in, out_seconds: windows.beat.out, role: "a_roll" },
+          { manifest_file_index: 0, source_path: srcPath, in_seconds: brollWin.in, out_seconds: brollWin.out, role: "b_roll" },
+        ],
+        overlays: [], captions: null, pacing: "medium",
+      },
+      {
+        scene_id: "g003", sequence: 3, purpose: "payoff", target_duration_seconds: 3,
+        summary: `Payoff hold at ${windows.payoff.in}s — wants a close-up we don't have.`,
+        source_clips: [{ manifest_file_index: 0, source_path: srcPath, in_seconds: windows.payoff.in, out_seconds: windows.payoff.out }],
+        overlays: [], captions: null, pacing: "slow",
+      },
+    ],
+    broll_placements: [
+      {
+        clip: { scene_id: "g002", clip_index: 1 },
+        render_mode: "pip",
+        motion: "ken_burns",
+        narration_span: { start_seconds: round3(windows.beat.in + 0.3), end_seconds: round3(windows.beat.in + 2.3) },
+        reason: "inset the supporting shot while the beat lands",
+      },
+      {
+        source: "gap",
+        description: "close-up of hands typing on the keyboard",
+        desired_duration_seconds: 2.5,
+        scene_ref: "g003",
+        reason: "cover the payoff narration with a concrete visual",
+      },
+    ],
+    total_target_duration_seconds: 8,
+    notes: "Gaps walker fixture — one concrete PiP placement, one coverage gap.",
+  };
+
+  // 1. Schema negatives for the new placement fields.
+  await step("save storyboard (gap form under 1.1 rejected)", async () => {
+    const old = JSON.parse(JSON.stringify(gapSb));
+    old.schema_version = "1.1";
+    const err = await expectError("vob_save_storyboard", { project_id: GP, content: old }, /INVALID_ARGUMENTS/);
+    const msgs = (err.details.schema_errors || []).map(String);
+    assert(msgs.some((m) => /source:"gap".*1\.2/.test(m)) && msgs.some((m) => /render_mode requires/.test(m)),
+      `expected 1.2 gating errors for gap + render_mode, got ${JSON.stringify(msgs)}`);
+  });
+  await step("save storyboard (clip + gap on one placement rejected)", async () => {
+    const bad = JSON.parse(JSON.stringify(gapSb));
+    bad.broll_placements[1].clip = { scene_id: "g002", clip_index: 1 };
+    const err = await expectError("vob_save_storyboard", { project_id: GP, content: bad }, /INVALID_ARGUMENTS/);
+    assert((err.details.schema_errors || []).some((m) => /concrete or a gap, never both/.test(String(m))),
+      `expected the mutual-exclusion error, got ${JSON.stringify(err.details.schema_errors)}`);
+  });
+  await step("save storyboard (gap with unknown scene_ref rejected)", async () => {
+    const bad = JSON.parse(JSON.stringify(gapSb));
+    bad.broll_placements[1].scene_ref = "g999";
+    const err = await expectError("vob_save_storyboard", { project_id: GP, content: bad }, /INVALID_ARGUMENTS/);
+    assert((err.details.schema_errors || []).some((m) => /scene_ref "g999"/.test(String(m))),
+      `expected the scene_ref error, got ${JSON.stringify(err.details.schema_errors)}`);
+  });
+  await step("save storyboard (bad render_mode rejected)", async () => {
+    const bad = JSON.parse(JSON.stringify(gapSb));
+    bad.broll_placements[0].render_mode = "split_screen";
+    const err = await expectError("vob_save_storyboard", { project_id: GP, content: bad }, /INVALID_ARGUMENTS/);
+    assert((err.details.schema_errors || []).some((m) => /render_mode must be one of/.test(String(m))),
+      `expected the render_mode enum error, got ${JSON.stringify(err.details.schema_errors)}`);
+  });
+
+  // 2. Good save: the gap rides as an artifact + a warning, never a blocker.
+  const savedGap = await step("save storyboard (1 concrete PiP + 1 gap)", () =>
+    call("vob_save_storyboard", { project_id: GP, content: gapSb }),
+  );
+  {
+    assert(savedGap.plan_lint.error_count === 0, "gap storyboard reported plan errors");
+    const codes = (savedGap.plan_lint.warnings || []).map((w) => w.code);
+    assert(codes.includes("PLAN_BROLL_GAP_UNFILLED"), `expected PLAN_BROLL_GAP_UNFILLED, got ${JSON.stringify(codes)}`);
+    assert(savedGap.broll_gap_count === 1 && savedGap.broll_gaps_path,
+      `expected broll_gap_count 1 + path, got ${JSON.stringify({ c: savedGap.broll_gap_count, p: savedGap.broll_gaps_path })}`);
+    const gapsDoc = JSON.parse(fs.readFileSync(savedGap.broll_gaps_path, "utf8"));
+    assert(gapsDoc.gap_count === 1 && gapsDoc.gaps[0].id === "gap-2" && gapsDoc.gaps[0].scene_ref === "g003"
+      && gapsDoc.gaps[0].desired_duration_seconds === 2.5,
+      `broll_gaps.json wrong: ${JSON.stringify(gapsDoc)}`);
+    const md = fs.readFileSync(savedGap.markdown_path, "utf8");
+    assert(/\*\*GAP\*\* for scene g003/.test(md) && /\[PIP\]/.test(md) && /~ken_burns/.test(md),
+      "storyboard.md missing gap/render_mode/motion rendering");
+    const summary = await call("vob_read_state_summary", { project_id: GP });
+    assert(summary.storyboard.broll_gap_count === 1, `summary broll_gap_count wrong: ${JSON.stringify(summary.storyboard)}`);
+    console.log(`\n   gap recorded: ${gapsDoc.gaps[0].description} (~${gapsDoc.gaps[0].desired_duration_seconds}s for ${gapsDoc.gaps[0].scene_ref})`);
+  }
+
+  // 3. The resolution loop: PLAN→INGEST back-edge, re-ingest (caches make the
+  //    old file cheap), re-walk INSPECT→INTENT→PLAN with answers intact.
+  await step("back-edge PLAN→INGEST (gap resolution loop)", () =>
+    call("vob_transition_phase", { project_id: GP, to_phase: "INGEST" }),
+  );
+  await step("re-ingest (extended drop)", () =>
+    call("vob_ingest_file", { project_id: GP, source_path: SOURCE }),
+  );
+  await step("transition INGEST→INSPECT", () =>
+    call("vob_transition_phase", { project_id: GP, to_phase: "INSPECT" }),
+  );
+  const inspect2 = await step("re-inspect (cached detection)", () =>
+    call("vob_inspect_source", { project_id: GP }),
+  );
+  if (inspect2.segment_count > 0) {
+    const segmentsDoc = JSON.parse(fs.readFileSync(inspect2.segments_path, "utf8"));
+    await step("save classification (canned)", () =>
+      call("vob_save_classification", { project_id: GP, ...cannedClassification(segmentsDoc) }),
+    );
+  }
+  await step("acknowledge inspect", () => call("vob_acknowledge_inspect", { project_id: GP }));
+  await step("transition INSPECT→INTENT", () =>
+    call("vob_transition_phase", { project_id: GP, to_phase: "INTENT" }),
+  );
+  await step("transition INTENT→PLAN (answers persisted)", () =>
+    call("vob_transition_phase", { project_id: GP, to_phase: "PLAN" }),
+  );
+
+  // 4. The re-derived plan fills the gap (the new coverage exists) — the gap
+  //    list empties and the warning disappears.
+  await step("re-save storyboard (gap resolved)", async () => {
+    const resolved = JSON.parse(JSON.stringify(gapSb));
+    resolved.broll_placements = [resolved.broll_placements[0]]; // gap filled by real coverage
+    const saved = await call("vob_save_storyboard", { project_id: GP, content: resolved });
+    const codes = (saved.plan_lint.warnings || []).map((w) => w.code);
+    assert(!codes.includes("PLAN_BROLL_GAP_UNFILLED"), `gap warning must clear, got ${JSON.stringify(codes)}`);
+    assert(saved.broll_gap_count === 0, `expected broll_gap_count 0, got ${saved.broll_gap_count}`);
+    const gapsDoc = JSON.parse(fs.readFileSync(savedGap.broll_gaps_path, "utf8"));
+    assert(gapsDoc.gap_count === 0 && gapsDoc.gaps.length === 0, `broll_gaps.json must empty on resolve: ${JSON.stringify(gapsDoc)}`);
+  });
+
+  const final = await call("vob_read_state_summary", { project_id: GP });
+  console.log(`\n=== gaps final phase: ${final.phase}   broll_gap_count: ${final.storyboard.broll_gap_count}`);
+}
+
 async function main() {
   const phase = process.argv[2] || "all";
   if (phase === "fanout") {
@@ -1581,6 +1760,10 @@ async function main() {
   }
   if (phase === "overlays") {
     await runOverlays();
+    return;
+  }
+  if (phase === "gaps") {
+    await runGaps();
     return;
   }
   console.log(`=== M5 walker v2 — phase: ${phase} — project: ${PROJECT_ID}`);

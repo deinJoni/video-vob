@@ -260,6 +260,25 @@ function planToCompose(state) {
   return ALLOWED;
 }
 
+// PLAN -> INGEST (back-edge, v3): the b-roll gap-resolution loop — the user
+// uploads more footage, vob_ingest_file re-runs over the extended drop, and
+// the pipeline re-walks INSPECT -> INTENT (answers persist) -> PLAN where the
+// storyboarder re-derives against the bigger B-roll index. Nominal check: a
+// manifest must exist (we got past INGEST once; re-entering without one means
+// state damage, not a gap loop).
+function planToIngest(state) {
+  const manifest = state && typeof state.manifest === "object" ? state.manifest : null;
+  if (!manifest || typeof manifest.path !== "string" || !manifest.path) {
+    return block([
+      blocker(
+        "manifest_missing",
+        "cannot back-edge to INGEST — no manifest recorded from a prior ingest",
+      ),
+    ]);
+  }
+  return ALLOWED;
+}
+
 // PLAN -> INTENT (back-edge): allowed when the user wants to re-clarify
 // intent. Nominal check: state.intent.answers exists. Always passes under
 // normal flow (INTENT was completed before PLAN was reachable).
@@ -620,6 +639,7 @@ const GATES = Object.freeze({
   "INTENT->PLAN":     intentToPlan,
   "PLAN->COMPOSE":    planToCompose,
   "PLAN->INTENT":     planToIntent,
+  "PLAN->INGEST":     planToIngest,
   "COMPOSE->PREVIEW": composeToPreview,
   "COMPOSE->PLAN":    composeToPlan,
   "PREVIEW->RENDER":  previewToRender,

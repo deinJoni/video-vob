@@ -8,7 +8,7 @@ Branch: `v3/general-video`. Each pillar is committed separately and walker-verif
 | P1 — Format & presets | **done, walker-verified** | `general` | (this commit) |
 | P2 — Segmented render + assembly | **done, walker-verified (real renders)** | `longform` | (this commit) |
 | P3 — Overlay layer (schema 1.2) | **done, walker-verified** | `overlays` | (this commit) |
-| P4 — B-roll gaps + PLAN→INGEST | pending | `gaps` | — |
+| P4 — B-roll gaps + PLAN→INGEST | **done, walker-verified** | `gaps` | (this commit) |
 | Adapters (claude-code + opencode) | pending | boot drift guard | — |
 | Version bump + docs + regression | pending | `setup`/`fanout` re-run | — |
 
@@ -110,3 +110,12 @@ Decisions made during implementation. PRD-locked decisions are not repeated here
   warned on track-zero + composer-invented ids, and the fully-bound overlay composition
   (incl. a PiP `<video>`) saved with merged lint `clean`. Regression: setup/fanout/general
   green.
+- **2026-06-12 — P4 verified.** `node scripts/m5-walker.js gaps` green: schema negatives
+  (gap/render_mode under 1.1; clip+gap mutual exclusion; unknown scene_ref; render_mode
+  enum); the good save emitted `plan/broll_gaps.json` (gap id, scene_ref, desired duration)
+  + `PLAN_BROLL_GAP_UNFILLED` warning + summary/markdown surfacing (`**GAP**`, `[PIP]`,
+  `~ken_burns`); the PLAN→INGEST back-edge re-walked INGEST→INSPECT (content-hash caches:
+  3.7s vs 14s)→INTENT (answers persisted, zero re-asks)→PLAN; the resolved re-save emptied
+  the gap file and cleared the warning. Regression: setup/fanout/overlays green.
+  Note: the PRD's `broll_gap_unfilled` code ships as `PLAN_BROLL_GAP_UNFILLED` (plan-lint
+  codes are PLAN_-prefixed by convention).

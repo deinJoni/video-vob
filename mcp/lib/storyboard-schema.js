@@ -266,12 +266,26 @@ function validateScene(scene, ix, errors, wherePrefix = "", opts = {}) {
 }
 
 // Optional top-level broll_placements[]: the storyboarder's explicit record of
-// where each B-roll cutaway sits over the A-roll/narration spine. ADVISORY — the
-// clips themselves live in scenes[].source_clips with role:"b_roll" (and are
-// materialized + symlinked by the normal machinery); a placement only references
-// one of those existing clips by {scene_id, clip_index}, so there is no separate
-// materialization path and no way to dangle into a 404 at render. Backward-compat:
-// absent/empty broll_placements is fine.
+// where each B-roll cutaway sits over the A-roll/narration spine. PLANNED but
+// non-materializing — the clips themselves live in scenes[].source_clips with
+// role:"b_roll" (and are materialized + symlinked by the normal machinery); a
+// placement only references one of those existing clips by
+// {scene_id, clip_index}, so there is no separate materialization path and no
+// way to dangle into a 404 at render. Backward-compat: absent/empty
+// broll_placements is fine.
+//
+// v3 (schema 1.2) adds:
+//   render_mode  full_frame (cutaway) | pip (inset) | overlay — how COMPOSE lays it
+//   motion       freeform treatment note ("ken_burns", "none", "speed_ramp", ...)
+//   GAP form     { source: "gap", description, desired_duration_seconds,
+//                  scene_ref, narration_span?, reason? } INSTEAD of clip — the
+//                  cut wants coverage the ingested footage can't supply. Gaps
+//                  collect into plan/broll_gaps.json (the shopping list) and
+//                  warn at the plan gate; the human resolves one by ingesting
+//                  more footage (the PLAN→INGEST back-edge).
+const BROLL_RENDER_MODES = Object.freeze(["full_frame", "pip", "overlay"]);
+const BROLL_RENDER_MODE_SET = new Set(BROLL_RENDER_MODES);
+
 function buildSceneClipIndex(scenes) {
   const index = new Map();
   if (!Array.isArray(scenes)) return index;
@@ -283,12 +297,17 @@ function buildSceneClipIndex(scenes) {
   return index;
 }
 
-function validateBrollPlacementsList(placements, scenes, wherePrefix, errors) {
+function isGapPlacement(p) {
+  return isPlainObject(p) && p.source === "gap";
+}
+
+function validateBrollPlacementsList(placements, scenes, wherePrefix, errors, opts = {}) {
   if (placements === undefined || placements === null) return;
   if (!Array.isArray(placements)) {
     errors.push(`${wherePrefix}broll_placements must be an array when present`);
     return;
   }
+  const v12 = opts.typedOverlaysAllowed === true; // schema 1.2 gates the new fields
   const sceneClips = buildSceneClipIndex(scenes);
   placements.forEach((p, ix) => {
     const where = `${wherePrefix}broll_placements[${ix}]`;
@@ -296,8 +315,57 @@ function validateBrollPlacementsList(placements, scenes, wherePrefix, errors) {
       errors.push(`${where} must be an object`);
       return;
     }
+    // v3 additive fields, legal on both forms.
+    if (p.render_mode !== undefined && p.render_mode !== null) {
+      if (!v12) {
+        errors.push(`${where}.render_mode requires schema_version "1.2"`);
+      } else if (!BROLL_RENDER_MODE_SET.has(p.render_mode)) {
+        errors.push(`${where}.render_mode must be one of: ${BROLL_RENDER_MODES.join(", ")}`);
+      }
+    }
+    if (p.motion !== undefined && p.motion !== null) {
+      if (!v12) {
+        errors.push(`${where}.motion requires schema_version "1.2"`);
+      } else if (!isNonEmptyString(p.motion)) {
+        errors.push(`${where}.motion must be a non-empty string when present`);
+      }
+    }
+    if (p.source !== undefined && p.source !== null && p.source !== "gap") {
+      errors.push(`${where}.source must be the literal "gap" when present (concrete placements use clip instead)`);
+    }
+    if (isGapPlacement(p)) {
+      // Gap form: a coverage WISH, no clip. Mutually exclusive with clip.
+      if (!v12) {
+        errors.push(`${where} declares source:"gap" — schema_version must be "1.2"`);
+        return;
+      }
+      if (p.clip !== undefined && p.clip !== null) {
+        errors.push(`${where} cannot carry BOTH clip and source:"gap" — a placement is concrete or a gap, never both`);
+      }
+      if (!isNonEmptyString(p.description)) {
+        errors.push(`${where}.description must be a non-empty string (what footage to shoot/upload)`);
+      }
+      if (!isFiniteNumber(p.desired_duration_seconds) || p.desired_duration_seconds <= 0) {
+        errors.push(`${where}.desired_duration_seconds must be a positive finite number`);
+      }
+      if (!isNonEmptyString(p.scene_ref)) {
+        errors.push(`${where}.scene_ref must name the scene wanting this coverage`);
+      } else if (!sceneClips.has(p.scene_ref)) {
+        errors.push(`${where}.scene_ref "${p.scene_ref}" does not match any scene`);
+      }
+      if (p.narration_span !== undefined && p.narration_span !== null) {
+        const ns = p.narration_span;
+        if (!isPlainObject(ns) || !isFiniteNumber(ns.start_seconds) || !isFiniteNumber(ns.end_seconds) || ns.start_seconds < 0 || ns.end_seconds <= ns.start_seconds) {
+          errors.push(`${where}.narration_span must be { start_seconds, end_seconds } with end > start >= 0 when present`);
+        }
+      }
+      if (p.reason !== undefined && p.reason !== null && typeof p.reason !== "string") {
+        errors.push(`${where}.reason must be a string when present`);
+      }
+      return; // gap placements skip the clip-reference checks below
+    }
     if (!isPlainObject(p.clip)) {
-      errors.push(`${where}.clip must be an object { scene_id, clip_index }`);
+      errors.push(`${where}.clip must be an object { scene_id, clip_index } (or declare source:"gap" with a description under schema 1.2)`);
     } else {
       if (!isNonEmptyString(p.clip.scene_id)) {
         errors.push(`${where}.clip.scene_id must be a non-empty string`);
@@ -327,8 +395,31 @@ function validateBrollPlacementsList(placements, scenes, wherePrefix, errors) {
   });
 }
 
-function validateBrollPlacements(input, errors) {
-  validateBrollPlacementsList(input.broll_placements, input.scenes, "", errors);
+function validateBrollPlacements(input, errors, opts = {}) {
+  validateBrollPlacementsList(input.broll_placements, input.scenes, "", errors, opts);
+}
+
+// Every gap placement across both document forms, normalized for
+// plan/broll_gaps.json and the plan gate. Each gap gets a stable derived id.
+function collectBrollGaps(parsed) {
+  const gaps = [];
+  for (const timeline of storyboardTimelines(parsed)) {
+    timeline.broll_placements.forEach((p, ix) => {
+      if (!isGapPlacement(p)) return;
+      gaps.push({
+        id: timeline.short_id !== null ? `${timeline.short_id}:gap-${ix + 1}` : `gap-${ix + 1}`,
+        ...(timeline.short_id !== null ? { short_id: timeline.short_id } : {}),
+        placement_index: ix,
+        description: isNonEmptyString(p.description) ? p.description : null,
+        desired_duration_seconds: isFiniteNumber(p.desired_duration_seconds) ? p.desired_duration_seconds : null,
+        scene_ref: isNonEmptyString(p.scene_ref) ? p.scene_ref : null,
+        narration_span: isPlainObject(p.narration_span) ? p.narration_span : null,
+        render_mode: isNonEmptyString(p.render_mode) ? p.render_mode : null,
+        reason: isNonEmptyString(p.reason) ? p.reason : null,
+      });
+    });
+  }
+  return gaps;
 }
 
 // --- Multi-short fan-out (schema 1.1) ---------------------------------------
@@ -372,7 +463,7 @@ function validateShort(short, ix, seenShortIds, errors, opts = {}) {
   } else {
     short.scenes.forEach((scene, sceneIx) => validateScene(scene, sceneIx, errors, `${where}.`, opts));
   }
-  validateBrollPlacementsList(short.broll_placements, short.scenes, `${where}.`, errors);
+  validateBrollPlacementsList(short.broll_placements, short.scenes, `${where}.`, errors, opts);
 }
 
 // --- Narrative segments (schema 1.2) -----------------------------------------
@@ -655,7 +746,7 @@ function validateStoryboard(input) {
     if (!isFiniteNumber(input.total_target_duration_seconds) || input.total_target_duration_seconds <= 0) {
       errors.push("total_target_duration_seconds must be a positive finite number");
     }
-    validateBrollPlacements(input, errors);
+    validateBrollPlacements(input, errors, sceneOpts);
   }
   validateSegments(input, errors);
   validateRenderSegmentation(input, errors);
@@ -1263,6 +1354,23 @@ function lintStoryboardPlan(parsed, context) {
   lintBrollPlacements(parsed, scenes, sceneById, errors);
   lintOverlays(scenes, ctx, errors, warnings);
 
+  // B-roll gaps: informational warnings, never blockers — the plan gate is
+  // where the human decides "upload these N shots or hold on the spine".
+  (Array.isArray(parsed.broll_placements) ? parsed.broll_placements : []).forEach((p, k) => {
+    if (!isGapPlacement(p)) return;
+    warnings.push({
+      code: "PLAN_BROLL_GAP_UNFILLED",
+      message: `broll_placements[${k}] wants coverage the ingested footage can't supply — "${typeof p.description === "string" ? p.description : "?"}" (~${isFiniteNumber(p.desired_duration_seconds) ? round1(p.desired_duration_seconds) : "?"}s for scene "${typeof p.scene_ref === "string" ? p.scene_ref : "?"}"). Upload matching footage and re-ingest (the PLAN→INGEST back-edge), or approve the plan without it.`,
+      placement_index: k,
+      scene_id: isNonEmptyString(p.scene_ref) ? p.scene_ref : null,
+      data: {
+        description: typeof p.description === "string" ? p.description : null,
+        desired_duration_seconds: isFiniteNumber(p.desired_duration_seconds) ? p.desired_duration_seconds : null,
+        scene_ref: isNonEmptyString(p.scene_ref) ? p.scene_ref : null,
+      },
+    });
+  });
+
   warnHookShape(scenes, warnings, disabled);
   warnDurations(parsed, scenes, ctx.targetSeconds, warnings);
   warnBrollHolds(scenes, warnings);
@@ -1544,10 +1652,13 @@ module.exports = {
   CLIP_ROLES,
   SCENE_TRANSITIONS,
   PLAN_LINT_THRESHOLDS,
+  BROLL_RENDER_MODES,
   allStoryboardScenes,
   clipRoleOf,
+  collectBrollGaps,
   expectedTimelineDurationSeconds,
   findTimeline,
+  isGapPlacement,
   lintStoryboardPlan,
   sceneVideoCount,
   storyboardHasSegments,

@@ -15,12 +15,15 @@ const { deriveRenderPlan, validSegmentRenders } = require("./render-segments.js"
 // INTENT -> PLAN -> COMPOSE: the former BRIEF and STORYBOARD phases are merged
 // into a single PLAN phase (one human gate that presents intent summary +
 // A-roll order + chosen takes + B-roll placements together). Back-edges that
-// used to target STORYBOARD now target PLAN.
+// used to target STORYBOARD now target PLAN. PLAN -> INGEST (v3) is the b-roll
+// gap-resolution back-edge: the user drops MORE footage, INGEST/INSPECT re-run
+// (content-hash caches make old files cheap), and PLAN re-derives with the
+// extended B-roll index — the sanctioned path for plan/broll_gaps.json.
 const ALLOWED_TRANSITIONS = Object.freeze({
   INGEST:   ["INSPECT"],
   INSPECT:  ["INTENT"],
   INTENT:   ["PLAN"],
-  PLAN:     ["COMPOSE", "INTENT"],
+  PLAN:     ["COMPOSE", "INTENT", "INGEST"],
   COMPOSE:  ["PREVIEW", "PLAN"],
   PREVIEW:  ["RENDER", "COMPOSE", "PLAN"],
   RENDER:   ["PACKAGE", "COMPOSE", "PLAN"],
@@ -365,6 +368,12 @@ function summarizeStoryboard(slot) {
           };
         }),
       }
+      : {}),
+    // B-roll gap shopping list (v3): >0 means the plan wants coverage the
+    // ingested footage can't supply — surface the list at the plan gate.
+    broll_gap_count: intOr(s.broll_gap_count, 0),
+    ...(intOr(s.broll_gap_count, 0) > 0 && strOrNull(s.broll_gaps_path)
+      ? { broll_gaps_path: s.broll_gaps_path }
       : {}),
     plan_lint: planLint
       ? { error_count: intOr(planLint.error_count, 0), warning_count: intOr(planLint.warning_count, 0) }
