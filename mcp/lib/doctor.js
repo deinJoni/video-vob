@@ -17,6 +17,7 @@ const { checkHyperframesAvailable, resolveBrowserGpuMode, renderWorkerArgs } = r
 const { checkAsrAvailable } = require("./asr-backend.js");
 const { recommendedHeavyEncodeConcurrency } = require("./concurrency.js");
 const hostProfile = require("./host-profile.js");
+const { describeVideoTypes, resolveActiveVideoType } = require("./video-types.js");
 
 const GIB = 1024 * 1024 * 1024;
 
@@ -40,11 +41,35 @@ function level(ok, warnOnly = false) {
   return warnOnly ? "warn" : "error";
 }
 
+// Best-effort per-project video-type resolution for the report — a missing or
+// unreadable project must never fail the doctor.
+function resolveProjectVideoType(projectId) {
+  if (typeof projectId !== "string" || !projectId.trim()) return null;
+  try {
+    // Lazy require: session-state pulls the FSM stack, which the doctor only
+    // needs for this one optional lookup.
+    const { readSessionStateStrict } = require("./session-state.js");
+    const state = readSessionStateStrict(projectId.trim());
+    const vt = resolveActiveVideoType(state);
+    return {
+      project_id: projectId.trim(),
+      canonical: vt.canonical,
+      source: vt.source,
+      lint_ruleset: vt.preset.lint_ruleset,
+      segmentation: vt.preset.render.segmentation,
+      clean_cut: vt.preset.editorial.clean_cut,
+      platform_default: vt.preset.platform_default,
+    };
+  } catch {
+    return null;
+  }
+}
+
 // Run all checks and return a structured report. `ok` is true only when there
 // are no hard blockers (a missing ASR engine is a WARNING, not a blocker — the
 // user can pass skip_transcription or install one — but ffmpeg/ffprobe missing
 // is a blocker because nothing downstream runs).
-function runDoctor() {
+function runDoctor({ projectId = null } = {}) {
   const platform = process.platform;
   const totalmem = (() => { try { return os.totalmem(); } catch { return 0; } })();
   const freemem = (() => { try { return os.freemem(); } catch { return 0; } })();
@@ -104,6 +129,27 @@ function runDoctor() {
     python: asr.python || null,
   });
 
+  // Video-type presets (v3): the resolved table + sources, mirroring the
+  // report.tuning pattern. With a project_id, also that project's resolution.
+  const videoTypes = {
+    ...describeVideoTypes(),
+    project: resolveProjectVideoType(projectId),
+  };
+  checks.push({
+    name: "video-types",
+    level: "ok",
+    detail: `presets: ${videoTypes.built_in.join(", ")}`
+      + (videoTypes.user_defined.length ? ` + user: ${videoTypes.user_defined.join(", ")}` : "")
+      + (videoTypes.env_override ? ` | VOB_VIDEO_TYPE=${videoTypes.env_override}` : "")
+      + (videoTypes.project
+        ? ` | ${videoTypes.project.project_id}: ${videoTypes.project.canonical} [${videoTypes.project.source}] (lint=${videoTypes.project.lint_ruleset}, segmentation=${videoTypes.project.segmentation}, clean_cut=${videoTypes.project.clean_cut})`
+        : ""),
+    recommendation: videoTypes.user_defined.length > 0 || videoTypes.env_override
+      ? null
+      : "To define custom presets, drop a .vob-config/video-types.json (see video-types.example.json) or set VOB_VIDEO_TYPE in the MCP launch env.",
+    blocker: false,
+  });
+
   // Host capacity + derived ceilings.
   const tuningLine = tuning.settings.map((s) => `${s.setting}=${s.value} [${s.source}]`).join(", ");
   checks.push({
@@ -160,6 +206,7 @@ function runDoctor() {
       gpu_mode: gpuMode || null,
     },
     tuning,
+    video_types: videoTypes,
     checks,
     advisories,
     blockers,

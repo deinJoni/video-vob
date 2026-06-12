@@ -7,6 +7,7 @@ const { intentAnswerRaw } = require("./intent-schema.js");
 const { inspectCleanSpeechPath } = require("./paths.js");
 const { parseDurationSpec, parseDurationToSeconds } = require("./platform-profiles.js");
 const { readJsonFile } = require("./storage.js");
+const { activeLintRules } = require("./video-types.js");
 
 const SCHEMA_VERSION = "1.0";
 // 1.1 adds the optional top-level shorts[] (multi-short fan-out). A document
@@ -380,6 +381,12 @@ function validateStoryboard(input) {
     if (!isNonEmptyString(input.target.tone)) {
       errors.push("target.tone must be a non-empty string");
     }
+    // v3: fps is a real per-profile field; the storyboarder copies it from the
+    // platform profile so the composer (data-fps) and QC read it from disk.
+    if (input.target.fps !== undefined && input.target.fps !== null
+      && (!isFiniteNumber(input.target.fps) || input.target.fps <= 0)) {
+      errors.push("target.fps must be a positive finite number when present (e.g. 24, 25, 30, 50, 60)");
+    }
   }
   if (hasShorts) {
     // Fan-out form: shorts[] carries the timelines; the top-level timeline
@@ -628,10 +635,15 @@ function lintBrollPlacements(parsed, scenes, sceneById, errors) {
   });
 }
 
-function warnHookShape(scenes, warnings) {
+// Hook-first/-length are RETENTION heuristics (social short-form) — the active
+// ruleset (preset-driven) can disable either; long-form/cinematic/tutorial
+// open however the format wants.
+function warnHookShape(scenes, warnings, disabledRules) {
+  const disabled = disabledRules instanceof Set ? disabledRules : new Set();
   const first = scenes.length > 0 && isPlainObject(scenes[0]) ? scenes[0] : null;
   if (!first) return;
   if (first.purpose !== "hook") {
+    if (disabled.has("PLAN_HOOK_NOT_FIRST")) return;
     warnings.push({
       code: "PLAN_HOOK_NOT_FIRST",
       message: `scenes[0] has purpose "${first.purpose}" — short-form cuts should open on a hook scene`,
@@ -640,6 +652,7 @@ function warnHookShape(scenes, warnings) {
       data: { purpose: typeof first.purpose === "string" ? first.purpose : null },
     });
   } else if (isFiniteNumber(first.target_duration_seconds) && first.target_duration_seconds > PLAN_LINT_THRESHOLDS.hook_max_s) {
+    if (disabled.has("PLAN_HOOK_TOO_LONG")) return;
     warnings.push({
       code: "PLAN_HOOK_TOO_LONG",
       message: `hook scene is ${round1(first.target_duration_seconds)}s — hooks land in ≤3.5s; front-load the decisive moment`,
@@ -812,10 +825,14 @@ function warnCleanSpeechStraddles(scenes, cleanSpeech, warnings) {
   });
 }
 
-// context = { state, manifest, transcript, cleanSpeech, targetSeconds } — all
-// best-effort/nullable. Returns { errors: Finding[], warnings: Finding[] };
-// Finding = { code, message, scene_id?, scene_index?, clip_index?,
-// placement_index?, data? }. No cap here — the caller caps for display.
+// context = { state, manifest, transcript, cleanSpeech, targetSeconds,
+// lintRules } — all best-effort/nullable. lintRules (activeLintRules(state))
+// gates the preset-dependent checks: hook heuristics under `retention` only,
+// clean-speech straddles only when the preset's editorial.clean_cut is on.
+// Absent lintRules => v2.1 behavior (every rule on). Returns
+// { errors: Finding[], warnings: Finding[] }; Finding = { code, message,
+// scene_id?, scene_index?, clip_index?, placement_index?, data? }. No cap here
+// — the caller caps for display.
 function lintStoryboardPlan(parsed, context) {
   const errors = [];
   const warnings = [];
@@ -823,6 +840,9 @@ function lintStoryboardPlan(parsed, context) {
     return { errors: [{ code: "PLAN_INVALID_DOCUMENT", message: "storyboard must be a JSON object" }], warnings };
   }
   const ctx = isPlainObject(context) ? context : {};
+  const rules = isPlainObject(ctx.lintRules) ? ctx.lintRules : null;
+  const disabled = rules && rules.disabled instanceof Set ? rules.disabled : new Set();
+  const cleanCutOn = rules ? rules.clean_cut === true : true;
   const scenes = Array.isArray(parsed.scenes) ? parsed.scenes : [];
   const sceneById = new Map();
   scenes.forEach((scene, ix) => {
@@ -833,7 +853,7 @@ function lintStoryboardPlan(parsed, context) {
   lintCaptionsOnSilent(scenes, ctx.transcript, errors, ctx.transcriptForFileIndex);
   lintBrollPlacements(parsed, scenes, sceneById, errors);
 
-  warnHookShape(scenes, warnings);
+  warnHookShape(scenes, warnings, disabled);
   warnDurations(parsed, scenes, ctx.targetSeconds, warnings);
   warnBrollHolds(scenes, warnings);
   warnBrollRepeats(parsed, sceneById, warnings);
@@ -842,9 +862,67 @@ function lintStoryboardPlan(parsed, context) {
   if (ctx.suppress_key_moment_check !== true) {
     warnKeyMomentCoverage(scenes, ctx.state, warnings);
   }
-  warnCleanSpeechStraddles(scenes, ctx.cleanSpeech, warnings);
+  if (cleanCutOn) {
+    warnCleanSpeechStraddles(scenes, ctx.cleanSpeech, warnings);
+  }
 
   return { errors, warnings };
+}
+
+// Chaptered-ruleset extras (long-form/tutorial/podcast presets). Single-timeline
+// only — segments[] is mutually exclusive with shorts[].
+const CHAPTERS_MISSING_MIN_TOTAL_S = 480; // ≥8 min without chapters is unnavigable
+const SECTION_IMBALANCE_RATIO = 3;
+const SECTION_IMBALANCE_MIN_S = 60;
+
+function segmentDurationSeconds(segment, sceneById) {
+  if (!isPlainObject(segment) || !Array.isArray(segment.scene_ids)) return null;
+  let sum = 0;
+  for (const sceneId of segment.scene_ids) {
+    const entry = isNonEmptyString(sceneId) ? sceneById.get(sceneId) : null;
+    const d = entry && isFiniteNumber(entry.scene.target_duration_seconds) ? entry.scene.target_duration_seconds : null;
+    if (d === null) return null;
+    sum += d;
+  }
+  return sum;
+}
+
+function lintChapterRules(parsed, warnings) {
+  const total = isFiniteNumber(parsed.total_target_duration_seconds) ? parsed.total_target_duration_seconds : null;
+  const segments = Array.isArray(parsed.segments) ? parsed.segments.filter(isPlainObject) : [];
+  if (segments.length === 0) {
+    if (total !== null && total >= CHAPTERS_MISSING_MIN_TOTAL_S) {
+      warnings.push({
+        code: "PLAN_CHAPTERS_MISSING",
+        message: `a ${round1(total)}s video under a chaptered preset declares no segments[] — viewers can't navigate; add narrative acts/chapters (they also become YouTube chapter markers at PACKAGE)`,
+        data: { total_target_duration_seconds: total },
+      });
+    }
+    return;
+  }
+  if (segments.length >= 3) {
+    const sceneById = new Map();
+    (Array.isArray(parsed.scenes) ? parsed.scenes : []).forEach((scene, ix) => {
+      if (isPlainObject(scene) && isNonEmptyString(scene.scene_id)) sceneById.set(scene.scene_id, { scene, index: ix });
+    });
+    const durations = segments
+      .map((segment) => ({ segment, seconds: segmentDurationSeconds(segment, sceneById) }))
+      .filter((entry) => entry.seconds !== null);
+    if (durations.length >= 3) {
+      const sorted = durations.map((e) => e.seconds).sort((a, b) => a - b);
+      const median = sorted[Math.floor(sorted.length / 2)];
+      for (const { segment, seconds } of durations) {
+        if (median > 0 && seconds > median * SECTION_IMBALANCE_RATIO && seconds - median >= SECTION_IMBALANCE_MIN_S) {
+          warnings.push({
+            code: "PLAN_SECTION_IMBALANCE",
+            message: `segment "${segment.segment_id}" runs ${round1(seconds)}s vs a ${round1(median)}s median section — consider splitting it (sections over ${SECTION_IMBALANCE_RATIO}x the median read as a wall)`,
+            segment_id: isNonEmptyString(segment.segment_id) ? segment.segment_id : null,
+            data: { segment_seconds: seconds, median_seconds: median },
+          });
+        }
+      }
+    }
+  }
 }
 
 // Context loaders — all best-effort: a missing/corrupt artifact silently
@@ -975,12 +1053,16 @@ function validateStoryboardContent(parsed, state) {
     return { ok: false, errors: ["storyboard must be a JSON object"], warnings: [] };
   }
   const winnerTranscript = loadTranscript(state && state.inspect && state.inspect.transcript_path);
+  // Preset-driven ruleset (retention/chaptered/montage/general) + the
+  // clean-cut editorial flag, resolved once per validation pass.
+  const lintRules = activeLintRules(isPlainObject(state) ? state : null);
   const baseContext = {
     state: isPlainObject(state) ? state : null,
     manifest: loadManifestDocument(state),
     transcript: winnerTranscript,
     transcriptForFileIndex: buildTranscriptResolver(state, winnerTranscript),
     cleanSpeech: loadCleanSpeech(state),
+    lintRules,
   };
   const errors = [...lintDuplicateSceneIds(parsed)];
   const warnings = [];
@@ -990,6 +1072,9 @@ function validateStoryboardContent(parsed, state) {
     const result = lintStoryboardPlan(parsed, context);
     errors.push(...result.errors);
     warnings.push(...result.warnings);
+    if (lintRules.chapter_rules) {
+      lintChapterRules(parsed, warnings);
+    }
     return { ok: errors.length === 0, errors, warnings };
   }
 

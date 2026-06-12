@@ -11,6 +11,7 @@ const {
   validateIntentAnswerValue,
 } = require("../intent-schema.js");
 const { parseDurationSpec, resolvePlatform } = require("../platform-profiles.js");
+const { canonicalizeVideoType, getVideoTypePreset } = require("../video-types.js");
 
 const MAX_ANSWER_LENGTH = 4096;
 
@@ -65,6 +66,17 @@ function canonicalizeAnswer(key, trimmed) {
       ...(spec.per_deliverable ? { per_deliverable: true } : {}),
     };
   }
+  if (key === "video_type") {
+    // Preset selection. Unrecognized input stores canonical:null so the
+    // resolver falls through to platform+duration derivation instead of
+    // pinning a wrong preset; recognized input snapshots the preset for audit.
+    const { raw, canonical } = canonicalizeVideoType(trimmed);
+    return {
+      raw,
+      canonical,
+      ...(canonical ? { preset: getVideoTypePreset(canonical) } : {}),
+    };
+  }
   return trimmed; // all other keys stay plain strings
 }
 
@@ -111,7 +123,7 @@ function recordIntentAnswer(args) {
 
 module.exports = Object.freeze({
   name: "vob_record_intent_answer",
-  description: "Record one intent answer (overwrites the key). Five required keys: target_platform, target_duration, tone, key_moments, music_vo; conditional keys (audio_treatment, captions_style) per inspect findings. audio_treatment enum: transcribe_captions | keep_audio | discard_audio | keep_ambient. target_platform/target_duration are canonicalized server-side ({raw,canonical,profile} / {raw,seconds,range?,per_deliverable?} — ranges like '20-35s' carry {min_seconds,max_seconds} with seconds = midpoint; 'per short'-style qualifiers set per_deliverable:true). Returns {recorded, missing_required_keys}.",
+  description: "Record one intent answer (overwrites the key). Five required keys: target_platform, target_duration, tone, key_moments, music_vo; conditional keys (audio_treatment, captions_style) per inspect findings; optional key video_type (preset: social-short | long-form | cinematic | tutorial | podcast | a user-defined preset — never required; unanswered, the engine derives it from platform+duration). audio_treatment enum: transcribe_captions | keep_audio | discard_audio | keep_ambient. target_platform/target_duration/video_type are canonicalized server-side ({raw,canonical,profile} / {raw,seconds,range?,per_deliverable?} / {raw,canonical,preset?} — ranges like '20-35s' carry {min_seconds,max_seconds} with seconds = midpoint; 'per short'-style qualifiers set per_deliverable:true). Returns {recorded, missing_required_keys}.",
   inputSchema: {
     type: "object",
     properties: {

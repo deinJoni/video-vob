@@ -344,6 +344,27 @@ function runCompositionQc({ files, storyboard, sourceLinks, sceneClipLinks, chec
     }
   }
 
+  // --- fps: storyboard target vs the master root's data-fps -------------------
+  // hyperframes renders at data-fps (default 30 when absent). A cinematic
+  // 24fps plan rendered at 30 is a silent format miss — warn, never block
+  // (the render still succeeds; cadence is a craft call the user can accept).
+  if (sb !== null && effectiveMaster) {
+    const targetFps = sb.target && typeof sb.target === "object" ? Number(sb.target.fps) : NaN;
+    if (Number.isFinite(targetFps) && targetFps > 0) {
+      const rawAttr = effectiveMaster.tag.attrs["data-fps"];
+      const masterFps = rawAttr === undefined ? 30 : Number(rawAttr);
+      if (!Number.isFinite(masterFps) || Math.abs(masterFps - targetFps) > 0.01) {
+        findings.push(makeFinding(
+          "warning",
+          "vob/fps_mismatch",
+          `storyboard target.fps is ${targetFps} but the master root ${rawAttr === undefined ? "has no data-fps (hyperframes defaults to 30)" : `declares data-fps="${rawAttr}"`} — set data-fps="${targetFps}" on the composition root`,
+          effectiveMaster.file,
+          effectiveMaster.tag.line,
+        ));
+      }
+    }
+  }
+
   // --- E5: storyboard scene coverage (with the overlay-mode exemption) --------
   if (sb !== null) {
     const uncovered = [];

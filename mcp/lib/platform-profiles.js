@@ -62,6 +62,34 @@ const PLATFORM_PROFILES = Object.freeze({
     caption_defaults: { anchor: "bottom", offset_px: 160, min_font_px: 48, max_words_per_line: 5 },
     thumbnail_timestamp_percent: 15,
   },
+  // --- v3 long-form / cinematic / tutorial profiles --------------------------
+  // fps is a real per-profile field (24 for cinematic; any of 24/25/30/50/60 is
+  // legal via render-profiles.json overrides). Long-form ideals are minutes,
+  // not seconds — duration lint reads the ACTIVE profile, never a global short
+  // assumption.
+  youtube_long: {
+    width: 1920, height: 1080, aspect: "16:9", fps: 30,
+    safe_top_px: 60, safe_bottom_px: 100,
+    ideal_duration_s: { min: 300, max: 1200 }, max_duration_s: null,
+    caption_defaults: { anchor: "bottom", offset_px: 120, min_font_px: 36, max_words_per_line: 8 },
+    thumbnail_timestamp_percent: 15,
+  },
+  cinematic: {
+    width: 1920, height: 1080, aspect: "16:9", fps: 24,
+    safe_top_px: 60, safe_bottom_px: 100,
+    ideal_duration_s: { min: 60, max: 600 }, max_duration_s: null,
+    caption_defaults: { anchor: "bottom", offset_px: 120, min_font_px: 36, max_words_per_line: 8 },
+    thumbnail_timestamp_percent: 25,
+  },
+  tutorial: {
+    // Screen-recording safe areas: UI chrome lives at the very edges, so the
+    // bands are slim; captions/callouts must clear recorded cursors and docks.
+    width: 1920, height: 1080, aspect: "16:9", fps: 30,
+    safe_top_px: 48, safe_bottom_px: 96,
+    ideal_duration_s: { min: 120, max: 1200 }, max_duration_s: null,
+    caption_defaults: { anchor: "bottom", offset_px: 110, min_font_px: 32, max_words_per_line: 9 },
+    thumbnail_timestamp_percent: 10,
+  },
 });
 
 const PLATFORM_ALIASES = Object.freeze({
@@ -69,7 +97,14 @@ const PLATFORM_ALIASES = Object.freeze({
   "reels": "reels", "reel": "reels", "instagram": "reels", "instagram reels": "reels",
   "ig": "reels", "ig reels": "reels", "insta": "reels",
   "shorts": "shorts", "short": "shorts", "youtube shorts": "shorts", "yt shorts": "shorts", "ytshorts": "shorts",
-  "youtube": "youtube", "yt": "youtube", "long-form": "youtube", "longform": "youtube",
+  "youtube": "youtube", "yt": "youtube",
+  // v3: "long-form" now means the long-form profile (minutes-scale ideals), not
+  // generic youtube. Podcast→video lands on the same 16:9 long-form geometry.
+  "long-form": "youtube_long", "longform": "youtube_long", "long form": "youtube_long",
+  "youtube long": "youtube_long", "youtube_long": "youtube_long", "youtube long-form": "youtube_long",
+  "podcast": "youtube_long", "documentary": "youtube_long",
+  "cinematic": "cinematic", "film": "cinematic", "movie": "cinematic", "short film": "cinematic",
+  "tutorial": "tutorial", "screencast": "tutorial", "screen recording": "tutorial", "walkthrough": "tutorial",
   "landscape": "landscape", "horizontal": "landscape", "16:9": "landscape", "widescreen": "landscape",
   "square": "square", "1:1": "square", "instagram feed": "square", "feed": "square",
   "vertical": "vertical", "portrait": "vertical", "9:16": "vertical",

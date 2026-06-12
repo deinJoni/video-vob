@@ -10,13 +10,17 @@
 // rejection paths (errors AND warnings asserted), so this stays the executable
 // spec.
 //
-// Phases: setup | preview | render | package | all | fanout. Heavy steps
-// beyond setup are env-gated by invocation; the in-COMPOSE snapshot QC step is
-// gated by VOB_WALKER_SNAPSHOT=1. `fanout` is standalone (own project
-// <id>-fanout): the multi-short storyboard (schema 1.1 shorts[]), per-short
-// plan lint, union clip materialization, short_id-scoped composition QC, the
-// import-with-normalize deliverable loop, the package_output fan-out guard,
-// and the shorts_missing_deliverables gate — no real renders.
+// Phases: setup | preview | render | package | all | fanout | general |
+// longform | overlays | gaps. Heavy steps beyond setup are env-gated by
+// invocation; the in-COMPOSE snapshot QC step is gated by VOB_WALKER_SNAPSHOT=1.
+// `fanout` is standalone (own project <id>-fanout): the multi-short storyboard
+// (schema 1.1 shorts[]), per-short plan lint, union clip materialization,
+// short_id-scoped composition QC, the import-with-normalize deliverable loop,
+// the package_output fan-out guard, and the shorts_missing_deliverables gate —
+// no real renders. The v3 phases are likewise standalone (own projects):
+// `general` = P1 presets/format (video_type resolution, lint rulesets, fps QC);
+// `longform` = P2 segmented render + vob_assemble_video (REAL renders);
+// `overlays` = P3 typed overlay layer; `gaps` = P4 b-roll gap shopping list.
 
 const fs = require("fs");
 const path = require("path");
@@ -263,8 +267,13 @@ function badStoryboard(goodSb, durationSeconds) {
 // requires the timing attrs ON the media element — media_missing_data_start),
 // caption_segments re-timed onto the timeline at ≥56px, font kit via
 // ./fonts.css, and the GSAP-stub timeline registration hyperframes expects.
-function composition(sb) {
+// opts.fps adds data-fps to the master root (v3 cinematic 24fps path);
+// opts.width/height override the output geometry (landscape presets).
+function composition(sb, opts = {}) {
   const total = sb.total_target_duration_seconds;
+  const W = Number.isFinite(opts.width) ? opts.width : 1080;
+  const H = Number.isFinite(opts.height) ? opts.height : 1920;
+  const fpsAttr = Number.isFinite(opts.fps) ? `\n     data-fps="${opts.fps}"` : "";
   const sceneDivs = [];
   const captionDivs = [];
   let cursor = 0;
@@ -296,8 +305,8 @@ function composition(sb) {
 <link rel="stylesheet" href="./fonts.css">
 <style>
 * { box-sizing: border-box; margin: 0; padding: 0; }
-html, body { width: 1080px; height: 1920px; background: #000; font-family: "Inter", sans-serif; }
-#master-root { position: relative; width: 1080px; height: 1920px; overflow: hidden; }
+html, body { width: ${W}px; height: ${H}px; background: #000; font-family: "Inter", sans-serif; }
+#master-root { position: relative; width: ${W}px; height: ${H}px; overflow: hidden; }
 video.full-bleed { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; display: block; }
 .clip { position: absolute; inset: 0; }
 .overlay { display: flex; align-items: center; justify-content: center; pointer-events: none; }
@@ -330,8 +339,8 @@ video.full-bleed { position: absolute; inset: 0; width: 100%; height: 100%; obje
 <body>
 <div id="master-root"
      data-composition-id="master"
-     data-width="1080"
-     data-height="1920"
+     data-width="${W}"
+     data-height="${H}"${fpsAttr}
      data-start="0"
      data-duration="${total}">
 ${sceneDivs.join("\n")}
@@ -842,10 +851,283 @@ async function runFanout() {
   console.log(`\n=== fan-out final phase: ${final.phase}   deliverables: ${final.deliverable_count}   project: ${final.project_id}`);
 }
 
+// ---------------------------------------------------------------------------
+// v3 shared rails: init → ingest → INSPECT (canned classification + ack) →
+// INTENT (drain required + conditional keys) → PLAN (brief saved + confirmed).
+// Every v3 walker phase (general/longform/overlays/gaps) boots through this.
+
+async function bootstrapToPlan({ projectId, target, intentAnswers, briefBody }) {
+  try {
+    await step("init project", () =>
+      call("vob_init_project", { project_id: projectId, target }),
+    );
+  } catch (e) {
+    if (/already exists/.test(e.message)) console.log("   (already exists — continuing)");
+    else throw e;
+  }
+  const ingest = await step("ingest (ffprobe)", () =>
+    call("vob_ingest_file", { project_id: projectId, source_path: SOURCE }),
+  );
+  const file0 = ingest.files[0];
+  await step("transition INGEST→INSPECT", () =>
+    call("vob_transition_phase", { project_id: projectId, to_phase: "INSPECT" }),
+  );
+  const inspect = await step("inspect (ffmpeg + ASR)", () =>
+    call("vob_inspect_source", { project_id: projectId }),
+  );
+  if (inspect.segment_count > 0) {
+    const segmentsDoc = JSON.parse(fs.readFileSync(inspect.segments_path, "utf8"));
+    await step("save classification (canned)", () =>
+      call("vob_save_classification", { project_id: projectId, ...cannedClassification(segmentsDoc) }),
+    );
+  }
+  await step("acknowledge inspect", () => call("vob_acknowledge_inspect", { project_id: projectId }));
+  await step("transition INSPECT→INTENT", () =>
+    call("vob_transition_phase", { project_id: projectId, to_phase: "INTENT" }),
+  );
+
+  let lastRecord = { missing_required_keys: [] };
+  for (const [k, v] of Object.entries(intentAnswers)) {
+    lastRecord = await step(`record intent ${k}`, () =>
+      call("vob_record_intent_answer", { project_id: projectId, key: k, value: v }),
+    );
+  }
+  if (inspect.audio_present) {
+    const audioTreatment = inspect.speech_detected ? "transcribe_captions" : "keep_ambient";
+    lastRecord = await step(`record intent audio_treatment=${audioTreatment}`, () =>
+      call("vob_record_intent_answer", { project_id: projectId, key: "audio_treatment", value: audioTreatment }),
+    );
+    if (audioTreatment === "transcribe_captions") {
+      lastRecord = await step("record intent captions_style", () =>
+        call("vob_record_intent_answer", { project_id: projectId, key: "captions_style", value: "bold sans, white, pill" }),
+      );
+    }
+  }
+  assert(
+    Array.isArray(lastRecord.missing_required_keys) && lastRecord.missing_required_keys.length === 0,
+    `intent keys not drained: ${JSON.stringify(lastRecord.missing_required_keys)}`,
+  );
+  await step("transition INTENT→PLAN", () =>
+    call("vob_transition_phase", { project_id: projectId, to_phase: "PLAN" }),
+  );
+  const savedBrief = await step("save brief", () =>
+    call("vob_save_brief", { project_id: projectId, content: briefBody }),
+  );
+  await step("confirm brief", () => call("vob_confirm_brief", { project_id: projectId }));
+  const summary = await call("vob_read_state_summary", { project_id: projectId });
+  return { ingest, file0, inspect, savedBrief, summary };
+}
+
+// ---------------------------------------------------------------------------
+// v3 `general` walker phase — the P1 executable spec: video_type preset
+// resolution (derived / intent / env / user file), summary + doctor surfaces,
+// lint-ruleset gating at save (chaptered vs retention), and the target.fps →
+// data-fps QC path. No renders.
+
+function generalScene({ sceneId, sequence, purpose, win, targetSeconds, sourcePath }) {
+  return {
+    scene_id: sceneId,
+    sequence,
+    purpose,
+    target_duration_seconds: targetSeconds,
+    summary: `${purpose} window at ${win.in}s`,
+    source_clips: [
+      { manifest_file_index: 0, source_path: sourcePath, in_seconds: win.in, out_seconds: win.out },
+    ],
+    overlays: [],
+    captions: null,
+    pacing: "medium",
+  };
+}
+
+async function runGeneral() {
+  const GEN = `${PROJECT_ID}-general`;
+  const vtLib = require("../mcp/lib/video-types.js");
+  console.log(`=== v3 general walker (presets/format) — project: ${GEN}`);
+
+  const boot = await bootstrapToPlan({
+    projectId: GEN,
+    target: { format: "youtube", duration: "12 minutes" },
+    intentAnswers: {
+      target_platform: "youtube",
+      target_duration: "12 minutes",
+      tone: "calm documentary",
+      key_moments: "none in particular",
+      music_vo: "neither",
+    },
+    briefBody: `# Brief: ${GEN}\n\n## Target\n- long-form youtube, ~12 minutes\n\n## Design language\n- Typography: headline Hanken Grotesk; captions Inter\n- Palette: bg #000, text #FFF\n- Motion: medium\n`,
+  });
+  const D = boot.file0.duration_seconds;
+  const srcPath = boot.file0.path || SOURCE;
+
+  // 1. Derivation: youtube + 12 min ⇒ long-form (no video_type answered).
+  await step("video_type derived (youtube + 12min ⇒ long-form)", async () => {
+    const v = boot.summary.video_type;
+    assert(v && v.canonical === "long-form" && v.source === "derived",
+      `expected derived long-form, got ${JSON.stringify(v)}`);
+    assert(v.lint_ruleset === "chaptered" && v.segmentation === "auto" && v.clean_cut === true,
+      `unexpected long-form preset digest: ${JSON.stringify(v)}`);
+  });
+
+  // 2. Free-text intent answer canonicalizes; summary rotates to source:intent;
+  //    the answers echo stays lean ({raw, canonical} — no preset blob).
+  await step("record video_type 'a cinematic montage please'", async () => {
+    const rec = await call("vob_record_intent_answer", { project_id: GEN, key: "video_type", value: "a cinematic montage please" });
+    assert(rec.recorded.value && rec.recorded.value.canonical === "cinematic",
+      `expected canonical cinematic, got ${JSON.stringify(rec.recorded.value)}`);
+    const s = await call("vob_read_state_summary", { project_id: GEN });
+    assert(s.video_type.canonical === "cinematic" && s.video_type.source === "intent" && s.video_type.clean_cut === false,
+      `summary did not rotate to intent/cinematic: ${JSON.stringify(s.video_type)}`);
+    const echo = s.intent.answers.video_type;
+    assert(echo && echo.raw && echo.canonical === "cinematic" && !("preset" in echo),
+      `answers echo should be lean {raw,canonical}: ${JSON.stringify(echo)}`);
+  });
+
+  // 3. Env override beats the recorded answer.
+  await step("VOB_VIDEO_TYPE env override wins", async () => {
+    process.env.VOB_VIDEO_TYPE = "tutorial";
+    try {
+      const s = await call("vob_read_state_summary", { project_id: GEN });
+      assert(s.video_type.canonical === "tutorial" && s.video_type.source === "env",
+        `expected env/tutorial, got ${JSON.stringify(s.video_type)}`);
+    } finally {
+      delete process.env.VOB_VIDEO_TYPE;
+    }
+  });
+
+  // 4. User preset file: a new name based on `general`, selectable as an
+  //    answer, reported by doctor (table + per-project resolution).
+  const tmpTypes = path.join(require("os").tmpdir(), `vob-walker-video-types-${process.pid}.json`);
+  await step("user preset file (course-module) + doctor report", async () => {
+    fs.writeFileSync(tmpTypes, JSON.stringify({
+      "course-module": { platform_default: "tutorial", lint_ruleset: "chaptered", render: { segmentation: "manual" } },
+    }));
+    process.env.VOB_VIDEO_TYPES_FILE = tmpTypes;
+    vtLib._reloadForTests();
+    try {
+      const rec = await call("vob_record_intent_answer", { project_id: GEN, key: "video_type", value: "course-module" });
+      assert(rec.recorded.value.canonical === "course-module",
+        `expected canonical course-module, got ${JSON.stringify(rec.recorded.value)}`);
+      const s = await call("vob_read_state_summary", { project_id: GEN });
+      assert(s.video_type.canonical === "course-module" && s.video_type.platform_default === "tutorial"
+        && s.video_type.segmentation === "manual",
+        `user preset not resolved: ${JSON.stringify(s.video_type)}`);
+      const doc = await call("vob_doctor", { project_id: GEN });
+      assert(doc.video_types && doc.video_types.user_defined.includes("course-module"),
+        `doctor video_types missing user preset: ${JSON.stringify(doc.video_types && doc.video_types.user_defined)}`);
+      assert(doc.video_types.project && doc.video_types.project.canonical === "course-module",
+        `doctor project resolution wrong: ${JSON.stringify(doc.video_types.project)}`);
+    } finally {
+      delete process.env.VOB_VIDEO_TYPES_FILE;
+      vtLib._reloadForTests();
+      try { fs.rmSync(tmpTypes, { force: true }); } catch {}
+    }
+  });
+
+  // 5. Ruleset gating, chaptered side: hook-not-first DOES NOT warn; an 8-min
+  //    chaptered plan without segments[] DOES warn PLAN_CHAPTERS_MISSING.
+  await step("record video_type long-form", () =>
+    call("vob_record_intent_answer", { project_id: GEN, key: "video_type", value: "long-form" }),
+  );
+  const w1 = placeWindow({ keepSpans: null, len: 3, preferStart: D * 0.1, durationSeconds: D });
+  const w2 = placeWindow({ keepSpans: null, len: 3, preferStart: D * 0.4, durationSeconds: D });
+  const w3 = placeWindow({ keepSpans: null, len: 3, preferStart: D * 0.7, durationSeconds: D });
+  const longSb = {
+    schema_version: "1.0",
+    project_id: GEN,
+    generated_at: new Date().toISOString(),
+    source: { manifest_path: boot.summary.manifest.path, brief_path: boot.savedBrief.brief_path },
+    target: { platform: "youtube_long", duration_seconds: 720, tone: "calm documentary" },
+    scenes: [
+      generalScene({ sceneId: "g001", sequence: 1, purpose: "beat", win: w1, targetSeconds: 160, sourcePath: srcPath }),
+      generalScene({ sceneId: "g002", sequence: 2, purpose: "beat", win: w2, targetSeconds: 160, sourcePath: srcPath }),
+      generalScene({ sceneId: "g003", sequence: 3, purpose: "payoff", win: w3, targetSeconds: 160, sourcePath: srcPath }),
+    ],
+    total_target_duration_seconds: 480,
+    notes: "general walker — chaptered ruleset fixture (no hook scene on purpose).",
+  };
+  await step("save storyboard (chaptered: no hook warning, chapters-missing warns)", async () => {
+    const saved = await call("vob_save_storyboard", { project_id: GEN, content: longSb });
+    const codes = (saved.plan_lint.warnings || []).map((w) => w.code);
+    assert(!codes.includes("PLAN_HOOK_NOT_FIRST"),
+      `chaptered ruleset must not warn hook-not-first, got ${JSON.stringify(codes)}`);
+    assert(codes.includes("PLAN_CHAPTERS_MISSING"),
+      `expected PLAN_CHAPTERS_MISSING on a 480s chaptered plan with no segments[], got ${JSON.stringify(codes)}`);
+    console.log(`\n   chaptered warnings: ${codes.join(", ")}`);
+  });
+
+  // 6. Ruleset gating, retention side: the SAME document under social-short
+  //    brings the hook heuristics back and drops the chapter rule.
+  await step("retention contrast (same doc, video_type social-short)", async () => {
+    await call("vob_record_intent_answer", { project_id: GEN, key: "video_type", value: "social-short" });
+    const saved = await call("vob_save_storyboard", { project_id: GEN, content: longSb });
+    const codes = (saved.plan_lint.warnings || []).map((w) => w.code);
+    assert(codes.includes("PLAN_HOOK_NOT_FIRST"),
+      `retention ruleset must warn hook-not-first, got ${JSON.stringify(codes)}`);
+    assert(!codes.includes("PLAN_CHAPTERS_MISSING"),
+      `retention ruleset must not run chapter rules, got ${JSON.stringify(codes)}`);
+  });
+
+  // 7. fps path: cinematic 24fps plan → composition without data-fps warns
+  //    vob/fps_mismatch; with data-fps="24" it is silent.
+  await step("record video_type cinematic", () =>
+    call("vob_record_intent_answer", { project_id: GEN, key: "video_type", value: "cinematic" }),
+  );
+  const cw1 = placeWindow({ keepSpans: null, len: 3, preferStart: D * 0.15, durationSeconds: D });
+  const cw2 = placeWindow({ keepSpans: null, len: 4, preferStart: D * 0.55, durationSeconds: D });
+  const cinSb = {
+    schema_version: "1.0",
+    project_id: GEN,
+    generated_at: new Date().toISOString(),
+    source: { manifest_path: boot.summary.manifest.path, brief_path: boot.savedBrief.brief_path },
+    target: { platform: "cinematic", duration_seconds: 7, tone: "cinematic", fps: 24 },
+    scenes: [
+      generalScene({ sceneId: "c001", sequence: 1, purpose: "beat", win: cw1, targetSeconds: 3, sourcePath: srcPath }),
+      generalScene({ sceneId: "c002", sequence: 2, purpose: "payoff", win: cw2, targetSeconds: 4, sourcePath: srcPath }),
+    ],
+    total_target_duration_seconds: 7,
+    notes: "general walker — 24fps cinematic fixture.",
+  };
+  const savedCin = await step("save storyboard (cinematic, target.fps=24)", () =>
+    call("vob_save_storyboard", { project_id: GEN, content: cinSb }),
+  );
+  assert(savedCin.plan_lint.error_count === 0, "cinematic storyboard reported plan-lint errors");
+  await step("confirm storyboard", () => call("vob_confirm_storyboard", { project_id: GEN }));
+  await step("transition PLAN→COMPOSE (pre-cut clips)", () =>
+    call("vob_transition_phase", { project_id: GEN, to_phase: "COMPOSE" }),
+  );
+  await step("save composition (no data-fps ⇒ vob/fps_mismatch warning)", async () => {
+    const saved = await call("vob_save_composition", {
+      project_id: GEN,
+      files: composition(cinSb, { width: 1920, height: 1080 }),
+    });
+    const rules = saved.qc.findings.map((f) => f.rule);
+    assert(rules.includes("vob/fps_mismatch"),
+      `expected vob/fps_mismatch warning, got ${JSON.stringify(rules)}`);
+  });
+  await step("save composition (data-fps=24 ⇒ clean of fps_mismatch)", async () => {
+    const saved = await call("vob_save_composition", {
+      project_id: GEN,
+      files: composition(cinSb, { width: 1920, height: 1080, fps: 24 }),
+    });
+    const rules = saved.qc.findings.map((f) => f.rule);
+    assert(!rules.includes("vob/fps_mismatch"),
+      `fps_mismatch must not fire with data-fps=24, got ${JSON.stringify(rules)}`);
+    if (saved.lint_status) console.log(`\n   lint_status: ${saved.lint_status}`);
+  });
+
+  const final = await call("vob_read_state_summary", { project_id: GEN });
+  console.log(`\n=== general final phase: ${final.phase}   video_type: ${final.video_type.canonical} [${final.video_type.source}]`);
+}
+
 async function main() {
   const phase = process.argv[2] || "all";
   if (phase === "fanout") {
     await runFanout();
+    return;
+  }
+  if (phase === "general") {
+    await runGeneral();
     return;
   }
   console.log(`=== M5 walker v2 — phase: ${phase} — project: ${PROJECT_ID}`);

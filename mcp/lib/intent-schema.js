@@ -23,9 +23,19 @@ const AUDIO_TREATMENT_VALUES = Object.freeze([
   "keep_ambient",
 ]);
 
+// Optional keys are recordable but NEVER required — missingIntentKeys ignores
+// them, so no gate can block on one (v3 contract: no new required keys).
+// `video_type` selects the preset (social-short / long-form / cinematic / ...);
+// unanswered, the engine derives it from platform + duration at resolve time
+// (see video-types.js).
+const OPTIONAL_INTENT_KEYS = Object.freeze([
+  "video_type",
+]);
+
 const ALL_INTENT_KEYS = Object.freeze([
   ...REQUIRED_INTENT_KEYS,
   ...CONDITIONAL_INTENT_KEYS,
+  ...OPTIONAL_INTENT_KEYS,
 ]);
 
 const ALL_INTENT_KEY_SET = new Set(ALL_INTENT_KEYS);
@@ -115,6 +125,7 @@ module.exports = {
   ALL_INTENT_KEYS,
   AUDIO_TREATMENT_VALUES,
   CONDITIONAL_INTENT_KEYS,
+  OPTIONAL_INTENT_KEYS,
   REQUIRED_INTENT_KEYS,
   applicableConditionalKeys,
   intentAnswerPresent,

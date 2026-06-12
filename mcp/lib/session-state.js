@@ -9,6 +9,7 @@ const { getGate } = require("./phase-gates.js");
 const { archiveForIteration, currentIterationVersion, isArchivalTransition } = require("./archival.js");
 const { missingIntentKeys } = require("./intent-schema.js");
 const { materializeSceneClips } = require("./clip-materialize.js");
+const { summarizeActiveVideoType } = require("./video-types.js");
 
 // INTENT -> PLAN -> COMPOSE: the former BRIEF and STORYBOARD phases are merged
 // into a single PLAN phase (one human gate that presents intent summary +
@@ -244,10 +245,10 @@ function summarizeInspect(slot) {
   };
 }
 
-// Intent answers ride through verbatim with ONE projection: an object-shaped
-// (v2 canonicalized) target_platform loses its stored profile snapshot —
-// {raw, canonical} is what the orchestrator displays; the summary's `platform`
-// field carries the geometry.
+// Intent answers ride through verbatim with TWO projections: object-shaped
+// (canonicalized) target_platform / video_type lose their stored snapshot
+// blobs — {raw, canonical} is what the orchestrator displays; the summary's
+// `platform` / `video_type` fields carry the resolved geometry/preset.
 function summarizeIntentAnswers(answers) {
   const a = asSlot(answers);
   if (!a) return {};
@@ -255,6 +256,10 @@ function summarizeIntentAnswers(answers) {
   const platform = asSlot(a.target_platform);
   if (platform && typeof platform.raw === "string") {
     out.target_platform = { raw: platform.raw, canonical: strOrNull(platform.canonical) };
+  }
+  const videoType = asSlot(a.video_type);
+  if (videoType && typeof videoType.raw === "string") {
+    out.video_type = { raw: videoType.raw, canonical: strOrNull(videoType.canonical) };
   }
   return out;
 }
@@ -456,6 +461,10 @@ function buildStateSummary(state, projectId) {
         }
       : null,
     platform: summarizePlatform(answers),
+    // Resolved video-type preset (env > intent > derived > default) — the
+    // orchestrator reads this instead of re-deriving; `source` says which
+    // precedence level won.
+    video_type: summarizeActiveVideoType(state),
     target_duration_seconds: summarizeTargetDurationSeconds(answers),
     target_duration_range: summarizeTargetDurationRange(answers),
     brief: summarizeBrief(state.brief),
