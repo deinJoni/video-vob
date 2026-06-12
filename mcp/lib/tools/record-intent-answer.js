@@ -1,16 +1,16 @@
 "use strict";
 
-const fs = require("fs");
 const { ERROR_CODES, ToolError } = require("../envelope.js");
-const { assertSafeProjectId, inspectSummaryPath, statePath } = require("../paths.js");
-const { readJsonFile, withSessionLock, writeFileAtomic } = require("../storage.js");
-const { readSessionStateStrict } = require("../session-state.js");
+const { assertSafeProjectId, statePath } = require("../paths.js");
+const { withSessionLock, writeFileAtomic } = require("../storage.js");
+const { readInspectSummaryIfPresent, readSessionStateStrict } = require("../session-state.js");
 const {
   ALL_INTENT_KEYS,
   isValidIntentKey,
   missingIntentKeys,
   validateIntentAnswerValue,
 } = require("../intent-schema.js");
+const { parseDurationSpec, resolvePlatform } = require("../platform-profiles.js");
 
 const MAX_ANSWER_LENGTH = 4096;
 
@@ -45,14 +45,27 @@ function validateAnswer(key, rawValue) {
   return trimmed;
 }
 
-function readInspectSummaryIfPresent(projectId) {
-  const file = inspectSummaryPath(projectId);
-  if (!fs.existsSync(file)) return null;
-  try {
-    return readJsonFile(file);
-  } catch {
-    return null;
+// Canonicalize at record time (D3): the stored value is what downstream reads
+// — the storyboarder/composer never re-parse free text. Unrecognized platform
+// stores canonical:"vertical" (`raw` says what the user said; the profile says
+// what will be built). Unparseable duration stores seconds:null, no error.
+function canonicalizeAnswer(key, trimmed) {
+  if (key === "target_platform") {
+    const { raw, canonical, profile } = resolvePlatform(trimmed);
+    return { raw, canonical, profile }; // profile snapshot stored for audit
   }
+  if (key === "target_duration") {
+    // Range and per-deliverable forms ("20–35s per short") canonicalize to
+    // extra keys; plain durations keep the lean {raw,seconds} shape.
+    const spec = parseDurationSpec(trimmed);
+    return {
+      raw: trimmed,
+      seconds: spec.seconds,
+      ...(spec.range ? { range: spec.range } : {}),
+      ...(spec.per_deliverable ? { per_deliverable: true } : {}),
+    };
+  }
+  return trimmed; // all other keys stay plain strings
 }
 
 function recordIntentAnswer(args) {
@@ -70,7 +83,9 @@ function recordIntentAnswer(args) {
       : {};
 
     const ts = nowIso();
-    const nextAnswers = { ...prevAnswers, [key]: value };
+    // Overwrite-by-key; re-recording a legacy string key upgrades it to the
+    // canonical object shape (the migration path — no bulk rewrite).
+    const nextAnswers = { ...prevAnswers, [key]: canonicalizeAnswer(key, value) };
     const next = {
       ...state,
       intent: {
@@ -88,7 +103,7 @@ function recordIntentAnswer(args) {
 
     const inspectSummary = readInspectSummaryIfPresent(id);
     return {
-      answers: nextAnswers,
+      recorded: { key, value: nextAnswers[key] },
       missing_required_keys: missingIntentKeys(nextAnswers, inspectSummary),
     };
   });
@@ -96,7 +111,7 @@ function recordIntentAnswer(args) {
 
 module.exports = Object.freeze({
   name: "vob_record_intent_answer",
-  description: "Record a single intent answer. Five required keys are always asked (target_platform, target_duration, tone, key_moments, music_vo). Additional conditional keys may be required based on inspect findings (audio_treatment when audio is present; captions_style when speech is detected and audio_treatment is keep_audio or transcribe_captions). audio_treatment must be one of: transcribe_captions, keep_audio, discard_audio, keep_ambient. Overwrites any previous value for the same key. Returns the current answers map and which keys are still missing given the current inspect state.",
+  description: "Record one intent answer (overwrites the key). Five required keys: target_platform, target_duration, tone, key_moments, music_vo; conditional keys (audio_treatment, captions_style) per inspect findings. audio_treatment enum: transcribe_captions | keep_audio | discard_audio | keep_ambient. target_platform/target_duration are canonicalized server-side ({raw,canonical,profile} / {raw,seconds,range?,per_deliverable?} — ranges like '20-35s' carry {min_seconds,max_seconds} with seconds = midpoint; 'per short'-style qualifiers set per_deliverable:true). Returns {recorded, missing_required_keys}.",
   inputSchema: {
     type: "object",
     properties: {

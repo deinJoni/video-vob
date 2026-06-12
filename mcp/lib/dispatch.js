@@ -2,11 +2,10 @@
 
 const {
   ERROR_CODES,
-  classifyDataError,
   classifyException,
   errorEnvelope,
+  normalizeHandlerResult,
   okEnvelope,
-  parseHandlerResult,
 } = require("./envelope.js");
 const { getRegisteredTool, TOOL_HANDLERS } = require("./tool-registry.js");
 const { validateToolArguments } = require("./tool-validation.js");
@@ -26,11 +25,7 @@ async function executeTool(name, args) {
   }
 
   try {
-    const data = parseHandlerResult(await tool.handler(safeArgs));
-    const dataErrorCode = classifyDataError(data);
-    if (dataErrorCode) {
-      return errorEnvelope(name, dataErrorCode, data.error, data);
-    }
+    const data = normalizeHandlerResult(await tool.handler(safeArgs));
     return okEnvelope(name, data);
   } catch (error) {
     return errorEnvelope(name, classifyException(error), error.message || String(error), error.details);

@@ -4,7 +4,7 @@ const { readStateSummary } = require("../session-state.js");
 
 module.exports = Object.freeze({
   name: "vob_read_state_summary",
-  description: "Compact session view: returns project_id, phase, target, last_updated. Use this instead of vob_read_state when you only need the current phase.",
+  description: "The orchestrator's working view: phase, iteration version, style lineage, dependency failures, and a per-slot digest (paths, confirmed/lint/render flags, revision counts, intent answers + missing keys, platform profile). Covers every routine phase decision without a full state read.",
   inputSchema: {
     type: "object",
     properties: {

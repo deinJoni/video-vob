@@ -1,11 +1,11 @@
 "use strict";
 
-const os = require("os");
 const fs = require("fs");
 const path = require("path");
 const { spawnSync, execFileSync } = require("child_process");
 const { ERROR_CODES, ToolError } = require("./envelope.js");
 const { spawnWithShutdown, DEFAULT_MAX_OUTPUT_BYTES } = require("./spawn-with-shutdown.js");
+const hostProfile = require("./host-profile.js");
 
 const HYPERFRAMES_INSTALL_HINT =
   "video-vob drives the hyperframes CLI. It resolves the installed `hyperframes` once and runs it under this Node " +
@@ -18,6 +18,27 @@ const RENDER_TIMEOUT_MS = 15 * 60 * 1000;
 const FULL_RENDER_TIMEOUT_MS = 30 * 60 * 1000;
 const PREFLIGHT_TIMEOUT_MS = 30 * 1000;
 const MAX_OUTPUT_BYTES = DEFAULT_MAX_OUTPUT_BYTES;
+
+const RENDER_TIMEOUT_PER_COMPOSITION_SECOND_MS = 20 * 1000;       // preview (draft)
+const FULL_RENDER_TIMEOUT_PER_COMPOSITION_SECOND_MS = 40 * 1000;  // full
+const RENDER_TIMEOUT_CEILING_MS = 2 * 60 * 60 * 1000;             // preview ceiling 2h
+const FULL_RENDER_TIMEOUT_CEILING_MS = 3 * 60 * 60 * 1000;        // full ceiling 3h
+
+// kind: "preview" | "full". durationSeconds: storyboard total or null.
+// Env override (positive int ms) wins outright: VOB_RENDER_TIMEOUT_MS (preview),
+// VOB_FULL_RENDER_TIMEOUT_MS (full). Otherwise scale by composition duration,
+// FLOORED at today's fixed caps (15/30 min) and ceilinged to keep a runaway
+// storyboard from creating a day-long wall.
+function renderTimeoutMs(kind, durationSeconds) {
+  const envName = kind === "full" ? "VOB_FULL_RENDER_TIMEOUT_MS" : "VOB_RENDER_TIMEOUT_MS";
+  const env = Number.parseInt((process.env[envName] || "").trim(), 10);
+  if (Number.isInteger(env) && env > 0) return env;
+  const floor = kind === "full" ? FULL_RENDER_TIMEOUT_MS : RENDER_TIMEOUT_MS;
+  const perSec = kind === "full" ? FULL_RENDER_TIMEOUT_PER_COMPOSITION_SECOND_MS : RENDER_TIMEOUT_PER_COMPOSITION_SECOND_MS;
+  const ceiling = kind === "full" ? FULL_RENDER_TIMEOUT_CEILING_MS : RENDER_TIMEOUT_CEILING_MS;
+  if (!Number.isFinite(durationSeconds) || durationSeconds <= 0) return floor;
+  return Math.min(ceiling, Math.max(floor, Math.round(durationSeconds * perSec)));
+}
 
 // --- Headless-Chrome GPU mode for hyperframes child processes ----------------
 //
@@ -52,7 +73,8 @@ const MAX_OUTPUT_BYTES = DEFAULT_MAX_OUTPUT_BYTES;
 //   unset, nothing set           -> darwin: "software"; else inherit
 // Returns the mode string to set, or null to leave the child env untouched.
 function resolveBrowserGpuMode() {
-  const knob = (process.env.VOB_BROWSER_GPU || "").trim().toLowerCase();
+  // env VOB_BROWSER_GPU > host.json browser_gpu (host-profile.js); no tier.
+  const knob = hostProfile.browserGpuKnob();
   if (knob === "off" || knob === "software" || knob === "swiftshader") return "software";
   if (knob === "on" || knob === "hardware" || knob === "gpu") return "hardware";
   if (knob === "auto") return "auto";
@@ -114,11 +136,6 @@ function hyperframesChildEnv() {
   return env;
 }
 
-// Hosts with less than this much total RAM are treated as "low-RAM" and get a
-// pinned single render worker by default (see renderWorkerArgs). An 8GB Mac
-// (~8.59e9 bytes) qualifies; a 16GB+ host does not.
-const LOW_RAM_BYTES = 10 * 1024 * 1024 * 1024;
-
 // Explicit render worker count.
 //
 // hyperframes auto-calibrates the worker count by timing sample frames whenever
@@ -129,22 +146,19 @@ const LOW_RAM_BYTES = 10 * 1024 * 1024 * 1024;
 // whole probe budget first (and, on older hyperframes, aborting the render).
 // Passing a POSITIVE INTEGER `--workers` SKIPS calibration entirely.
 //
-//   VOB_RENDER_WORKERS = <positive int>  -> ["--workers", n]  (skip calibration)
-//   VOB_RENDER_WORKERS = "auto"          -> []                (defer to hyperframes)
-//   VOB_RENDER_WORKERS unset, low-RAM    -> ["--workers", "1"](skip calibration)
-//   VOB_RENDER_WORKERS unset, roomy host -> []                (defer to hyperframes)
+// The count is resolved by host-profile.js (VOB_RENDER_WORKERS env > host.json
+// render_workers / capacity tier > RAM default: <10 GB -> fixed 1, else defer).
+// "defer" -> [] (hyperframes calibrates); a fixed n -> ["--workers", n].
 function renderWorkerArgs() {
-  const raw = (process.env.VOB_RENDER_WORKERS || "").trim().toLowerCase();
-  if (raw) {
-    if (raw === "auto") return [];
-    const n = Number.parseInt(raw, 10);
-    if (Number.isInteger(n) && n >= 1) return ["--workers", String(n)];
-    return [];
-  }
-  let totalmem = 0;
-  try { totalmem = os.totalmem(); } catch { totalmem = 0; }
-  if (totalmem > 0 && totalmem < LOW_RAM_BYTES) return ["--workers", "1"];
-  return [];
+  const rw = hostProfile.renderWorkers();
+  return rw.mode === "fixed" ? ["--workers", String(rw.n)] : [];
+}
+
+// Final-render quality default. Resolved by host-profile.js:
+//   VOB_RENDER_QUALITY env > host.json render_quality / capacity tier >
+//   RAM default (>=10 GB -> "high"; low-RAM host -> null = hyperframes standard).
+function defaultRenderQuality() {
+  return hostProfile.renderQuality();
 }
 
 // --- Single binary resolution ------------------------------------------------
@@ -338,6 +352,12 @@ const RETRYABLE_PATTERNS = [
 // so a transient substring elsewhere in the log can't force a pointless retry.
 // (Note: a successful-but-warned render exits 0 and never reaches this check.)
 const NON_RETRYABLE_PATTERNS = [
+  // Deterministic resource failures: a missing/broken file path in the
+  // composition can never succeed on retry. Must out-rank the generic
+  // /net::ERR/i transient pattern below.
+  /net::ERR_FILE_NOT_FOUND/i,
+  /net::ERR_FILE_ACCESS_DENIED/i,
+  /net::ERR_INVALID_URL/i,
   /Aborting render/i,
   /Aborting due to/i,
   /strict-variables/i,
@@ -428,6 +448,8 @@ module.exports = {
   resolveBrowserGpuMode,
   hyperframesChildEnv,
   renderWorkerArgs,
+  renderTimeoutMs,
+  defaultRenderQuality,
   buildRenderArgv,
   buildLintArgv,
   buildSnapshotArgv,

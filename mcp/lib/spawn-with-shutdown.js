@@ -12,6 +12,62 @@ const SIGKILL_GRACE_MS = 5 * 1000;
 // Monotonic suffix so concurrent captures don't collide on a temp filename.
 let stdoutCaptureSeq = 0;
 
+// Head+tail ring buffer: keep the first `half` bytes AND the last `half` bytes
+// of a stream. A head-only cap dropped the TERMINAL stderr of long renders, so
+// a late crash after >4MiB of progress spam could not be classified (retry
+// patterns matched nothing) and error previews showed the banner instead of the
+// error. The elision marker must stay free of net::ERR / "Protocol error"-class
+// substrings — it is scanned by the retry classifier.
+function makeCapper(half) {
+  const head = [];
+  let headBytes = 0;
+  const tail = [];
+  let tailBytes = 0;
+  let dropped = 0;
+  return {
+    push(chunk) {
+      if (headBytes < half) {
+        const take = Math.min(chunk.length, half - headBytes);
+        head.push(chunk.subarray(0, take));
+        headBytes += take;
+        chunk = chunk.subarray(take);
+        if (chunk.length === 0) return;
+      }
+      tail.push(chunk);
+      tailBytes += chunk.length;
+      while (tailBytes > half && tail.length > 0) {
+        const first = tail[0];
+        const excess = tailBytes - half;
+        if (first.length <= excess) {
+          tail.shift();
+          tailBytes -= first.length;
+          dropped += first.length;
+        } else {
+          tail[0] = first.subarray(excess);
+          tailBytes -= excess;
+          dropped += excess;
+        }
+      }
+    },
+    truncated() {
+      return dropped > 0;
+    },
+    toBuffer() {
+      if (dropped === 0) return Buffer.concat([...head, ...tail]);
+      const marker = Buffer.from(`\n[... ${dropped} bytes elided ...]\n`, "utf8");
+      return Buffer.concat([...head, marker, ...tail]);
+    },
+  };
+}
+
+// Tail-slice for error previews: a long render's stderr starts with banner +
+// progress spam; the real error is at the END.
+function stderrTail(stderr, maxLen = 2000) {
+  const s = (stderr || "").trim();
+  if (s.length <= maxLen) return s || null;
+  return `…${s.slice(s.length - maxLen)}`;
+}
+
 // Generic detached-process runner with SIGTERM → grace → SIGKILL shutdown,
 // per-stream output capping, and optional stderr-tee to a log file for
 // long-running processes whose progress the user wants to tail.
@@ -43,12 +99,10 @@ function spawnWithShutdown(cmd, argv, {
 
   return new Promise((resolve, reject) => {
     const start = Date.now();
-    let stdoutBytes = 0;
-    let stderrBytes = 0;
+    const half = Math.floor(maxOutputBytes / 2);
     let stdoutTruncated = false;
-    let stderrTruncated = false;
-    const stdoutChunks = [];
-    const stderrChunks = [];
+    const stdoutCapper = makeCapper(half);
+    const stderrCapper = makeCapper(half);
     let killed = false;
     let settled = false;
 
@@ -80,7 +134,8 @@ function spawnWithShutdown(cmd, argv, {
       stdoutFilePath = null;
       if (buf && buf.length > maxOutputBytes) {
         stdoutTruncated = true;
-        return buf.subarray(0, maxOutputBytes);
+        const marker = Buffer.from(`\n[... ${buf.length - 2 * half} bytes elided ...]\n`, "utf8");
+        return Buffer.concat([buf.subarray(0, half), marker, buf.subarray(buf.length - half)]);
       }
       return buf;
     }
@@ -145,37 +200,16 @@ function spawnWithShutdown(cmd, argv, {
     // When stdout is file-backed, child.stdout is null (no pipe to read).
     if (child.stdout) {
       child.stdout.on("data", (chunk) => {
-        const remaining = maxOutputBytes - stdoutBytes;
-        if (remaining > 0) {
-          if (chunk.length > remaining) {
-            stdoutChunks.push(chunk.subarray(0, remaining));
-            stdoutTruncated = true;
-          } else {
-            stdoutChunks.push(chunk);
-          }
-        } else {
-          stdoutTruncated = true;
-        }
-        stdoutBytes += chunk.length;
+        stdoutCapper.push(chunk);
       });
     }
 
     child.stderr.on("data", (chunk) => {
+      // Tee to the log file BEFORE capping — the log keeps the full stream.
       if (stderrLogStream) {
         try { stderrLogStream.write(chunk); } catch {}
       }
-      const remaining = maxOutputBytes - stderrBytes;
-      if (remaining > 0) {
-        if (chunk.length > remaining) {
-          stderrChunks.push(chunk.subarray(0, remaining));
-          stderrTruncated = true;
-        } else {
-          stderrChunks.push(chunk);
-        }
-      } else {
-        stderrTruncated = true;
-      }
-      stderrBytes += chunk.length;
+      stderrCapper.push(chunk);
     });
 
     child.on("error", (error) => {
@@ -206,8 +240,10 @@ function spawnWithShutdown(cmd, argv, {
       const fileStdout = finalizeStdoutFile();
       const stdout = fileStdout !== null
         ? fileStdout.toString("utf8")
-        : Buffer.concat(stdoutChunks).toString("utf8");
-      const stderr = Buffer.concat(stderrChunks).toString("utf8");
+        : stdoutCapper.toBuffer().toString("utf8");
+      const stderr = stderrCapper.toBuffer().toString("utf8");
+      const stdoutWasTruncated = stdoutTruncated || stdoutCapper.truncated();
+      const stderrWasTruncated = stderrCapper.truncated();
       resolve({
         ok: !killed && code === 0,
         exit_code: code,
@@ -215,9 +251,9 @@ function spawnWithShutdown(cmd, argv, {
         stdout,
         stderr,
         timed_out: killed,
-        truncated: stdoutTruncated || stderrTruncated,
-        stdout_truncated: stdoutTruncated,
-        stderr_truncated: stderrTruncated,
+        truncated: stdoutWasTruncated || stderrWasTruncated,
+        stdout_truncated: stdoutWasTruncated,
+        stderr_truncated: stderrWasTruncated,
         duration_ms: Date.now() - start,
       });
     });
@@ -226,6 +262,7 @@ function spawnWithShutdown(cmd, argv, {
 
 module.exports = {
   spawnWithShutdown,
+  stderrTail,
   SIGKILL_GRACE_MS,
   DEFAULT_MAX_OUTPUT_BYTES,
 };

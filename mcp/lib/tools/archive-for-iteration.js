@@ -11,11 +11,12 @@ function nowIso() {
 }
 
 // Standalone archival entrypoint. The primary archival code path is inside
-// transitionPhase() — back-edges from RENDER/PACKAGE/ITERATE to COMPOSE or
-// STORYBOARD trigger archival atomically. This tool exposes the same
-// underlying helper for tests, recovery, or out-of-band cleanup. The
-// orchestrator does NOT call it directly; it's NOT in the orchestrator's
-// allowed-tools list. Registering it here keeps the audit story uniform.
+// transitionPhase() — back-edges from RENDER/PACKAGE/ITERATE to COMPOSE or PLAN
+// trigger archival atomically. This tool exposes the same helper for tests,
+// recovery, or out-of-band cleanup. It is registered under the orchestrator
+// role bundle (every tool must belong to a bundle and this is operator-driven
+// recovery), but it is DELIBERATELY omitted from both adapters' allow-lists —
+// the orchestrator never calls it in the normal flow.
 function archiveForIterationTool(args) {
   const id = assertSafeProjectId(args && args.project_id);
 

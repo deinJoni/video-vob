@@ -4,10 +4,12 @@ const fs = require("fs");
 const path = require("path");
 
 const { ERROR_CODES, ToolError } = require("../envelope.js");
-const { assertSafeProjectId, composeDir, snapshotsDir, statePath } = require("../paths.js");
+const { assertSafeProjectId, composeDir, snapshotsDir, statePath, storyboardPath } = require("../paths.js");
 const { withSessionLock, writeFileAtomic } = require("../storage.js");
 const { readSessionStateStrict } = require("../session-state.js");
 const { runHyperframesWithRetry, buildSnapshotArgv } = require("../hyperframes-runner.js");
+const { stderrTail } = require("../spawn-with-shutdown.js");
+const { findTimeline } = require("../storyboard-schema.js");
 
 const SNAPSHOT_TIMEOUT_MS = 5 * 60 * 1000;
 const MAX_FRAMES = 16;
@@ -17,13 +19,37 @@ function nowIso() {
   return new Date().toISOString();
 }
 
-// Render full-fidelity key-frame stills from the current composition via
-// `hyperframes snapshot`. Unlike ffmpeg-on-the-draft (which only samples
-// the SOURCE video), snapshot renders the whole composition — overlays,
-// captions, type — at the requested timecodes, so the user catches the
-// text-legibility and fps-dependent issues a draft preview hides. The
-// orchestrator computes the timecodes worth seeing (scene starts, key moments)
-// and passes them; when omitted, we fall back to N evenly-spaced frames.
+// Default timecodes from the storyboard: one frame just inside each scene.
+// `start + min(0.5, dur/2)`: a frame exactly ON a scene boundary is ambiguous
+// (either scene may render); 0.5s inside shows the scene's settled state
+// including entrance-animated captions, and the hook frame lands at ≈0.5s —
+// the cold-open moment the self-QC checklist inspects.
+function storyboardDefaultTimecodes(projectId, shortId) {
+  let sb = null;
+  try {
+    sb = JSON.parse(fs.readFileSync(storyboardPath(projectId), "utf8"));
+  } catch {
+    return null;
+  }
+  // Fan-out: the composition implements ONE short — default frames come from
+  // that short's scenes (the singleton form resolves via findTimeline too).
+  const timeline = findTimeline(sb, shortId);
+  const scenes = timeline ? timeline.scenes : null;
+  if (!Array.isArray(scenes) || scenes.length === 0) return null;
+  const out = [];
+  let cursor = 0;
+  for (const scene of scenes) {
+    const d = Number(scene && scene.target_duration_seconds);
+    if (!Number.isFinite(d) || d <= 0) return null; // malformed -> no defaults
+    out.push(Math.round((cursor + Math.min(0.5, d / 2)) * 1000) / 1000);
+    cursor += d;
+  }
+  return out.slice(0, MAX_FRAMES);
+}
+
+// Callable in COMPOSE the moment a composition is saved — deliberately NOT
+// gated on lint or preview. It is the orchestrator's pre-render self-QC tool
+// (snapshot ~10-60s vs minutes for a draft render).
 async function snapshotKeyframes(args) {
   const id = assertSafeProjectId(args && args.project_id);
   const composeRoot = composeDir(id);
@@ -46,8 +72,10 @@ async function snapshotKeyframes(args) {
     );
   }
 
-  // Timecodes (preferred) win over a frame count. Numbers are seconds.
+  // Selection order: explicit timecodes -> storyboard scene defaults ->
+  // `frames` evenly spaced. Numbers are seconds.
   let timecodes = null;
+  let timecodeSource = "even_spacing";
   if (Array.isArray(args && args.timecodes) && args.timecodes.length > 0) {
     timecodes = args.timecodes
       .map((t) => Number(t))
@@ -58,6 +86,16 @@ async function snapshotKeyframes(args) {
         ERROR_CODES.INVALID_ARGUMENTS,
         "timecodes must contain at least one non-negative finite number (seconds)",
       );
+    }
+    timecodeSource = "explicit";
+  } else {
+    const activeShortId = typeof composition.short_id === "string" && composition.short_id !== ""
+      ? composition.short_id
+      : null;
+    const defaults = storyboardDefaultTimecodes(id, activeShortId);
+    if (defaults && defaults.length > 0) {
+      timecodes = defaults;
+      timecodeSource = "storyboard_scenes";
     }
   }
   const frames = Number.isInteger(args && args.frames) && args.frames > 0
@@ -79,11 +117,11 @@ async function snapshotKeyframes(args) {
     throw new ToolError(
       ERROR_CODES.INTERNAL_ERROR,
       `hyperframes snapshot timed out after ${Math.round(SNAPSHOT_TIMEOUT_MS / 1000)}s`,
-      { stderr_preview: (result.stderr || "").trim().slice(0, 1000) || null },
+      { stderr_preview: stderrTail(result.stderr, 1000) },
     );
   }
   if (result.exit_code !== 0) {
-    const stderrPreview = (result.stderr || "").trim().slice(0, 2000) || null;
+    const stderrPreview = stderrTail(result.stderr, 2000);
     throw new ToolError(
       ERROR_CODES.INTERNAL_ERROR,
       `hyperframes snapshot failed (exit ${result.exit_code}): ${stderrPreview || "no stderr"}`,
@@ -122,6 +160,7 @@ async function snapshotKeyframes(args) {
           count: stillPaths.length,
           timecodes: timecodes || null,
           frames: timecodes ? null : frames,
+          timecode_source: timecodeSource,
           snapshots_dir: snapsDir,
         },
       ],
@@ -134,6 +173,7 @@ async function snapshotKeyframes(args) {
       contact_sheet_path: contactSheetPath,
       count: stillPaths.length,
       timecodes: timecodes || null,
+      timecode_source: timecodeSource,
       snapshot_duration_seconds: snapshotDurationSeconds,
     };
   });
@@ -141,7 +181,7 @@ async function snapshotKeyframes(args) {
 
 module.exports = Object.freeze({
   name: "vob_snapshot_keyframes",
-  description: "Render full-fidelity key-frame stills from the current composition via `hyperframes snapshot`, writing PNGs to compose/snapshots/ (plus a contact-sheet.jpg). Pass `timecodes` (array of seconds — e.g. scene starts or key moments) to capture exactly those frames; otherwise `frames` (default 5) evenly-spaced frames are captured. Unlike a draft MP4, these are rendered at full resolution with overlays/captions, so the user can verify text legibility and motion the draft hides. BLOCKING — renders via headless Chrome, typically 10–60s. Requires a saved composition (compose/index.html). Returns still_paths + contact_sheet_path for the orchestrator to Read and surface; appends a 'keyframes_snapshotted' history event. Snapshots are ephemeral review artifacts — the next vob_save_composition wipes compose/.",
+  description: "Render full-resolution PNG stills + contact-sheet.jpg of the CURRENT composition via hyperframes snapshot. Callable in COMPOSE right after a save — no lint/preview required; this is the pre-render visual QC tool. timecodes (seconds) win; default = one frame just inside each storyboard scene; else `frames` evenly spaced. BLOCKING ~10–60s. Next save wipes compose/snapshots/.",
   inputSchema: {
     type: "object",
     properties: {

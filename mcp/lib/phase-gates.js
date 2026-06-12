@@ -4,7 +4,8 @@ const fs = require("fs");
 const path = require("path");
 const { readJsonFile } = require("./storage.js");
 const { missingIntentKeys } = require("./intent-schema.js");
-const { composeDir, deliverablesDir, inspectSummaryPath, packageDir, packageFinalMp4Path, packageManifestPath, packageReadmePath, packageThumbnailPath } = require("./paths.js");
+const { composeDir, deliverablesDir, inspectSummaryPath, packageDir, packageFinalMp4Path, packageManifestPath, packageReadmePath, packageThumbnailPath, storyboardPath } = require("./paths.js");
+const { storyboardHasShorts, storyboardTimelines } = require("./storyboard-schema.js");
 
 // True when a project carries externally-imported deliverables (the
 // vob_import_deliverable escape hatch) that are on disk — its real output lives
@@ -19,6 +20,30 @@ function hasExternalDeliverables(state) {
   );
 }
 
+// Fan-out completeness: storyboard shorts with no deliverable record yet.
+// [] for single-timeline storyboards, unreadable storyboards, and import-only
+// projects — exactly the cases where the check must not bite.
+function missingShortDeliverables(state) {
+  let sb = null;
+  try {
+    sb = readJsonFile(storyboardPath(state.project_id));
+  } catch {
+    return [];
+  }
+  if (!sb || typeof sb !== "object" || Array.isArray(sb) || !storyboardHasShorts(sb)) return [];
+  const recorded = new Set(
+    (Array.isArray(state.deliverables) ? state.deliverables : [])
+      .map((d) => (d && typeof d.short_id === "string" && d.short_id !== "" ? d.short_id : null))
+      .filter(Boolean),
+  );
+  return storyboardTimelines(sb)
+    .map((t) => t.short_id)
+    .filter((shortId) => shortId && !recorded.has(shortId));
+}
+
+// Verdict convention: { allowed, blockers: [{ code, message, overridable?, ...fields }] }.
+// A blocker WITHOUT an `overridable` field is overridable (legacy default);
+// `overridable: false` makes transitionPhase refuse override_reason entirely.
 function blocker(code, message, fields = {}) {
   return { code, message, ...fields };
 }
@@ -123,7 +148,7 @@ function inspectToIntent(state) {
       blocker(
         "inspect_not_acknowledged",
         "inspect artifacts have been written but the user has not been shown them — call vob_acknowledge_inspect after surfacing the findings",
-        { summary_path: inspect.summary_path },
+        { summary_path: inspect.summary_path, overridable: false },
       ),
     ]);
   }
@@ -142,7 +167,19 @@ function intentToPlan(state) {
   let inspectSummary = null;
   if (state && state.inspect && typeof state.inspect.summary_path === "string" && state.inspect.summary_path) {
     if (fs.existsSync(state.inspect.summary_path)) {
-      try { inspectSummary = readJsonFile(state.inspect.summary_path); } catch { inspectSummary = null; }
+      try {
+        inspectSummary = readJsonFile(state.inspect.summary_path);
+      } catch (error) {
+        // A corrupt inspect.json must surface, not silently drop the
+        // conditional intent keys it gates (audio_treatment, captions_style).
+        return block([
+          blocker(
+            "inspect_summary_unreadable",
+            `inspect.json exists but could not be parsed (${error.message || String(error)}) — re-run vob_inspect_source; conditional intent keys (audio_treatment, captions_style) cannot be derived from a corrupt summary`,
+            { summary_path: state.inspect.summary_path },
+          ),
+        ]);
+      }
     }
   }
   const missing = missingIntentKeys(answers, inspectSummary);
@@ -266,7 +303,7 @@ function composeToPreview(state) {
     return block([
       blocker(
         "lint_not_run",
-        "composition has been saved but not linted — call vob_lint_composition",
+        "composition saved but lint_status is unknown (the save-time merged lint did not complete — likely a hyperframes infra failure) — call vob_lint_composition",
       ),
     ]);
   }
@@ -324,7 +361,28 @@ function previewToRender(state) {
       blocker(
         "preview_not_confirmed",
         "preview has been rendered but not confirmed — call vob_confirm_preview after the user explicitly approves",
-        { render_path: preview.render_path },
+        { render_path: preview.render_path, overridable: false },
+      ),
+    ]);
+  }
+  // Revision binding: a confirmed preview rendered against an older composition
+  // revision is stale. Fires only when BOTH revisions are integers and differ —
+  // pre-v2 sessions (no stamp) pass.
+  const composition = state && typeof state.composition === "object" && !Array.isArray(state.composition)
+    ? state.composition
+    : null;
+  const compRev = composition && Number.isInteger(composition.revision_count)
+    ? composition.revision_count
+    : null;
+  const previewRev = Number.isInteger(preview.composition_revision_rendered)
+    ? preview.composition_revision_rendered
+    : null;
+  if (compRev !== null && previewRev !== null && previewRev !== compRev) {
+    return block([
+      blocker(
+        "preview_stale_composition",
+        `preview was rendered against composition revision ${previewRev} but the composition is now revision ${compRev} — re-run vob_render_preview and re-confirm`,
+        { composition_revision: compRev, composition_revision_rendered: previewRev },
       ),
     ]);
   }
@@ -381,7 +439,40 @@ function renderToPackage(state) {
       blocker(
         "render_not_confirmed",
         "render has been produced but not confirmed — call vob_confirm_render after the user explicitly approves",
-        { mp4_path: render.mp4_path },
+        { mp4_path: render.mp4_path, overridable: false },
+      ),
+    ]);
+  }
+  // Revision binding: same stale-composition rule as PREVIEW -> RENDER.
+  // Absent stamp (pre-v2) passes.
+  const composition = state && typeof state.composition === "object" && !Array.isArray(state.composition)
+    ? state.composition
+    : null;
+  const compRev = composition && Number.isInteger(composition.revision_count)
+    ? composition.revision_count
+    : null;
+  const renderRev = Number.isInteger(render.composition_revision_rendered)
+    ? render.composition_revision_rendered
+    : null;
+  if (compRev !== null && renderRev !== null && renderRev !== compRev) {
+    return block([
+      blocker(
+        "render_stale_composition",
+        `full render was produced against composition revision ${renderRev} but the composition is now revision ${compRev} — re-run vob_render_full and re-confirm`,
+        { composition_revision: compRev, composition_revision_rendered: renderRev },
+      ),
+    ]);
+  }
+  // Fan-out completeness: leaving RENDER for PACKAGE means the SET is done —
+  // every storyboard short needs a deliverable record. Overridable: shipping a
+  // deliberate partial set stays possible (recorded for audit).
+  const missingShorts = missingShortDeliverables(state);
+  if (missingShorts.length > 0) {
+    return block([
+      blocker(
+        "shorts_missing_deliverables",
+        `multi-short fan-out: ${missingShorts.length} short(s) have no deliverable record yet (${missingShorts.join(", ")}) — after vob_confirm_render record the short via vob_import_deliverable {deliverables:[{path, title, short_id}], normalize:true, set_phase:false}, then back-edge RENDER->COMPOSE for the next short. Override only to ship a deliberate partial set.`,
+        { missing_short_ids: missingShorts },
       ),
     ]);
   }
@@ -414,6 +505,19 @@ function renderToPlan(state) {
 // project reached PACKAGE via the import escape hatch with external deliverables
 // on record (those ARE the output; there is no single-timeline package to check).
 function packageToIterate(state) {
+  // Fan-out completeness ALSO gates here: import_deliverable's default
+  // set_phase jumps straight to PACKAGE without crossing RENDER->PACKAGE, so
+  // this is the backstop against finalizing 1-of-N shorts. Overridable.
+  const missingShorts = missingShortDeliverables(state);
+  if (missingShorts.length > 0) {
+    return block([
+      blocker(
+        "shorts_missing_deliverables",
+        `multi-short fan-out: ${missingShorts.length} short(s) have no deliverable record yet (${missingShorts.join(", ")}) — produce and record them before finalizing (vob_import_deliverable {deliverables:[{path, title, short_id}], normalize:true}). Override only to finalize a deliberate partial set.`,
+        { missing_short_ids: missingShorts },
+      ),
+    ]);
+  }
   if (hasExternalDeliverables(state)) {
     return ALLOWED;
   }

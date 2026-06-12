@@ -13,8 +13,6 @@ const DROP_AUDIO_PATTERNS = [
   /\bno\s+source\s+audio\b/i,
   /\bdiscard\s+(?:the\s+|source\s+)?audio\b/i,
   /\baudio\s+is\s+(?:not\s+used|removed|cut\s+entirely)\b/i,
-  /\bdrone\s+hum\b/i,
-  /\bwind\s+isn[’']t\s+useful\b/i,
 ];
 
 const KEEP_AUDIO_TREATMENTS = new Set(["keep_audio", "transcribe_captions", "keep_ambient"]);

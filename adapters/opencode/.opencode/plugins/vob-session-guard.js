@@ -12,6 +12,13 @@
 // SUBAGENT tool calls. That gap is closed separately — each vob subagent has
 // write/edit/patch disabled in its own frontmatter, so it cannot mutate files
 // regardless of whether this hook sees its calls.
+//
+// ONE sanctioned carve-out: <session>/<project>/work/ — the escape-hatch
+// scratch dir (vob.md Rule 8: user-approved overlay-over-base / bespoke ffmpeg
+// builds work there; results are recorded via vob_vob_import_deliverable).
+// path.resolve normalizes ".."/"." before the segment check, so the carve-out
+// can't be steered back into state.json. The claude-code hook
+// (session-write-guard.sh) mirrors the semantics.
 import os from "os";
 import path from "path";
 
@@ -27,10 +34,16 @@ export const VobSessionGuard = async () => {
       if (typeof target !== "string" || target.length === 0) return;
       const resolved = path.resolve(target);
       if (resolved === SESSION_ROOT || resolved.startsWith(SESSION_ROOT + path.sep)) {
+        // Segment-exact carve-out: <root>/<project>/work[/...] — the second
+        // path segment under the root must be exactly "work".
+        const rel = path.relative(SESSION_ROOT, resolved);
+        const segments = rel.split(path.sep);
+        if (segments.length >= 2 && segments[1] === "work") return;
         throw new Error(
           `video-vob: refusing to ${input.tool} inside ~/video-vob-sessions/ — ` +
             "FSM state is owned exclusively by the vob MCP tools (vob_vob_*). " +
-            "Drive the pipeline through those tools, never by editing session files directly.",
+            "Drive the pipeline through those tools, never by editing session files directly " +
+            "(escape-hatch scratch work belongs under <session>/work/).",
         );
       }
     },

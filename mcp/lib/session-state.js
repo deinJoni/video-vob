@@ -3,10 +3,11 @@
 const fs = require("fs");
 const { PHASE_VALUES, LEGACY_PHASE_ALIASES } = require("./constants.js");
 const { ERROR_CODES, ToolError } = require("./envelope.js");
-const { sessionDir, statePath, assertSafeProjectId } = require("./paths.js");
-const { acquireSessionLock, withSessionLock, writeFileAtomic, readJsonFile } = require("./storage.js");
+const { sessionDir, statePath, assertSafeProjectId, inspectSummaryPath, transcodedClipsDir } = require("./paths.js");
+const { withSessionLock, writeFileAtomic, readJsonFile } = require("./storage.js");
 const { getGate } = require("./phase-gates.js");
-const { archiveForIteration, isArchivalTransition } = require("./archival.js");
+const { archiveForIteration, currentIterationVersion, isArchivalTransition } = require("./archival.js");
+const { missingIntentKeys } = require("./intent-schema.js");
 const { materializeSceneClips } = require("./clip-materialize.js");
 
 // INTENT -> PLAN -> COMPOSE: the former BRIEF and STORYBOARD phases are merged
@@ -88,8 +89,10 @@ function initProject(args) {
     writeFileAtomic(file, `${JSON.stringify(state, null, 2)}\n`);
     return {
       created: true,
+      project_id: id,
       session_dir: dir,
-      state,
+      phase: state.phase,
+      style: state.style ? { derived_from: state.style.derived_from } : null,
     };
   });
 }
@@ -122,18 +125,377 @@ function readSessionStateStrict(projectId) {
   return parsed;
 }
 
-function readState(args) {
-  return readSessionStateStrict(args && args.project_id);
+// ---- read-time projections (disk untouched; every digest tolerates a legacy
+// document: non-object slot -> null, missing inner field -> typed default) ----
+
+function asSlot(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value) ? value : null;
 }
 
-function readStateSummary(args) {
-  const state = readSessionStateStrict(args && args.project_id);
+function strOrNull(value) {
+  return typeof value === "string" && value ? value : null;
+}
+
+function intOr(value, fallback) {
+  return Number.isInteger(value) ? value : fallback;
+}
+
+function numOr(value, fallback) {
+  return Number.isFinite(value) ? value : fallback;
+}
+
+function arrOr(value) {
+  return Array.isArray(value) ? value : [];
+}
+
+function readInspectSummaryIfPresent(projectId) {
+  const file = inspectSummaryPath(projectId);
+  if (!fs.existsSync(file)) return null;
+  try {
+    return readJsonFile(file);
+  } catch {
+    return null;
+  }
+}
+
+// Count digest of the transcoded_clips materialization document. The full
+// document (per-clip detail) persists in state.transcoded_clips on disk.
+function clipsDigest(projectId, transcodedClips) {
+  const s = transcodedClips && transcodedClips.summary ? transcodedClips.summary : {};
+  return {
+    clip_count: (Number(s.cut) || 0) + (Number(s.cached) || 0),
+    cached_count: Number(s.cached) || 0,
+    scene_count: Number(s.total) || 0,
+    skipped_scene_count: Number(s.skipped) || 0,
+    audio_treatment: transcodedClips.audio_treatment || null,
+    clips_dir: transcodedClipsDir(projectId),
+  };
+}
+
+// One entry per dependency preflight with ok === false. The full preflight
+// blobs stay on disk for the renderToPackage gate and vob_doctor.
+function dependencyFailuresDigest(dependencies) {
+  const deps = asSlot(dependencies);
+  if (!deps) return [];
+  return Object.entries(deps)
+    .filter(([, info]) => info && typeof info === "object" && info.ok === false)
+    .map(([name, info]) => ({ name, error: typeof info.error === "string" ? info.error : null }));
+}
+
+function summarizeManifest(slot) {
+  const m = asSlot(slot);
+  if (!m) return null;
+  return {
+    path: strOrNull(m.path),
+    source_path: strOrNull(m.source_path),
+    file_count: intOr(m.file_count, 0),
+    video_stream_count: intOr(m.video_stream_count, 0),
+    total_duration_seconds: numOr(m.total_duration_seconds, null),
+  };
+}
+
+function summarizeClassification(slot) {
+  const c = asSlot(slot);
+  if (!c) return null;
+  return {
+    aroll_count: intOr(c.aroll_count, 0),
+    broll_count: intOr(c.broll_count, 0),
+    review_count: intOr(c.review_count, 0),
+    take_group_count: intOr(c.take_group_count, 0),
+    best_take_count: intOr(c.best_take_count, 0),
+    aroll_pool_path: strOrNull(c.aroll_pool_path),
+    broll_index_path: strOrNull(c.broll_index_path),
+    review_pool_path: strOrNull(c.review_pool_path != null ? c.review_pool_path : c.review_path),
+    visual_coverage: asSlot(c.visual_coverage),
+    hook_tagged_count: intOr(c.hook_tagged_count, null),
+  };
+}
+
+function summarizeInspect(slot) {
+  const i = asSlot(slot);
+  if (!i) return null;
+  return {
+    summary_path: strOrNull(i.summary_path),
+    thumbs_dir: strOrNull(i.thumbs_dir),
+    thumb_count: intOr(i.thumb_count, 0),
+    thumb_failed_count: intOr(i.thumb_failed_count, 0),
+    warnings: arrOr(i.warnings),
+    thumb_interval_seconds: numOr(i.thumb_interval_seconds, 0),
+    sample_thumb_paths: arrOr(i.sample_thumb_paths),
+    contact_sheet_paths: arrOr(i.contact_sheet_paths),
+    audio_present: i.audio_present === true,
+    speech_detected: i.speech_detected === true,
+    word_count: intOr(i.word_count, 0),
+    paragraph_count: intOr(i.paragraph_count, 0),
+    transcript_path: strOrNull(i.transcript_path),
+    transcript_summary_path: strOrNull(i.transcript_summary_path),
+    transcript_paragraphs_path: strOrNull(i.transcript_paragraphs_path),
+    segments_path: strOrNull(i.segments_path),
+    segment_count: intOr(i.segment_count, 0),
+    clean_speech_path: strOrNull(i.clean_speech_path),
+    digest_path: strOrNull(i.digest_path),
+    strips_legend_path: strOrNull(i.strips_legend_path),
+    strip_count: intOr(i.strip_count, 0),
+    transcripts: arrOr(i.transcripts),
+    hook_candidate_count: intOr(i.hook_candidate_count, 0),
+    classification: summarizeClassification(i.classification),
+    user_acknowledged: i.user_acknowledged === true,
+    skipped_reason: strOrNull(i.skipped_reason),
+  };
+}
+
+// Intent answers ride through verbatim with ONE projection: an object-shaped
+// (v2 canonicalized) target_platform loses its stored profile snapshot —
+// {raw, canonical} is what the orchestrator displays; the summary's `platform`
+// field carries the geometry.
+function summarizeIntentAnswers(answers) {
+  const a = asSlot(answers);
+  if (!a) return {};
+  const out = { ...a };
+  const platform = asSlot(a.target_platform);
+  if (platform && typeof platform.raw === "string") {
+    out.target_platform = { raw: platform.raw, canonical: strOrNull(platform.canonical) };
+  }
+  return out;
+}
+
+function summarizePlatform(answers) {
+  const a = asSlot(answers);
+  const platform = a ? asSlot(a.target_platform) : null;
+  const profile = platform ? asSlot(platform.profile) : null;
+  if (!profile) return null;
+  return {
+    canonical: strOrNull(platform.canonical),
+    width: intOr(profile.width, 0),
+    height: intOr(profile.height, 0),
+    fps: intOr(profile.fps, 0),
+    safe_top_px: intOr(profile.safe_top_px, 0),
+    safe_bottom_px: intOr(profile.safe_bottom_px, 0),
+    ideal_duration_s: asSlot(profile.ideal_duration_s),
+    max_duration_s: numOr(profile.max_duration_s, null),
+    caption_defaults: asSlot(profile.caption_defaults),
+  };
+}
+
+function summarizeTargetDurationSeconds(answers) {
+  const a = asSlot(answers);
+  const duration = a ? asSlot(a.target_duration) : null;
+  return duration && Number.isFinite(duration.seconds) ? duration.seconds : null;
+}
+
+// Range/per-deliverable form of the target duration: "20-35s per short" ->
+// {min,max,per_deliverable:true}; "30s each" (no range) still surfaces
+// {per_deliverable:true} with null bounds — the adapters' fan-out trigger keys
+// on this field, so the flag must survive rangeless qualifiers. null for plain
+// durations and legacy sessions.
+function summarizeTargetDurationRange(answers) {
+  const a = asSlot(answers);
+  const duration = a ? asSlot(a.target_duration) : null;
+  if (!duration) return null;
+  const range = asSlot(duration.range);
+  const hasRange = range && Number.isFinite(range.min_seconds) && Number.isFinite(range.max_seconds);
+  const perDeliverable = duration.per_deliverable === true;
+  if (!hasRange && !perDeliverable) return null;
+  return {
+    min_seconds: hasRange ? range.min_seconds : null,
+    max_seconds: hasRange ? range.max_seconds : null,
+    per_deliverable: perDeliverable,
+  };
+}
+
+// Lean deliverables digest: enough for the orchestrator to compute the
+// remaining fan-out shorts on resume (full records live in state.deliverables
+// and deliverables/manifest.json).
+function summarizeDeliverables(deliverables) {
+  const list = arrOr(deliverables);
+  if (list.length === 0) return [];
+  return list.map((d) => {
+    const x = asSlot(d) || {};
+    return {
+      id: strOrNull(x.id),
+      short_id: strOrNull(x.short_id),
+      title: strOrNull(x.title),
+      origin: strOrNull(x.origin),
+    };
+  });
+}
+
+function summarizeBrief(slot) {
+  const b = asSlot(slot);
+  if (!b) return null;
+  return {
+    path: strOrNull(b.path),
+    saved_at: strOrNull(b.saved_at),
+    confirmed: b.confirmed === true,
+    confirmed_at: strOrNull(b.confirmed_at),
+  };
+}
+
+function summarizeStoryboard(slot) {
+  const s = asSlot(slot);
+  if (!s) return null;
+  const planLint = asSlot(s.plan_lint);
+  return {
+    artifact_path: strOrNull(s.artifact_path),
+    markdown_path: strOrNull(s.markdown_path),
+    saved_at: strOrNull(s.saved_at),
+    confirmed: s.confirmed === true,
+    confirmed_at: strOrNull(s.confirmed_at),
+    revision_count: intOr(s.revision_count, 0),
+    scene_count: intOr(s.scene_count, null),
+    total_duration_seconds: numOr(s.total_duration_seconds, null),
+    // Fan-out (shorts[] storyboards): the per-short digest the orchestrator
+    // needs to drive the active-short loop on resume.
+    ...(Number.isInteger(s.short_count) && s.short_count > 0
+      ? {
+        short_count: s.short_count,
+        shorts: arrOr(s.shorts).map((sh) => {
+          const x = asSlot(sh) || {};
+          return {
+            short_id: strOrNull(x.short_id),
+            title: strOrNull(x.title),
+            total_target_duration_seconds: numOr(x.total_target_duration_seconds, null),
+            scene_count: intOr(x.scene_count, null),
+          };
+        }),
+      }
+      : {}),
+    plan_lint: planLint
+      ? { error_count: intOr(planLint.error_count, 0), warning_count: intOr(planLint.warning_count, 0) }
+      : null,
+  };
+}
+
+function summarizeComposition(slot) {
+  const c = asSlot(slot);
+  if (!c) return null;
+  return {
+    files: arrOr(c.files),
+    saved_at: strOrNull(c.saved_at),
+    lint_status: strOrNull(c.lint_status),
+    lint_report_path: strOrNull(c.lint_report_path),
+    lint_ran_at: strOrNull(c.lint_ran_at),
+    revision_count: intOr(c.revision_count, 0),
+    // Fan-out: which short the current composition implements.
+    short_id: strOrNull(c.short_id),
+  };
+}
+
+function summarizePreview(slot) {
+  const p = asSlot(slot);
+  if (!p) return null;
+  return {
+    render_path: strOrNull(p.render_path),
+    rendered_at: strOrNull(p.rendered_at),
+    render_duration_seconds: numOr(p.render_duration_seconds, 0),
+    confirmed: p.confirmed === true,
+    confirmed_at: strOrNull(p.confirmed_at),
+    revision_count: intOr(p.revision_count, 0),
+    composition_revision_rendered: intOr(p.composition_revision_rendered, null),
+  };
+}
+
+function summarizeRender(slot) {
+  const r = asSlot(slot);
+  if (!r) return null;
+  return {
+    mp4_path: strOrNull(r.mp4_path),
+    rendered_at: strOrNull(r.rendered_at),
+    render_duration_seconds: numOr(r.render_duration_seconds, 0),
+    file_size_bytes: intOr(r.file_size_bytes, null),
+    stderr_log_path: strOrNull(r.stderr_log_path),
+    confirmed: r.confirmed === true,
+    confirmed_at: strOrNull(r.confirmed_at),
+    revision_count: intOr(r.revision_count, 0),
+    composition_revision_rendered: intOr(r.composition_revision_rendered, null),
+  };
+}
+
+function summarizePackage(slot) {
+  const p = asSlot(slot);
+  if (!p) return null;
+  return {
+    directory_path: strOrNull(p.directory_path),
+    final_mp4_path: strOrNull(p.final_mp4_path),
+    thumbnail_path: strOrNull(p.thumbnail_path),
+    manifest_path: strOrNull(p.manifest_path),
+    readme_path: strOrNull(p.readme_path),
+    packaged_at: strOrNull(p.packaged_at),
+    iteration_version: intOr(p.iteration_version, 0),
+  };
+}
+
+// The orchestrator's working view (D1): a per-slot digest (~1 KB) covering
+// every routine phase decision without a full state read.
+function buildStateSummary(state, projectId) {
+  const iteration = asSlot(state.iteration);
+  const intentSlot = asSlot(state.intent);
+  const answers = intentSlot ? intentSlot.answers : null;
+  const transcoded = asSlot(state.transcoded_clips);
+  const style = asSlot(state.style);
   return {
     project_id: state.project_id,
     phase: state.phase,
     target: state.target == null ? null : state.target,
     last_updated: state.last_updated,
+    iteration_version: currentIterationVersion(state),
+    archived_version_count: iteration ? arrOr(iteration.archive).length : 0,
+    finalized_version: iteration ? intOr(iteration.finalized_version, null) : null,
+    style: style && style.derived_from != null ? { derived_from: style.derived_from } : null,
+    external_import: state.external_import === true,
+    deliverable_count: arrOr(state.deliverables).length,
+    deliverables: summarizeDeliverables(state.deliverables),
+    history_count: arrOr(state.history).length,
+    dependency_failures: dependencyFailuresDigest(state.dependencies),
+    manifest: summarizeManifest(state.manifest),
+    inspect: summarizeInspect(state.inspect),
+    intent: intentSlot
+      ? {
+          answers: summarizeIntentAnswers(answers),
+          missing_required_keys: missingIntentKeys(asSlot(answers) || {}, readInspectSummaryIfPresent(projectId)),
+        }
+      : null,
+    platform: summarizePlatform(answers),
+    target_duration_seconds: summarizeTargetDurationSeconds(answers),
+    target_duration_range: summarizeTargetDurationRange(answers),
+    brief: summarizeBrief(state.brief),
+    storyboard: summarizeStoryboard(state.storyboard),
+    clips: transcoded
+      ? { generated_at: strOrNull(transcoded.generated_at), ...clipsDigest(projectId, transcoded) }
+      : null,
+    composition: summarizeComposition(state.composition),
+    preview: summarizePreview(state.preview),
+    render: summarizeRender(state.render),
+    package: summarizePackage(state.package),
   };
+}
+
+// Default projection drops the heavy sections (history, per-clip detail, full
+// dependency blobs); `include` opts back in. Read-time only — disk untouched.
+function readState(args) {
+  const id = assertSafeProjectId(args && args.project_id);
+  const state = readSessionStateStrict(id);
+  const include = new Set(Array.isArray(args && args.include) ? args.include : []);
+  const out = { ...state };
+  if (!include.has("history")) {
+    delete out.history;
+    out.history_count = Array.isArray(state.history) ? state.history.length : 0;
+    out.last_history_event = Array.isArray(state.history) && state.history.length
+      ? { kind: state.history[state.history.length - 1].kind, at: state.history[state.history.length - 1].at }
+      : null;
+  }
+  if (!include.has("clips") && out.transcoded_clips && typeof out.transcoded_clips === "object") {
+    out.transcoded_clips = clipsDigest(id, state.transcoded_clips);
+  }
+  if (!include.has("dependencies") && out.dependencies && typeof out.dependencies === "object") {
+    out.dependencies = dependencyFailuresDigest(state.dependencies);
+  }
+  return out;
+}
+
+function readStateSummary(args) {
+  const id = assertSafeProjectId(args && args.project_id);
+  return buildStateSummary(readSessionStateStrict(id), id);
 }
 
 function readAudioTreatment(state) {
@@ -156,11 +518,9 @@ async function transitionPhase(args) {
   // COMPOSE), and the state commit. The session lock is exclusive and uncontended
   // during phase transitions — the orchestrator drives one transition at a time —
   // so blocking on ffmpeg work inside the lock is the simplest way to keep the
-  // transition atomic. `withSessionLock` does not await async callbacks; we use
-  // `acquireSessionLock` + try/finally directly so the lock is held until the
-  // async work resolves.
-  const release = acquireSessionLock(id);
-  try {
+  // transition atomic. withSessionLock is async-aware: the lock is held until
+  // the returned promise settles.
+  return withSessionLock(id, async () => {
     const state = readSessionStateStrict(id);
     const from = state.phase;
     const allowed = ALLOWED_TRANSITIONS[from] || [];
@@ -175,12 +535,28 @@ async function transitionPhase(args) {
       throw new ToolError(ERROR_CODES.INTERNAL_ERROR, `no gate registered for ${from} -> ${toPhase}`);
     }
     const verdict = gate(state) || {};
-    if (verdict.allowed === false && !overrideReason) {
-      throw new ToolError(
-        ERROR_CODES.STATE_CONFLICT,
-        `gate blocked ${from} -> ${toPhase}: ${(verdict.blockers || []).map((b) => b.message || b.code || String(b)).join("; ") || "no detail"}`,
-        { blockers: verdict.blockers || [] },
-      );
+    const blockers = Array.isArray(verdict.blockers) ? verdict.blockers : [];
+    if (verdict.allowed === false) {
+      // Non-overridable blockers (human sign-off gates) refuse the transition
+      // even WITH a reason, and even when overridable blockers coexist. The
+      // throw precedes the state write, so a refused attempt leaves no trace
+      // in history.
+      const nonOverridable = blockers.filter((b) => b && b.overridable === false);
+      if (nonOverridable.length > 0) {
+        const codes = nonOverridable.map((b) => b.code).join(", ");
+        throw new ToolError(
+          ERROR_CODES.STATE_CONFLICT,
+          `gate blocked ${from} -> ${toPhase}: ${codes} cannot be bypassed with override_reason — ${nonOverridable.map((b) => b.message).join("; ")}`,
+          { blockers, non_overridable: nonOverridable.map((b) => b.code), refused_override_reason: overrideReason },
+        );
+      }
+      if (!overrideReason) {
+        throw new ToolError(
+          ERROR_CODES.STATE_CONFLICT,
+          `gate blocked ${from} -> ${toPhase}: ${blockers.map((b) => b.message || b.code || String(b)).join("; ") || "no detail"}`,
+          { blockers },
+        );
+      }
     }
 
     // Pre-cut every storyboard scene to its own H.264 clip when entering COMPOSE
@@ -244,28 +620,30 @@ async function transitionPhase(args) {
         to: toPhase,
         at: ts,
         override_reason: overrideReason,
-        gate_blockers: verdict.blockers && verdict.blockers.length ? verdict.blockers : null,
+        gate_blockers: blockers.length ? blockers : null,
       },
     ];
     writeFileAtomic(statePath(id), `${JSON.stringify(next, null, 2)}\n`);
+    // Lean return (D1): no full state echo, no duplicated transcoded_clips —
+    // the full materialization document persists in next.transcoded_clips.
     return {
       project_id: id,
       from,
       to: toPhase,
       override_reason: overrideReason,
       archived: archive ? archive.record : null,
-      transcoded_clips: transcodedClips,
-      state: next,
+      clips: transcodedClips ? clipsDigest(id, transcodedClips) : null,
+      phase_summary: buildStateSummary(next, id),
     };
-  } finally {
-    release();
-  }
+  });
 }
 
 module.exports = {
   ALLOWED_TRANSITIONS,
   buildInitialSessionState,
+  buildStateSummary,
   initProject,
+  readInspectSummaryIfPresent,
   readSessionStateStrict,
   readState,
   readStateSummary,

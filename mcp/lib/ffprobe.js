@@ -100,6 +100,94 @@ function readRotation(stream) {
   return 0;
 }
 
+// --- Keyframe-density probe ---------------------------------------------------
+
+const KEYFRAME_PROBE_WINDOW_SECONDS = 20;
+const KEYFRAME_PROBE_TIMEOUT_MS = 30 * 1000;
+// Window starts as fractions of duration. Skipping t=0 matters: -read_intervals
+// lands each window on a seek point, so the very first packet of a window is a
+// keyframe by construction — only the GAPS between keyframes inside a window
+// carry GOP information.
+const KEYFRAME_PROBE_WINDOW_STARTS = [0.05, 0.45, 0.85];
+
+// Estimate the video keyframe interval (GOP length, seconds) by demuxing a few
+// short windows and reading packet key flags — no decoding, so this stays cheap
+// (a few seconds of IO) even on 35Mbps HEVC. Returns:
+//   { est_gop_seconds: number|null, sparse: boolean, keyframe_count, packet_count }
+// where sparse:true means no two keyframes landed inside any sampled window
+// (GOP > window length — only an upper-bound-exceeded signal, no estimate), or
+// null when the probe itself failed (spawn error, timeout, zero video packets).
+function probeKeyframeInterval(filePath, { durationSeconds, timeoutMs = KEYFRAME_PROBE_TIMEOUT_MS } = {}) {
+  if (typeof filePath !== "string" || !filePath) return null;
+  const dur = Number(durationSeconds);
+  const windowLen = KEYFRAME_PROBE_WINDOW_SECONDS;
+  let starts;
+  if (Number.isFinite(dur) && dur > windowLen * 2) {
+    const maxStart = Math.max(0, dur - windowLen - 0.5);
+    const seen = new Set();
+    starts = KEYFRAME_PROBE_WINDOW_STARTS
+      .map((f) => Math.min(maxStart, Math.round(f * dur)))
+      .filter((s) => (seen.has(s) ? false : (seen.add(s), true)));
+  } else {
+    starts = [0];
+  }
+  const intervals = starts.map((s) => `${s}%+${windowLen}`).join(",");
+
+  let result;
+  try {
+    result = spawnSync(
+      "ffprobe",
+      [
+        "-v", "error",
+        "-select_streams", "v:0",
+        "-show_entries", "packet=pts_time,dts_time,flags",
+        "-of", "csv=p=0",
+        "-read_intervals", intervals,
+        filePath,
+      ],
+      { encoding: "utf8", timeout: timeoutMs, maxBuffer: 32 * 1024 * 1024 },
+    );
+  } catch {
+    return null;
+  }
+  if (result.error || result.status !== 0 || typeof result.stdout !== "string") return null;
+
+  let packetCount = 0;
+  let keyframeCount = 0;
+  const keyTimes = [];
+  for (const line of result.stdout.split("\n")) {
+    if (!line) continue;
+    const parts = line.split(",");
+    if (parts.length < 3) continue;
+    packetCount += 1;
+    if (!/K/.test(parts[2])) continue;
+    keyframeCount += 1;
+    const t = Number(parts[0]) || Number(parts[1]); // pts_time, dts_time fallback ("N/A" -> NaN)
+    if (Number.isFinite(t)) keyTimes.push(t);
+  }
+  if (packetCount === 0) return null;
+
+  // Gaps between consecutive keyframes, but only those that fit inside one
+  // window — a gap spanning two sampled windows says nothing about the GOP.
+  keyTimes.sort((a, b) => a - b);
+  const gaps = [];
+  for (let i = 1; i < keyTimes.length; i += 1) {
+    const gap = keyTimes[i] - keyTimes[i - 1];
+    if (gap > 0.01 && gap <= windowLen + 1) gaps.push(gap);
+  }
+  if (gaps.length === 0) {
+    return { est_gop_seconds: null, sparse: true, keyframe_count: keyframeCount, packet_count: packetCount };
+  }
+  gaps.sort((a, b) => a - b);
+  const median = gaps[Math.floor(gaps.length / 2)];
+  return {
+    est_gop_seconds: Math.round(median * 100) / 100,
+    sparse: false,
+    keyframe_count: keyframeCount,
+    packet_count: packetCount,
+  };
+}
+
 function summarizeProbe(filePath, probe) {
   const streams = Array.isArray(probe.streams) ? probe.streams : [];
   const videoStreams = streams.filter(
@@ -147,5 +235,6 @@ function summarizeProbe(filePath, probe) {
 module.exports = {
   FFPROBE_INSTALL_HINT,
   probeFile,
+  probeKeyframeInterval,
   summarizeProbe,
 };

@@ -269,13 +269,22 @@ function acquireSessionLock(domain) {
   throw new ToolError(ERROR_CODES.STATE_CONFLICT, `Session lock busy: ${dir}`);
 }
 
+// Async-aware: if the callback returns a promise, the lock is held until the
+// promise settles and released exactly once. Sync callbacks behave as before.
 function withSessionLock(domain, callback) {
   const release = acquireSessionLock(domain);
+  let result;
   try {
-    return callback();
-  } finally {
+    result = callback();
+  } catch (error) {
     release();
+    throw error;
   }
+  if (result && typeof result.then === "function") {
+    return Promise.resolve(result).finally(release);
+  }
+  release();
+  return result;
 }
 
 module.exports = {

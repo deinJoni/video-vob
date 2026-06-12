@@ -37,6 +37,24 @@ function countTakeGroups(arollPool) {
   return groups.size;
 }
 
+// "Visually tagged" = the entry carries BOTH structured visual fields the
+// inspector prompt requires (shot_type + framing_ok_for_vertical). The
+// orchestrator surfaces under-coverage as a quality note, never a hard gate.
+function countVisualTagged(entries) {
+  return (Array.isArray(entries) ? entries : [])
+    .filter((e) => e && e.shot_type !== undefined && e.framing_ok_for_vertical !== undefined)
+    .length;
+}
+
+// Hook tags live on BOTH pools: the inspector tags A-roll segments (strong
+// opening lines) and B-roll clips (arresting motion / striking frames).
+function countHookTagged(arollPool, brollIndex) {
+  const segs = arollPool && Array.isArray(arollPool.segments) ? arollPool.segments : [];
+  const clips = brollIndex && Array.isArray(brollIndex.clips) ? brollIndex.clips : [];
+  return segs.filter((s) => s && s.hook_candidate === true).length
+    + clips.filter((c) => c && c.hook_candidate === true).length;
+}
+
 // The inspector subagent's single write. Validates the three classification
 // pools against inspect/segments.json (the authoritative segment list), then
 // persists inspect/{aroll_pool,broll_index,review}.json and records pool paths
@@ -122,6 +140,13 @@ function saveClassification(args) {
       review_count: reviewCount,
       best_take_count: countBestTakes(arollPool),
       take_group_count: countTakeGroups(arollPool),
+      visual_coverage: {
+        aroll_tagged: countVisualTagged(arollPool.segments),
+        aroll_total: arollCount,
+        broll_tagged: countVisualTagged(brollIndex.clips),
+        broll_total: brollCount,
+      },
+      hook_tagged_count: countHookTagged(arollPool, brollIndex),
       classified_at: ts,
     };
 
@@ -138,6 +163,7 @@ function saveClassification(args) {
           broll_count: brollCount,
           review_count: reviewCount,
           take_group_count: classification.take_group_count,
+          hook_tagged_count: classification.hook_tagged_count,
         },
       ],
     };
@@ -149,7 +175,7 @@ function saveClassification(args) {
 
 module.exports = Object.freeze({
   name: "vob_save_classification",
-  description: "Persist the three INSPECT classification pools produced by the inspector subagent from inspect/segments.json: aroll_pool.json (spine segments, with take_group + is_best_take for deduped retakes), broll_index.json (B-roll clips with description/tags/has_motion/has_usable_audio), and review.json (ambiguous segments, empty for a clean drop). Validates shape AND that every referenced { file_index, segment_index } exists in segments.json (no hallucinated segments). Records state.inspect.classification with pool paths + counts. Requires phase INSPECT and a prior vob_inspect_source. The inspector subagent's only write tool.",
+  description: "Persist the inspector's three classification pools validated against inspect/segments.json (hallucinated {file_index,segment_index} refs are rejected): aroll_pool (take_group/is_best_take/hook_candidate), broll_index (description/tags/has_motion/has_usable_audio/hook_candidate), review. Entries should carry the structured visual fields shot_type, subject_position, framing_ok_for_vertical — the return's visual_coverage reports how many do. Requires phase INSPECT after vob_inspect_source. Inspector's only write tool.",
   inputSchema: {
     type: "object",
     properties: {

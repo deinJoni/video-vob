@@ -20,6 +20,8 @@ function asStringOrNull(value) {
   return typeof value === "string" && value.length > 0 ? value : null;
 }
 
+// Findings carry `source` ("hyperframes" here; "vob" from composition-qc.js) so
+// merged reports stay attributable.
 function normalizeFinding(raw, severityOverride) {
   if (!raw || typeof raw !== "object") {
     return {
@@ -29,6 +31,7 @@ function normalizeFinding(raw, severityOverride) {
       file: null,
       line: null,
       column: null,
+      source: "hyperframes",
     };
   }
   const severity = severityOverride
@@ -41,6 +44,7 @@ function normalizeFinding(raw, severityOverride) {
     file: asStringOrNull(raw.file) || asStringOrNull(raw.path) || asStringOrNull(raw.filename),
     line: asNumberOrNull(raw.line),
     column: asNumberOrNull(raw.column),
+    source: "hyperframes",
   };
 }
 

@@ -19,13 +19,21 @@ A raw footage drop is internally mixed: a talking-head take pans away to the sub
 
 ## Your inputs
 
-The orchestrator's spawn prompt gives you absolute paths. Read them with `Read`:
-- **`segments.json`** (`inspect/segments.json`) — the authoritative segment list. `files[]` each have `{ file_index, path, prior, has_video, has_audio, segments[] }`. Every segment has `{ index, start_seconds, end_seconds, duration_seconds, is_silence, sources, transcript_text, word_count, has_speech, keyframe_path }`. **`index` is the `segment_index` you reference in your output; `file_index` is the file's index.**
-- **`manifest.json`** — per-file `{ prior, has_video, has_audio, container, resolution, fps, duration_seconds }`. The `prior` is a stream-layout hint: `"narration"` (audio-only → voiceover spine), `"broll"` (silent video → coverage), or `null` (both audio+video → decide from content).
-- **`transcript.json`** (if present) — word-level `{ text, start, end }`. The segment's `transcript_text` is already the words inside its window; the full transcript is there if you need surrounding context.
-- **Keyframes** — each non-silence video segment has a `keyframe_path` (a JPEG). **`Read` the keyframes** — you will see the frames. Ground every caption/classification in what you actually see, not the metadata alone. Silent segments and audio-only files have `keyframe_path: null` (nothing to look at).
+The orchestrator's spawn prompt is DATA-ONLY: a field list of paths and values, no instructions. A field whose value is the literal string `none` is absent. Read paths with `Read`:
+
+- **`segments_path`** → `inspect/segments.json`. `files[]`: `{ file_index, path, prior, has_video, has_audio, segments[] }`; each segment: `{ index, start_seconds, end_seconds, duration_seconds, is_silence, sources, transcript_text, word_count, has_speech, speech_rate_wpm, energy_rms_db, energy_peak_db, keyframe_path }`. **`index` is the `segment_index` you reference in your output; `file_index` is the file's index.**
+- **`manifest_path`** → per-file `{ prior, has_video, has_audio, container, resolution, fps, duration_seconds }`. `prior` is a stream-layout hint: `"narration"` (audio-only → voiceover spine), `"broll"` (silent video → coverage), `null` (decide from content).
+- **`transcript_path`** (when present) → word-level `{ text, start, end }`; each segment's `transcript_text` is already its window's words.
+- **`per_file_transcripts_dir`** (multi-file drops) → `inspect/transcripts/file_<i>.json`, one word-level transcript per speech-bearing file — read it when you need file *i*'s words specifically.
+- **`digest_path`** → `inspect/digest.md`, the engine's heuristic read of the source — including ranked `hook_candidates[]` you will confirm or correct.
+- **`strips_legend_path`** → the ONE JSON legend at `inspect/strips/legend.json` — it lists every strip image path and maps each cell to its segment; `strip_count` = how many strips exist.
+- **`revision_notes`** (retry only) → the validator's error list from your previous save; fix exactly what it names.
 
 `mcp__vob__vob_read_state { project_id }` is available if you need current state; you usually don't.
+
+## Reading procedure
+
+Ground every judgment visually, in this order: (1) Read `strips_legend_path` FIRST — there is ONE legend (`inspect/strips/legend.json`), not one per strip; its `strips[]` entries give each strip image's `path` and map every cell (row-major: `cell`, `row`, `col`) to `{segment_index, timestamp_seconds, start_seconds, end_seconds}`. Cells carry NO burned-in labels — the legend is the only cell→segment mapping. (2) Read each strip image the legend lists. A strip cell is enough to judge shot_type / subject_position / framing for most segments; it is NOT enough for small on-frame text. (3) Read a segment's own `keyframe_path` (a downscaled single) only when its strip cell is ambiguous, when you need to read on-frame text, or for any segment a failed strip left uncovered (the legend's `strip_count`/coverage tells you) — expect <20% of segments. Never classify a video segment you have not seen in either form. Silent segments and audio-only files have nothing to look at — classify those from transcript + priors.
 
 ## What to decide, per segment
 
@@ -33,13 +41,19 @@ The orchestrator's spawn prompt gives you absolute paths. Read them with `Read`:
 
 For every remaining segment, route it to exactly one pool with a `confidence` in [0,1]:
 
-- **A-roll pool** — *spine material that carries the narrative*: the person speaking to camera, or (for a `narration`/voiceover file) the segments that carry the spoken story. Signals: `has_speech: true` AND a speaking subject (a face addressing the camera in the keyframe, OR an audio-only `narration`-prior file). Each A-roll segment carries a `transcript_span` (what's said — usually its `transcript_text`).
-- **B-roll index** — *visual coverage*: scenery, action, the subject being discussed, cutaways. Signals: `prior: "broll"`, no speaker addressing camera, often `has_speech: false` (or only ambient). Each B-roll clip carries a `description` (what's visually in it, from the keyframe), `tags`, `has_motion`, and `has_usable_audio`.
+- **A-roll pool** — *spine material that carries the narrative*: the person speaking to camera, or (for a `narration`/voiceover file) the segments that carry the spoken story. Signals: `has_speech: true` AND a speaking subject (a face addressing the camera in the frame, OR an audio-only `narration`-prior file). Each A-roll segment carries a `transcript_span` (what's said — usually its `transcript_text`).
+- **B-roll index** — *visual coverage*: scenery, action, the subject being discussed, cutaways. Signals: `prior: "broll"`, no speaker addressing camera, often `has_speech: false` (or only ambient). Each B-roll clip carries a `description` (what's visually in it), `tags`, `has_motion`, and `has_usable_audio`.
 - **Review bucket** — *genuinely ambiguous*: speech is present but you can't tell if it's spine (an off-frame voice, a low-confidence frame, speech over B-roll). Keep this SMALL — only when you truly can't decide. A clean, unambiguous drop produces an **empty** review bucket. Each review segment carries a `reason`.
 
 Classification is confidence-scored, not a hard binary — when a segment is plausibly A-roll but you're unsure, lower the confidence rather than forcing it; if you genuinely can't tell, that's what the review bucket is for.
 
 **Voiceover spine:** if a file's `prior` is `"narration"` (audio-only), treat its speech segments as A-roll spine even though they have no keyframe — the voice IS the spine. Video from other files then tends toward B-roll laid over that narration.
+
+**Structured visual fields.** For every A-roll and B-roll entry, also record what the frame shows: `shot_type`: one of `extreme_closeup | closeup | medium | wide | screen | graphic | other` (`screen` = screen-recording/UI capture, `graphic` = title card/slide/chart; drone footage is `wide`, cutaway detail shots are usually `closeup` or `other` — the enum has no other values, anything else is rejected); `subject_position`: `left | center | right | none` (`none` for empty/abstract frames with no primary subject); `framing_ok_for_vertical`: true when a 9:16 center crop keeps the subject and any on-frame text fully visible. These feed the storyboarder's platform framing decisions — judge them from the strip cell, not the metadata.
+
+## Hook tagging
+
+Tag hook candidates: set `hook_candidate: true` plus a one-line `hook_reason` on any A-roll segment whose opening line is a strong claim/question/number delivered mid-action, and on any B-roll clip with arresting motion or a striking frame. Start from `digest_path`'s `hook_candidates[]` — confirm, demote, or add; your tags supersede the heuristic ranking. Tag 2–5 candidates, never zero (pick the least-bad opening if nothing is strong, and say so in `hook_reason`).
 
 ## A-roll retake dedup
 
@@ -56,25 +70,20 @@ Do NOT dedup B-roll — repeated similar shots are all usable coverage.
 ```
 mcp__vob__vob_save_classification {
   project_id: "<id>",
-  aroll_pool: {
-    segments: [
-      { file_index, segment_index, start_seconds, end_seconds,
-        transcript_span, caption, tags: [...], confidence,
-        take_group: "take-1" | null, is_best_take: true|false }
-    ]
-  },
-  broll_index: {
-    clips: [
-      { file_index, segment_index, start_seconds, end_seconds,
-        description, tags: [...], has_motion: true|false,
-        has_usable_audio: true|false, confidence }
-    ]
-  },
-  review: {
-    segments: [
-      { file_index, segment_index, start_seconds, end_seconds, reason, confidence }
-    ]
-  }
+  aroll_pool: { segments: [
+    { file_index, segment_index, start_seconds, end_seconds,
+      transcript_span, caption, tags: [...], confidence,
+      take_group: "take-1" | null, is_best_take: true|false,
+      shot_type, subject_position, framing_ok_for_vertical,
+      hook_candidate: true|false, hook_reason: "<only when tagged>" } ] },
+  broll_index: { clips: [
+    { file_index, segment_index, start_seconds, end_seconds,
+      description, tags: [...], has_motion: true|false,
+      has_usable_audio: true|false, confidence,
+      plus the same shot_type/subject_position/framing_ok_for_vertical
+      and hook_candidate/hook_reason fields as A-roll } ] },
+  review: { segments: [
+    { file_index, segment_index, start_seconds, end_seconds, reason, confidence } ] }
 }
 ```
 
@@ -82,4 +91,4 @@ mcp__vob__vob_save_classification {
 - All three pools are required keys; any may be an empty array. A clean drop → empty `review.segments`.
 - Call the tool **exactly once**. If it returns a validation error, fix the listed problems and call again. Do not call any other `vob_*` tool.
 
-When done, your final message should briefly summarize the split (N A-roll incl. M take-groups, K B-roll, J review, P dead-air dropped) and any notable judgment calls. Stop there — the orchestrator surfaces this to the user.
+When done, your final message should briefly summarize the split (N A-roll incl. M take-groups, K B-roll, J review, P dead-air dropped, hook candidates tagged) and any notable judgment calls. Stop there — the orchestrator surfaces this to the user.

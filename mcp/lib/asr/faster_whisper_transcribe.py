@@ -62,11 +62,17 @@ def main():
                     text = (w.word or "").strip()
                     if not text:
                         continue
-                    words.append({
+                    entry = {
                         "text": text,
                         "start": round(float(w.start), 3),
                         "end": round(float(w.end), 3),
-                    })
+                    }
+                    # OPTIONAL word confidence "p" in [0,1]; consumers treat a
+                    # missing p as "confidence unknown", never as 0.
+                    p = getattr(w, "probability", None)
+                    if isinstance(p, (int, float)):
+                        entry["p"] = round(float(p), 3)
+                    words.append(entry)
             else:
                 text = (seg.text or "").strip()
                 if text:

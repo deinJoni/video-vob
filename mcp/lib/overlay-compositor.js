@@ -21,6 +21,7 @@ const path = require("path");
 
 const { ERROR_CODES, ToolError } = require("./envelope.js");
 const { runFfmpegBlocking, inputAutorotateArgs } = require("./ffmpeg-runner.js");
+const { stderrTail } = require("./spawn-with-shutdown.js");
 
 const COMPOSITE_TIMEOUT_MS = 30 * 60 * 1000;
 
@@ -86,11 +87,11 @@ async function compositeOverlayOverBase({ basePath, overlayPath, outPath, audio 
     throw new ToolError(
       ERROR_CODES.INTERNAL_ERROR,
       `overlay composite timed out after ${Math.round(timeoutMs / 1000)}s`,
-      { stderr_preview: (result.stderr || "").trim().slice(0, 1000) || null },
+      { stderr_preview: stderrTail(result.stderr, 1000) },
     );
   }
   if (result.exit_code !== 0 || !fs.existsSync(outPath)) {
-    const stderrPreview = (result.stderr || "").trim().slice(0, 2000) || null;
+    const stderrPreview = stderrTail(result.stderr, 2000);
     throw new ToolError(
       ERROR_CODES.INTERNAL_ERROR,
       `overlay composite failed (exit ${result.exit_code}): ${stderrPreview || "no stderr"}`,

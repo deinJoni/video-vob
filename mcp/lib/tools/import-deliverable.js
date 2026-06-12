@@ -7,13 +7,17 @@ const { ERROR_CODES, ToolError } = require("../envelope.js");
 const {
   assertSafeProjectId,
   deliverablesDir,
+  rendersDir,
   sessionDir,
   statePath,
+  storyboardPath,
 } = require("../paths.js");
 const { withSessionLock, writeFileAtomic } = require("../storage.js");
 const { readSessionStateStrict } = require("../session-state.js");
 const { probeFile, summarizeProbe } = require("../ffprobe.js");
 const { compositeOverlayOverBase } = require("../overlay-compositor.js");
+const { normalizeLoudnessInPlace } = require("../loudnorm.js");
+const { storyboardHasShorts, storyboardTimelines } = require("../storyboard-schema.js");
 
 function nowIso() {
   return new Date().toISOString();
@@ -63,27 +67,127 @@ function describeVideo(absPath) {
   };
 }
 
+function readStoryboardSafe(projectId) {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(storyboardPath(projectId), "utf8"));
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function normalizedShortId(value) {
+  return typeof value === "string" && value.trim() !== "" ? value.trim() : null;
+}
+
+// Deliverable identity: short_id when the record carries one (the on-rails
+// fan-out — a re-import REPLACES that short's record regardless of title),
+// filename-stem id otherwise (the free-form escape hatch, today's semantics).
+function deliverableKey(record) {
+  return normalizedShortId(record && record.short_id) !== null
+    ? `short:${record.short_id}`
+    : `id:${record && record.id}`;
+}
+
 async function importDeliverable(args) {
   const id = assertSafeProjectId(args && args.project_id);
-  // Confirm the project exists before doing any work.
-  readSessionStateStrict(id);
+  // Confirm the project exists before doing any work; keep the state for the
+  // pre-lock dedup checks (re-read inside the lock before writing).
+  const statePre = readSessionStateStrict(id);
 
   const rawDeliverables = Array.isArray(args && args.deliverables) ? args.deliverables : [];
   const composite = args && typeof args.composite === "object" && !Array.isArray(args.composite) ? args.composite : null;
   if (rawDeliverables.length === 0 && !composite) {
     throw new ToolError(
       ERROR_CODES.INVALID_ARGUMENTS,
-      "nothing to import — provide `deliverables` (array of {path,title?,notes?}) and/or `composite` ({base,overlay,...})",
+      "nothing to import — provide `deliverables` (array of {path,title?,notes?,short_id?}) and/or `composite` ({base,overlay,...})",
     );
   }
   const setPhase = args && args.set_phase === false ? false : true;
+  const normalize = args && args.normalize === true;
+
+  // Fan-out guard: a shorts[] storyboard makes short_id the deliverable
+  // identity — require it on every entry and validate against the plan, so a
+  // typo can't orphan a short or duplicate its record.
+  const storyboard = readStoryboardSafe(id);
+  const fanOut = storyboard !== null && storyboardHasShorts(storyboard);
+  const validShortIds = fanOut
+    ? new Set(storyboardTimelines(storyboard).map((t) => t.short_id).filter(Boolean))
+    : null;
+  const assertValidShortId = (shortId, label, required) => {
+    if (shortId === null) {
+      if (required) {
+        throw new ToolError(
+          ERROR_CODES.INVALID_ARGUMENTS,
+          `${label}.short_id is required — the storyboard is a multi-short fan-out (shorts: ${[...validShortIds].join(", ")})`,
+          { valid_short_ids: [...validShortIds] },
+        );
+      }
+      return;
+    }
+    if (fanOut && !validShortIds.has(shortId)) {
+      throw new ToolError(
+        ERROR_CODES.INVALID_ARGUMENTS,
+        `${label}.short_id "${shortId}" does not match any storyboard short (valid: ${[...validShortIds].join(", ")})`,
+        { valid_short_ids: [...validShortIds] },
+      );
+    }
+  };
+  const seenCallShortIds = new Set();
+  const assertUniqueInCall = (shortId, label) => {
+    if (shortId === null) return;
+    if (seenCallShortIds.has(shortId)) {
+      throw new ToolError(
+        ERROR_CODES.INVALID_ARGUMENTS,
+        `${label}.short_id "${shortId}" appears twice in this call — one deliverable per short per call`,
+      );
+    }
+    seenCallShortIds.add(shortId);
+  };
 
   const destDir = deliverablesDir(id);
   fs.mkdirSync(destDir, { recursive: true });
 
-  // Build the list of (absolute source, meta) to record. Compositing (long
-  // ffmpeg work) happens here, OUTSIDE the session lock; only the final state
-  // write is locked.
+  const priorDeliverables = Array.isArray(statePre.deliverables) ? statePre.deliverables : [];
+  const priorByRelPath = new Map(
+    priorDeliverables
+      .filter((d) => d && typeof d.path === "string" && d.path !== "")
+      .map((d) => [d.path, d]),
+  );
+
+  // Dest-path resolver: same identity may overwrite its own file (a revision);
+  // anything else suffixes -n instead of clobbering — across THIS call, prior
+  // records, and stray files on disk. NB: this dedup runs against the PRE-lock
+  // state (heavy compositing/loudnorm sits between here and the locked merge),
+  // so it is best-effort against a concurrent import — the orchestrator drives
+  // one import at a time.
+  const claimedAbs = new Set();
+  const resolveDestAbs = (stem, ext, shortId) => {
+    let candidate = path.join(destDir, `${stem}${ext}`);
+    let n = 1;
+    for (;;) {
+      const rel = sessionRelative(id, candidate);
+      const prior = priorByRelPath.get(rel);
+      const sameIdentity = prior
+        ? (shortId !== null
+          ? normalizedShortId(prior.short_id) === shortId
+          : normalizedShortId(prior.short_id) === null)
+        : false;
+      const collides = claimedAbs.has(candidate)
+        || (prior && !sameIdentity)
+        || (!prior && fs.existsSync(candidate));
+      if (!collides) {
+        claimedAbs.add(candidate);
+        return candidate;
+      }
+      candidate = path.join(destDir, `${stem}-${n}${ext}`);
+      n += 1;
+    }
+  };
+
+  // Build the list of (absolute source, meta) to record. Heavy work
+  // (compositing, loudnorm) happens here, OUTSIDE the session lock; only the
+  // final state write is locked.
   const toRecord = [];
 
   if (composite) {
@@ -94,8 +198,11 @@ async function importDeliverable(args) {
       const a = composite.audio.trim();
       audio = (a === "base" || a === "none") ? a : resolveExisting(a, "composite.audio");
     }
+    const compositeShortId = normalizedShortId(composite.short_id);
+    assertValidShortId(compositeShortId, "composite", fanOut);
+    assertUniqueInCall(compositeShortId, "composite");
     const stem = safeStem(composite.title || "composite", 0);
-    const outAbs = path.join(destDir, `${stem}.mp4`);
+    const outAbs = resolveDestAbs(stem, ".mp4", compositeShortId);
     await compositeOverlayOverBase({
       basePath: base,
       overlayPath: overlay,
@@ -110,37 +217,65 @@ async function importDeliverable(args) {
       notes: composite.notes || null,
       origin: "composite",
       source_path: `${base} + ${overlay}`,
+      short_id: compositeShortId,
     });
   }
 
+  const rendersRoot = rendersDir(id);
+  const activeCompositionShortId = statePre.composition && typeof statePre.composition === "object" && !Array.isArray(statePre.composition)
+    ? normalizedShortId(statePre.composition.short_id)
+    : null;
+  const currentRenderPath = statePre.render && typeof statePre.render === "object" && !Array.isArray(statePre.render)
+    && typeof statePre.render.mp4_path === "string"
+    ? statePre.render.mp4_path
+    : null;
   rawDeliverables.forEach((entry, index) => {
     const src = resolveExisting(entry && entry.path, `deliverables[${index}].path`);
+    const entryShortId = normalizedShortId(entry && entry.short_id);
+    assertValidShortId(entryShortId, `deliverables[${index}]`, fanOut);
+    assertUniqueInCall(entryShortId, `deliverables[${index}]`);
+    // Off-by-one guard for the on-rails loop: recording the CURRENT render
+    // under a short other than the one the composition implements ships the
+    // wrong video under the right id — and the completeness gate can't see it.
+    if (
+      entryShortId !== null
+      && activeCompositionShortId !== null
+      && currentRenderPath !== null
+      && path.resolve(src) === path.resolve(currentRenderPath)
+      && entryShortId !== activeCompositionShortId
+    ) {
+      throw new ToolError(
+        ERROR_CODES.INVALID_ARGUMENTS,
+        `deliverables[${index}].short_id "${entryShortId}" does not match the short the current render implements (composition.short_id "${activeCompositionShortId}") — the render at ${src} was produced from that short's composition`,
+        { composition_short_id: activeCompositionShortId },
+      );
+    }
     const stem = safeStem((entry && entry.title) || path.basename(src), index);
+    // Honest origin: a file from this session's renders/ was produced ON the
+    // rails (the fan-out record-then-back-edge loop), not externally.
+    const fromRenders = src.startsWith(rendersRoot + path.sep);
     toRecord.push({
       absPath: src,
       copyInPlace: false,
       destStem: stem,
       title: (entry && entry.title) || stem,
       notes: (entry && entry.notes) || null,
-      origin: "external",
+      origin: fromRenders ? "render" : "external",
       source_path: src,
+      short_id: entryShortId,
     });
   });
 
-  // Materialize each deliverable into the session deliverables/ dir (copy external
-  // finals in; composite outputs already live there), probe, and build records.
+  // Materialize each deliverable into the session deliverables/ dir (copy
+  // external finals in; composite outputs already live there), optionally
+  // loudness-normalize in place, probe, and build records.
   const records = [];
-  toRecord.forEach((item, index) => {
+  for (let index = 0; index < toRecord.length; index += 1) {
+    const item = toRecord[index];
     let finalAbs = item.absPath;
     if (!item.copyInPlace) {
       const ext = path.extname(item.absPath) || ".mp4";
-      let destAbs = path.join(destDir, `${item.destStem}${ext}`);
-      // Avoid clobbering a same-named earlier import within this call.
-      let n = 1;
-      while (records.some((r) => path.resolve(sessionDir(id), r.path) === destAbs)) {
-        destAbs = path.join(destDir, `${item.destStem}-${n}${ext}`);
-        n += 1;
-      }
+      const destAbs = resolveDestAbs(item.destStem, ext, item.short_id);
       try {
         fs.copyFileSync(item.absPath, destAbs);
       } catch (error) {
@@ -148,11 +283,21 @@ async function importDeliverable(args) {
       }
       finalAbs = destAbs;
     }
+    let loudnorm = null;
+    if (normalize) {
+      let summaryPre = null;
+      try {
+        summaryPre = summarizeProbe(finalAbs, probeFile(finalAbs));
+      } catch {
+        summaryPre = null;
+      }
+      loudnorm = summaryPre
+        ? await normalizeLoudnessInPlace({ mp4Path: finalAbs, summaryPre })
+        : { applied: false, skipped_reason: "probe_failed", error: null, measured_input_i: null, measured_input_tp: null };
+    }
     // Derive the id from the ACTUAL materialized filename (post-dedup), not the
-    // un-deduped stem: two distinct deliverables whose titles/basenames collide
-    // to the same stem get files foo.mp4 / foo-1.mp4 (the dedup loop above), and
-    // the id must inherit that `-n` suffix too — otherwise both records share
-    // id "foo" and merge-by-id silently collapses two deliverables into one.
+    // un-deduped stem — the `-n` suffix must reach the id or stem-keyed records
+    // silently collapse.
     const finalExt = path.extname(finalAbs);
     const meta = describeVideo(finalAbs);
     records.push({
@@ -162,20 +307,57 @@ async function importDeliverable(args) {
       origin: item.origin,
       source_path: item.source_path,
       path: sessionRelative(id, finalAbs),
+      ...(item.short_id !== null && item.short_id !== undefined ? { short_id: item.short_id } : {}),
+      ...(loudnorm
+        ? {
+          loudnorm: {
+            applied: loudnorm.applied,
+            skipped_reason: loudnorm.skipped_reason,
+            measured_input_i: loudnorm.measured_input_i,
+            measured_input_tp: loudnorm.measured_input_tp,
+          },
+        }
+        : {}),
       ...meta,
       imported_at: nowIso(),
     });
-  });
+  }
 
   const importedAt = nowIso();
   return withSessionLock(id, () => {
     const stateNow = readSessionStateStrict(id);
     const fromPhase = stateNow.phase;
-    const priorDeliverables = Array.isArray(stateNow.deliverables) ? stateNow.deliverables : [];
-    // Merge by id: a re-import with the same id replaces the prior record.
-    const byId = new Map(priorDeliverables.map((d) => [d && d.id, d]));
-    for (const r of records) byId.set(r.id, r);
-    const merged = Array.from(byId.values());
+    const priorNow = Array.isArray(stateNow.deliverables) ? stateNow.deliverables : [];
+    // Merge by identity: short_id when present (fan-out — revision replaces the
+    // short's record), filename-stem id otherwise (free-form escape hatch).
+    const byKey = new Map(priorNow.map((d) => [deliverableKey(d), d]));
+    const supersededRelPaths = [];
+    for (const r of records) {
+      const key = deliverableKey(r);
+      const prior = byKey.get(key);
+      if (prior && typeof prior.path === "string" && prior.path !== "" && prior.path !== r.path) {
+        supersededRelPaths.push(prior.path);
+      }
+      byKey.set(key, r);
+    }
+    const merged = Array.from(byKey.values());
+    // A replaced short's old file (different stem) is superseded — remove it so
+    // deliverables/ holds exactly the current set. Best-effort.
+    for (const rel of supersededRelPaths) {
+      try { fs.rmSync(path.resolve(sessionDir(id), rel), { force: true }); } catch {}
+    }
+
+    // deliverables/manifest.json — the fan-out set's presentable manifest (the
+    // analog of package/manifest.json for multi-deliverable projects).
+    const deliverablesManifestAbs = path.join(destDir, "manifest.json");
+    writeFileAtomic(deliverablesManifestAbs, `${JSON.stringify({
+      manifest_version: "1.0",
+      project_id: id,
+      generated_at: importedAt,
+      derived_from: stateNow.style && stateNow.style.derived_from ? stateNow.style.derived_from : null,
+      deliverable_count: merged.length,
+      deliverables: merged,
+    }, null, 2)}\n`);
 
     const next = {
       ...stateNow,
@@ -189,9 +371,12 @@ async function importDeliverable(args) {
           at: importedAt,
           from_phase: fromPhase,
           set_phase: setPhase,
+          normalize,
           count: records.length,
           ids: records.map((r) => r.id),
-          note: "deliverables produced outside the single-timeline FSM (multi-deliverable / overlay escape hatch)",
+          short_ids: records.map((r) => r.short_id || null),
+          superseded_files: supersededRelPaths.length,
+          note: "deliverables recorded outside the single-timeline package (fan-out shorts / overlay escape hatch)",
         },
       ],
     };
@@ -208,6 +393,7 @@ async function importDeliverable(args) {
       phase: next.phase,
       phase_changed: next.phase !== fromPhase,
       deliverables_dir: destDir,
+      deliverables_manifest_path: deliverablesManifestAbs,
       deliverables: records,
     };
   });
@@ -215,7 +401,7 @@ async function importDeliverable(args) {
 
 module.exports = Object.freeze({
   name: "vob_import_deliverable",
-  description: "Escape hatch + multi-deliverable recorder: register one or more externally-produced final videos into a project so state.json reflects reality when heavy work ran outside the FSM (the clip fan-out case: one long source -> N independent shorts). Pass `deliverables` (array of {path,title?,notes?}) to record finished files, and/or `composite` ({base,overlay,audio?,scale_to_base?}) to first build a deliverable by compositing a transparent OVERLAY over an ffmpeg-cut BASE (the first-class overlay-over-base render mode, for when hyperframes <video> capture is too fragile) before recording it. Files are copied into the session-level deliverables/ dir (kept OUT of package/ so the single-timeline vob_package_output can't delete them), ffprobed for duration/dimensions, and recorded in state.deliverables[]; by default advances phase to PACKAGE — which then becomes a valid terminal state for an import-only project (PACKAGE -> ITERATE is unlocked by the presence of external deliverables). Pass set_phase:false to record without changing phase. Appends 'external_deliverables_imported' to history for audit. Does NOT touch the single-timeline composition/render/preview slots.",
+  description: "Record finished deliverables into the session-level deliverables/ dir + state.deliverables[] — the multi-deliverable path. Two uses: (1) the ON-RAILS fan-out loop — after vob_confirm_render, record the rendered short with deliverables:[{path: <render mp4>, title, short_id}] (short_id REQUIRED when the storyboard has shorts[]; the record's identity — a re-import with the same short_id REPLACES that short's record); (2) the escape hatch for externally-produced finals, optionally compositing first via `composite` ({base,overlay,audio?,scale_to_base?}: transparent overlay over an ffmpeg-cut base). Pass normalize:true to two-pass loudness-normalize each file to −14 LUFS/−1 dBTP in place (same pass as vob_package_output; skip reasons recorded per file). Files from this session's renders/ get origin:'render'. Regenerates deliverables/manifest.json (the fan-out package manifest) on every call. Files are kept OUT of package/ so vob_package_output can't delete them; by default advances phase to PACKAGE (PACKAGE→ITERATE is unlocked by the deliverables set) — pass set_phase:false while still cycling shorts in RENDER. Appends 'external_deliverables_imported' to history. Does NOT touch the single-timeline composition/render/preview slots.",
   inputSchema: {
     type: "object",
     properties: {
@@ -228,6 +414,7 @@ module.exports = Object.freeze({
             path: { type: "string", minLength: 1 },
             title: { type: "string" },
             notes: { type: "string" },
+            short_id: { type: "string", minLength: 1, description: "Fan-out: the storyboard short this deliverable implements. Required when the storyboard has shorts[]; the record's merge identity." },
           },
           required: ["path"],
           additionalProperties: false,
@@ -242,11 +429,13 @@ module.exports = Object.freeze({
           scale_to_base: { type: "boolean" },
           title: { type: "string" },
           notes: { type: "string" },
+          short_id: { type: "string", minLength: 1 },
         },
         required: ["base", "overlay"],
         additionalProperties: false,
       },
-      set_phase: { type: "boolean", description: "Advance phase to PACKAGE (default true). Pass false to record deliverables without changing phase." },
+      normalize: { type: "boolean", description: "Two-pass loudness-normalize each imported file to −14 LUFS/−1 dBTP in place (default false). Non-applied passes record a skipped_reason and the import continues." },
+      set_phase: { type: "boolean", description: "Advance phase to PACKAGE (default true). Pass false to record without changing phase — e.g. mid-fan-out while still in RENDER." },
     },
     required: ["project_id"],
   },

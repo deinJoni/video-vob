@@ -21,10 +21,10 @@ function nowIso() {
 async function inspectSource(args) {
   const id = assertSafeProjectId(args && args.project_id);
   const rawInterval = args && args.thumb_interval_seconds;
-  const intervalSeconds = rawInterval == null
-    ? DEFAULT_THUMB_INTERVAL_SECONDS
-    : Number(rawInterval);
-  if (!Number.isFinite(intervalSeconds) || intervalSeconds <= 0) {
+  // null = let runInspect scale the default by source duration; an explicit
+  // value is honored verbatim.
+  const intervalSeconds = rawInterval == null ? null : Number(rawInterval);
+  if (intervalSeconds != null && (!Number.isFinite(intervalSeconds) || intervalSeconds <= 0)) {
     throw new ToolError(
       ERROR_CODES.INVALID_ARGUMENTS,
       "thumb_interval_seconds must be a positive number",
@@ -32,6 +32,7 @@ async function inspectSource(args) {
   }
   const skipTranscription = args && args.skip_transcription === true;
   const skipSceneDetection = args && args.skip_scene_detection === true;
+  const skipThumbnails = args && args.skip_thumbnails === true;
 
   // Read state outside the lock since this is a long-running operation
   // (transcription can take minutes). Hold the lock only for the final state
@@ -66,6 +67,7 @@ async function inspectSource(args) {
       thumb_interval_seconds: intervalSeconds,
       skip_transcription: skipTranscription,
       skip_scene_detection: skipSceneDetection,
+      skip_thumbnails: skipThumbnails,
     },
   });
 
@@ -78,9 +80,13 @@ async function inspectSource(args) {
         summary_path: inspectSummaryPath(id),
         thumbs_dir: inspectThumbsDir(id),
         thumb_count: summary.thumb_count,
+        thumb_failed_count: summary.thumb_failed_count || 0,
+        thumbnails_skipped: summary.thumbnails_skipped === true,
+        thumb_seek_modes: summary.thumb_seek_modes || [],
         thumb_interval_seconds: summary.thumb_interval_seconds,
         sample_thumb_paths: summary.sample_thumb_paths || [],
         contact_sheet_paths: summary.contact_sheet_paths || [],
+        warnings: Array.isArray(summary.warnings) ? summary.warnings : [],
         audio_present: summary.audio_present,
         audio_path: summary.audio_present ? inspectAudioPath(id) : null,
         speech_detected: summary.speech_detected,
@@ -95,6 +101,12 @@ async function inspectSource(args) {
         segment_count: summary.segment_count || 0,
         segment_keyframe_count: summary.segment_keyframe_count || 0,
         skipped_reason: summary.skipped_reason,
+        clean_speech_path: summary.clean_speech_path || null,
+        digest_path: summary.digest_path || null,
+        strips_legend_path: summary.strips_legend_path || null,
+        strip_count: summary.strip_count || 0,
+        transcripts: summary.transcripts || [],
+        hook_candidate_count: summary.hook_candidate_count || 0,
         completed_at: ts,
         user_acknowledged: false,
         acknowledged_at: null,
@@ -106,10 +118,13 @@ async function inspectSource(args) {
           kind: "inspect_completed",
           at: ts,
           thumb_count: summary.thumb_count,
+          warning_count: Array.isArray(summary.warnings) ? summary.warnings.length : 0,
           audio_present: summary.audio_present,
           speech_detected: summary.speech_detected,
           word_count: summary.word_count,
           skipped_reason: summary.skipped_reason,
+          digest_built: Boolean(summary.digest_path),
+          transcript_cache_hits: summary.transcript_cache_hits || 0,
         },
       ],
     };
@@ -119,9 +134,13 @@ async function inspectSource(args) {
       summary_path: next.inspect.summary_path,
       thumbs_dir: next.inspect.thumbs_dir,
       thumb_count: summary.thumb_count,
+      thumb_failed_count: next.inspect.thumb_failed_count,
+      thumbnails_skipped: next.inspect.thumbnails_skipped,
+      thumb_seek_modes: next.inspect.thumb_seek_modes,
       thumb_interval_seconds: summary.thumb_interval_seconds,
       sample_thumb_paths: next.inspect.sample_thumb_paths,
       contact_sheet_paths: next.inspect.contact_sheet_paths,
+      warnings: next.inspect.warnings,
       audio_present: summary.audio_present,
       audio_path: next.inspect.audio_path,
       speech_detected: summary.speech_detected,
@@ -137,6 +156,16 @@ async function inspectSource(args) {
       segment_count: next.inspect.segment_count,
       segment_keyframe_count: next.inspect.segment_keyframe_count,
       skipped_reason: summary.skipped_reason,
+      digest_path: next.inspect.digest_path,
+      clean_speech_path: next.inspect.clean_speech_path,
+      clean_speech_stats: summary.clean_speech_stats || null,
+      strips_legend_path: next.inspect.strips_legend_path,
+      strip_count: next.inspect.strip_count,
+      transcripts: next.inspect.transcripts,
+      transcript_cache_hits: summary.transcript_cache_hits || 0,
+      hook_candidate_count: next.inspect.hook_candidate_count,
+      hook_candidates_top: (summary.hook_candidates || []).slice(0, 3)
+        .map(({ rank, start_seconds, end_seconds, text }) => ({ rank, start_seconds, end_seconds, text })),
       completed_at: ts,
       user_acknowledged: false,
     };
@@ -145,7 +174,7 @@ async function inspectSource(args) {
 
 module.exports = Object.freeze({
   name: "vob_inspect_source",
-  description: "Extract thumbnail grid (every N seconds via ffmpeg), audio (mono 16kHz wav if manifest has audio streams), word-level transcript (via the pluggable ASR backend — faster-whisper / openai-whisper / hyperframes, auto-selected and recorded as asr_backend), AND per-file segments (scene-cut + silence detection -> inspect/segments.json, with a representative keyframe per non-silence segment). Segments are the unit downstream classification/storyboard consume. Writes inspect/{thumbs/, audio.wav, transcript.json, inspect.json, segments.json, segment_keyframes/} and sets state.inspect (incl. segments_path, segment_count, asr_backend) with user_acknowledged:false. Detection is cached by file content hash at segment_cache/ so re-runs are cheap. Re-running overwrites artifacts and resets the acknowledgement flag. Requires phase INSPECT. Long-running; scene/silence/transcribe timeouts auto-scale with source duration so long sources don't guarantee a timeout. Skip the slow whole-stream scene-cut decode with skip_scene_detection:true (recommended for 30+ min single-shot sources); skip transcription with skip_transcription:true. Run vob_doctor first to confirm the ASR backend is alive.",
+  description: "Analyze ingested sources: thumbnails (480w grid + contact sheet per file), per-file word-level transcripts (pluggable ASR, content-hash cached in transcript_cache/), clean-speech keep-spans, per-file segments (scene cuts + silence + per-segment energy/speech-rate) with 512w keyframes tiled into contact strips (strips/legend.json maps cells to segments), hook candidates, and inspect/digest.md — the compact INSPECT handoff. Re-running overwrites artifacts and resets user_acknowledged. Requires phase INSPECT. Long-running; timeouts scale with duration. skip_scene_detection:true skips the slowest pass; skip_transcription:true skips ASR; skip_thumbnails:true skips the grid + contact sheets (segment keyframes/strips still extract). Long-GOP sources auto-switch single-frame extracts to keyframe-aligned fast seeks (one decoded frame per extract; result carries thumb_seek_modes + a thumbnails_keyframe_mode warning marking frame_K timestamps approximate).",
   inputSchema: {
     type: "object",
     properties: {
@@ -153,7 +182,7 @@ module.exports = Object.freeze({
       thumb_interval_seconds: {
         type: "number",
         minimum: 0.5,
-        description: `Interval between thumbnail extractions, in seconds. Default ${DEFAULT_THUMB_INTERVAL_SECONDS}.`,
+        description: `Interval between thumbnail extractions, in seconds. Default ${DEFAULT_THUMB_INTERVAL_SECONDS}s, scaled up on long sources (caps thumbs at ~120/file); explicit values are honored verbatim (grid hard-capped at 400 thumbs/file). Extraction is seek-based — cost scales with thumb count, not source length (sparse-keyframe sources auto-degrade to keyframe-aligned seeks, reported in thumb_seek_modes); thumbnail failures degrade to result warnings instead of aborting the run.`,
       },
       skip_transcription: {
         type: "boolean",
@@ -161,7 +190,11 @@ module.exports = Object.freeze({
       },
       skip_scene_detection: {
         type: "boolean",
-        description: "Skip whole-stream scene-cut detection — the slowest INSPECT pass. Strongly recommended for long single-shot sources (podcasts/interviews, 30+ min) where scene cuts add little: it removes the heaviest decode and lets silence + transcript drive segmentation. Default false. (Detection timeouts also auto-scale with source duration, so long sources no longer guarantee a timeout.)",
+        description: "Skip whole-stream scene-cut detection (the slowest pass; recommended for 30+ min single-shot sources). Never poisons the cache for a later full run.",
+      },
+      skip_thumbnails: {
+        type: "boolean",
+        description: "Skip the per-interval thumbnail grid and contact sheets entirely (thumb_count:0, thumbnails_skipped:true). Segment keyframes + contact strips — the classification basis — still extract. Escape valve for sources where even fast thumbnailing is unwanted; usually unnecessary now that long-GOP sources auto-switch to keyframe-aligned seeks. Default false.",
       },
     },
     required: ["project_id"],
@@ -179,12 +212,18 @@ module.exports = Object.freeze({
     "inspect/contact_sheet_file_*.jpg",
     "inspect/audio.wav",
     "inspect/transcript.json",
+    "inspect/transcripts/file_*.json",
     "inspect/transcript_summary.md",
     "inspect/transcript_paragraphs.json",
+    "inspect/clean_speech.json",
     "inspect/inspect.json",
     "inspect/segments.json",
     "inspect/segment_keyframes/file_*/seg_*.jpg",
+    "inspect/strips/*",
+    "inspect/audio_features/*",
+    "inspect/digest.md",
     "segment_cache/*.json",
+    "transcript_cache/*.json",
     "state.json",
   ],
   hook_required: false,

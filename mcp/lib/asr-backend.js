@@ -342,6 +342,18 @@ async function asrTranscribe({ audioPath, outPath, projectDir, durationSeconds =
   return { ok: false, reason: attempts.length ? attempts[attempts.length - 1].reason : "no_asr_backend", attempts, requested_backend: cfg };
 }
 
+// The resolved ASR configuration that determines transcript CONTENT — used as
+// the transcript-cache key. Knob semantics unchanged (VOB_ASR_BACKEND/MODEL/
+// LANGUAGE). With backend "auto", a host that switches engines between runs
+// reuses the cache — acceptable: every backend writes the same canonical contract.
+function resolvedAsrParams() {
+  return {
+    backend: configuredBackend(),
+    model: configuredModel(null),
+    language: configuredLanguage(null) || "auto",
+  };
+}
+
 // faster-whisper small.en on CPU runs near real-time; openai-whisper can be a
 // few× slower. Give a generous, duration-scaled budget so long podcast sources
 // (31–44 min) are not cut off mid-transcription — the failure mode that made
@@ -365,6 +377,7 @@ module.exports = {
   checkAsrAvailable,
   detectAsrBackends,
   resolveBackendOrder,
+  resolvedAsrParams,
   transcribeTimeoutForDuration,
   resolvePython,
 };

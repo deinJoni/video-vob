@@ -97,11 +97,21 @@ function validateCompositionFiles(files) {
   return { ok: true, errors: [], normalized, total_bytes: aggregate };
 }
 
+// The exact `files` input composition-qc consumes at save time: the validator's
+// `normalized` array filtered to .html/.css. Keeps the QC module free of
+// validator coupling — lint-time callers build the same shape from disk.
+function htmlAndCssEntries(normalized) {
+  return (Array.isArray(normalized) ? normalized : [])
+    .filter((entry) => entry && /\.(html|css)$/i.test(entry.relPath))
+    .map((entry) => ({ relPath: entry.relPath, content: entry.content }));
+}
+
 module.exports = {
   ALLOWED_EXTENSIONS,
   MAX_AGGREGATE_BYTES,
   MAX_FILES,
   MAX_FILE_BYTES,
   REQUIRED_FILES,
+  htmlAndCssEntries,
   validateCompositionFiles,
 };

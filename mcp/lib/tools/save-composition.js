@@ -4,11 +4,16 @@ const fs = require("fs");
 const path = require("path");
 
 const { ERROR_CODES, ToolError } = require("../envelope.js");
-const { assertSafeProjectId, composeDir, statePath } = require("../paths.js");
+const { assertSafeProjectId, composeDir, statePath, storyboardPath } = require("../paths.js");
 const { withSessionLock, writeFileAtomic } = require("../storage.js");
 const { readSessionStateStrict } = require("../session-state.js");
-const { validateCompositionFiles } = require("../composition-files.js");
-const { recreateSourceSymlinks } = require("../source-symlink.js");
+const { validateCompositionFiles, htmlAndCssEntries } = require("../composition-files.js");
+const { recreateSourceSymlinks, resolveSceneClipLinks, resolveSourceLinks, injectFontKit } = require("../source-symlink.js");
+const { runCompositionQc } = require("../composition-qc.js");
+const { findTimeline, storyboardHasShorts, storyboardTimelines } = require("../storyboard-schema.js");
+// The save-time lint IS the gate lint — one implementation, one report format,
+// one revision binding (see the post-commit block in saveComposition).
+const lintCompositionTool = require("./lint-composition.js");
 
 function nowIso() {
   return new Date().toISOString();
@@ -29,7 +34,7 @@ function wipeComposeDir(dirPath) {
   }
 }
 
-function saveComposition(args) {
+async function saveComposition(args) {
   const id = assertSafeProjectId(args && args.project_id);
   const verdict = validateCompositionFiles(args && args.files);
   if (!verdict.ok) {
@@ -40,7 +45,75 @@ function saveComposition(args) {
     );
   }
 
-  return withSessionLock(id, () => {
+  // Static QC pre-check (D6), BEFORE the lock/wipe: a QC-failing save leaves the
+  // prior composition (and its lint status) fully intact, exactly like a
+  // schema-failing save.
+  let storyboard = null;
+  try {
+    storyboard = JSON.parse(fs.readFileSync(storyboardPath(id), "utf8"));
+  } catch {
+    storyboard = null;
+  }
+  if (storyboard && (typeof storyboard !== "object" || Array.isArray(storyboard))) storyboard = null;
+
+  // Fan-out scoping: a shorts[] storyboard requires short_id (the active
+  // short this composition implements); a single-timeline one forbids it.
+  // An unreadable storyboard can't validate either way — the stamp is kept
+  // and QC degrades with its own warning.
+  const shortId = typeof (args && args.short_id) === "string" && args.short_id.trim() !== ""
+    ? args.short_id.trim()
+    : null;
+  if (storyboard) {
+    if (storyboardHasShorts(storyboard)) {
+      const validIds = storyboardTimelines(storyboard).map((t) => t.short_id).filter(Boolean);
+      if (!shortId) {
+        throw new ToolError(
+          ERROR_CODES.INVALID_ARGUMENTS,
+          `the storyboard is a multi-short fan-out — pass short_id for the short this composition implements (one of: ${validIds.join(", ")})`,
+          { valid_short_ids: validIds },
+        );
+      }
+      if (!findTimeline(storyboard, shortId)) {
+        throw new ToolError(
+          ERROR_CODES.INVALID_ARGUMENTS,
+          `unknown short_id "${shortId}" — the storyboard defines: ${validIds.join(", ")}`,
+          { valid_short_ids: validIds },
+        );
+      }
+    } else if (shortId) {
+      throw new ToolError(
+        ERROR_CODES.INVALID_ARGUMENTS,
+        `short_id "${shortId}" given but the storyboard is single-timeline — omit short_id`,
+      );
+    }
+  }
+
+  const qc = runCompositionQc({
+    files: htmlAndCssEntries(verdict.normalized),
+    storyboard,
+    sourceLinks: resolveSourceLinks(id),
+    sceneClipLinks: resolveSceneClipLinks(id),
+    checkTargetsOnDisk: true, // clips were materialized at COMPOSE entry; missing = real problem
+    activeShortId: shortId,
+  });
+  if (qc.error_count > 0) {
+    const hasUnresolvedRef = qc.findings.some((f) => f.rule === "vob/unresolved_source_ref");
+    throw new ToolError(
+      ERROR_CODES.INVALID_ARGUMENTS,
+      `composition QC failed: ${qc.error_count} error(s) — ${qc.findings
+        .filter((f) => f.severity === "error").slice(0, 3).map((f) => f.rule).join(", ")}. Fix and re-save.`,
+      {
+        qc_findings: qc.findings.slice(0, 10),
+        qc_error_count: qc.error_count,
+        qc_warning_count: qc.warning_count,
+        // Unresolved-ref fixes shouldn't need a storyboard round-trip: hand
+        // back every legal ./source/ name.
+        ...(hasUnresolvedRef ? { valid_source_refs: qc.expected_source_names } : {}),
+      },
+    );
+  }
+
+  const saveResult = withSessionLock(id, () => {
     const state = readSessionStateStrict(id);
 
     const composeRoot = composeDir(id);
@@ -64,6 +137,10 @@ function saveComposition(args) {
     }
 
     const symlinkResult = recreateSourceSymlinks(id, composeRoot);
+    // Font kit rides the same mechanism as ./source/ (D7). A composer-supplied
+    // fonts.css wins — skipCss leaves its already-written file in place.
+    const fontResult = injectFontKit(composeRoot, { skipCss: writtenRelPaths.includes("fonts.css") });
+    symlinkResult.warnings.push(...fontResult.warnings);
 
     const ts = nowIso();
     const prev = state.composition && typeof state.composition === "object" && !Array.isArray(state.composition)
@@ -71,6 +148,13 @@ function saveComposition(args) {
       : null;
     const prevRevisionCount = prev && Number.isInteger(prev.revision_count) ? prev.revision_count : 0;
     const revisionCount = prevRevisionCount + 1;
+
+    const prevPreviewSlot = state.preview && typeof state.preview === "object" && !Array.isArray(state.preview)
+      ? state.preview
+      : null;
+    const prevRenderSlot = state.render && typeof state.render === "object" && !Array.isArray(state.render)
+      ? state.render
+      : null;
 
     const next = {
       ...state,
@@ -81,10 +165,23 @@ function saveComposition(args) {
         lint_report_path: null,
         lint_ran_at: null,
         revision_count: revisionCount,
+        ...(shortId ? { short_id: shortId } : {}),
+        // errors never stored — they reject before the lock
+        qc: { error_count: 0, warning_count: qc.warning_count, findings: qc.findings.slice(0, 10) },
+        fonts: { linked: fontResult.linked, css_path: fontResult.linked ? "fonts.css" : null },
         ...(symlinkResult.warnings.length > 0
           ? { source_link_warnings: symlinkResult.warnings }
           : {}),
       },
+      // D2: a composition save invalidates downstream human approvals. SKILL.md
+      // claimed this reset existed; now it does. Slots are not deleted (paths
+      // survive for display) — only confirmed/confirmed_at reset.
+      ...(prevPreviewSlot
+        ? { preview: { ...prevPreviewSlot, confirmed: false, confirmed_at: null } }
+        : {}),
+      ...(prevRenderSlot
+        ? { render: { ...prevRenderSlot, confirmed: false, confirmed_at: null } }
+        : {}),
       last_updated: ts,
       history: [
         ...(Array.isArray(state.history) ? state.history : []),
@@ -92,12 +189,16 @@ function saveComposition(args) {
           kind: "composition_saved",
           at: ts,
           revision_count: revisionCount,
+          ...(shortId ? { short_id: shortId } : {}),
           file_count: writtenRelPaths.length,
           total_bytes: verdict.total_bytes,
           source_link_count: symlinkResult.links.length,
           scene_clip_link_count: Array.isArray(symlinkResult.scene_clip_links)
             ? symlinkResult.scene_clip_links.length
             : 0,
+          reset_preview_confirmed: Boolean(prevPreviewSlot && prevPreviewSlot.confirmed === true),
+          reset_render_confirmed: Boolean(prevRenderSlot && prevRenderSlot.confirmed === true),
+          qc_warning_count: qc.warning_count,
         },
       ],
     };
@@ -109,17 +210,48 @@ function saveComposition(args) {
       saved_at: ts,
       lint_status: "unknown",
       revision_count: revisionCount,
+      ...(shortId ? { short_id: shortId } : {}),
+      qc: { error_count: 0, warning_count: qc.warning_count, findings: qc.findings.slice(0, 10) },
+      fonts_linked: fontResult.linked,
     };
   });
+
+  // The composer's only feedback used to be the static QC above — qc.error_count
+  // 0 on every accepted save — while the REAL gate verdict (hyperframes lint +
+  // QC merged, vob_lint_composition) was orchestrator-only and ran after
+  // handoff: the composer iterated blind and could make things worse. Run the
+  // same merged lint here, on the just-committed files, so the save result IS
+  // the gate verdict and the composer self-corrects before returning. Reuses
+  // the lint tool's handler directly — its revision binding makes a racing
+  // re-save fail this stamp instead of mislabeling the new files. An infra
+  // failure (missing/crashed hyperframes, timeout) must not fail the save:
+  // files are committed, lint_status stays "unknown", and the orchestrator's
+  // own vob_lint_composition call is the fallback.
+  try {
+    const lint = await lintCompositionTool.handler({ project_id: id });
+    return { ...saveResult, lint_status: lint.lint_status, lint };
+  } catch (err) {
+    const code = err && err.code ? `${err.code}: ` : "";
+    const message = err && err.message ? err.message : String(err);
+    return {
+      ...saveResult,
+      lint_error: `merged lint did not run — the save stands, lint_status stays "unknown" (the orchestrator's vob_lint_composition is the fallback): ${code}${message}`,
+    };
+  }
 }
 
 module.exports = Object.freeze({
   name: "vob_save_composition",
-  description: "Save (or overwrite) the hyperframes composition for a project. Input is a map of relative-path → string content; index.html is required, companion files optional (.html, .css, .js, .json, .svg only). Files are written atomically to the session's compose/ directory; any prior composition files are wiped first (save is fully replacing). After writing files, MCP creates two sets of symlinks under compose/source/: (a) one symlink per manifest.files[] entry named after the source's basename — original-source fallback for overlay frames; (b) one symlink per storyboard source_clips[] entry named <scene_id>-<clip_index>.mp4, pointing at the H.264 pre-cut clip in <session>/transcoded/clips/. Compositions should reference scene clips (./source/<scene_id>-<clip_index>.mp4) with data-media-start=0 rather than the original source — pre-cut clips avoid the HEVC + deep-seek failure modes in headless Chrome. Any save resets composition.lint_status to 'unknown' and increments revision_count — vob_lint_composition must run again before COMPOSE -> PREVIEW will unlock.",
+  description: "Save the hyperframes composition: map of relative-path → content (index.html required; .html/.css/.js/.json/.svg; ≤64 files, ≤256KiB each, ≤1MiB total). Fully replacing. The engine recreates ./source/ symlinks and the ./fonts.css font kit, runs static QC (errors reject with details.qc_findings), resets preview/render confirmation, bumps revision_count — then runs the FULL merged lint (hyperframes lint + static QC, same engine as vob_lint_composition) on the committed files, stamps composition.lint_status, and returns the verdict: lint_status ('clean'|'warnings_only'|'errors') + lint.findings_summary (≤10) + lint.report_path. Fix errors and re-save until clean. If the lint binary itself fails, the save still succeeds with lint_status 'unknown' + lint_error. Fan-out: when the storyboard has shorts[], short_id is REQUIRED (the short this composition implements) — QC scopes scene coverage/master duration to that short and warns on refs into other shorts' clips.",
   inputSchema: {
     type: "object",
     properties: {
       project_id: { type: "string" },
+      short_id: {
+        type: "string",
+        minLength: 1,
+        description: "Fan-out only: the storyboard short this composition implements. Required when the storyboard has shorts[]; forbidden otherwise.",
+      },
       files: {
         type: "object",
         minProperties: 1,
@@ -134,10 +266,11 @@ module.exports = Object.freeze({
   role_bundles: ["composer"],
   mutating: true,
   global_preapproval: false,
-  network_access: false,
+  // The post-commit merged lint spawns hyperframes (npx fallback may fetch).
+  network_access: true,
   browser_access: false,
   scope_required: false,
   sensitive_output: false,
-  session_artifacts_written: ["compose/*", "compose/source/*", "state.json"],
+  session_artifacts_written: ["compose/*", "compose/source/*", "compose/lint-report.json", "state.json"],
   hook_required: false,
 });
