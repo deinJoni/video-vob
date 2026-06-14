@@ -11,7 +11,7 @@ moment.
 ## Read sites
 | step | source | fields |
 |---|---|---|
-| 1 | `vob_read_state_summary` | `manifest{path,file_count,total_duration_seconds}`, `intent.answers`, `platform{...}`, `video_type{canonical,source,lint_ruleset,segmentation,clean_cut,overlay_vocabulary,design_default}`, `target_duration_seconds`, `inspect.classification` pool paths, `inspect.{clean_speech_path,digest_path,strips_legend_path,thumbs_dir,thumb_interval_seconds,thumb_count,transcript_path,segments_path}`, `brief`, `storyboard{...,broll_gap_count,broll_gaps_path}`, `style.derived_from` |
+| 1 | `vob_read_state_summary` | `manifest{path,file_count,total_duration_seconds}`, `intent.answers`, `platform{...}`, `video_type{canonical,source,lint_ruleset,segmentation,clean_cut,overlay_vocabulary,design_default}`, `target_duration_seconds`, `inspect.classification` pool paths, `inspect.{clean_speech_path,digest_path,strips_legend_path,thumbs_dir,thumb_interval_seconds,thumb_count,transcript_path,transcript_aligned,audio,segments_path}`, `brief`, `storyboard{...,broll_gap_count,broll_gaps_path}`, `style.derived_from` |
 | 2 | read of `.opencode/vob/references/brief-design.md` | brief skeleton + tone→design table |
 | 7 | `vob_save_storyboard` result (via subagent) or summary | `storyboard.markdown_path`, `scene_count`, `plan_lint` |
 
@@ -99,6 +99,8 @@ moment.
    clean_speech_path: <inspect.clean_speech_path | none>
    digest_path: <inspect.digest_path | none>
    transcript_path: <path | none>
+   transcript_aligned: <inspect.transcript_aligned — true|false; false ⇒ word timing is approximate, so karaoke/word-by-word captions will drift>
+   audio_summary: <inspect.audio compact, or none — clean_audio_source_index, any_quiet/any_clip_risk, per-file layout/balance/dead_channel; informs the multi-file spine AUDIO choice. Leveling itself lands at PACKAGE — surface a quiet/clip concern at the gate, don't act on it here>
    thumbs_dir: <inspect.thumbs_dir>
    thumb_interval_seconds: <n>
    thumb_count: <n>

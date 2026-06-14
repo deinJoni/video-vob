@@ -1291,6 +1291,37 @@ async function runGeneral() {
     console.log(`\n   caption warnings: ${codes.filter((c) => /CAPTION/.test(c)).join(", ")}`);
   });
 
+  // caption-plan ↔ INSPECT P1: word-level animation (karaoke/word-by-word) needs
+  // forced-aligned word timing. Host-robust — read the ACTUAL transcript_aligned
+  // and assert conditionally (warns iff unaligned); "pop" never trips it anywhere.
+  await step("caption-plan: karaoke gated by transcript_aligned (P1)", async () => {
+    const sCheck = await call("vob_read_state_summary", { project_id: GEN });
+    const aligned = !!(sCheck.inspect && sCheck.inspect.transcript_aligned === true);
+    const win = dw[0];
+    const mkScene = (sceneId, animation) => ({
+      ...generalScene({ sceneId, sequence: 1, purpose: "hook", win, targetSeconds: 2, sourcePath: srcPath, pacing: "fast" }),
+      // segment INSIDE the clip window so PLAN_CAPTION_TIMING_DRIFT can't confound
+      caption_segments: [
+        { text: "watch this", start_seconds: round3(win.in + 0.2), end_seconds: round3(win.in + 1.0), animation },
+      ],
+    });
+    const wrap = (scene) => genSb({ target: { platform: "tiktok", duration_seconds: 2, tone: "energetic" }, total_target_duration_seconds: 2, scenes: [scene] });
+
+    const karCodes = ((await call("vob_save_storyboard", { project_id: GEN, content: wrap(mkScene("kar1", "karaoke")) })).plan_lint.warnings || []).map((w) => w.code);
+    if (aligned) {
+      assert(!karCodes.includes("PLAN_CAPTION_KARAOKE_UNALIGNED"),
+        `aligned transcript must NOT warn karaoke-unaligned, got ${JSON.stringify(karCodes)}`);
+    } else {
+      assert(karCodes.includes("PLAN_CAPTION_KARAOKE_UNALIGNED"),
+        `unaligned transcript must warn karaoke-unaligned, got ${JSON.stringify(karCodes)}`);
+    }
+    // Control: chunk-level "pop" never trips the alignment lint, on any host.
+    const popCodes = ((await call("vob_save_storyboard", { project_id: GEN, content: wrap(mkScene("pop1", "pop")) })).plan_lint.warnings || []).map((w) => w.code);
+    assert(!popCodes.includes("PLAN_CAPTION_KARAOKE_UNALIGNED"),
+      `"pop" animation must never trip karaoke-unaligned, got ${JSON.stringify(popCodes)}`);
+    console.log(`\n   transcript_aligned=${aligned} → karaoke ${aligned ? "clean" : "WARNS"}; pop clean`);
+  });
+
   // 7. fps path: cinematic 24fps plan → composition without data-fps warns
   //    vob/fps_mismatch; with data-fps="24" it is silent.
   await step("record video_type cinematic", () =>

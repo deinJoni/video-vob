@@ -42,6 +42,11 @@ const PACING_SET = new Set(PACINGS);
 const CLIP_ROLE_SET = new Set(CLIP_ROLES);
 const SCENE_TRANSITION_SET = new Set(SCENE_TRANSITIONS);
 const CAPTION_ANIMATION_SET = new Set(CAPTION_ANIMATIONS);
+// "karaoke"/"word-by-word" highlight at the WORD level — they need frame-accurate
+// per-word timing, which only forced alignment (INSPECT P1,
+// state.inspect.transcript_aligned) produces. "pop" animates the whole chunk and
+// tolerates approximate timing. The unaligned-karaoke plan-lint keys on this set.
+const WORD_LEVEL_CAPTION_ANIMATIONS = new Set(["word-by-word", "karaoke"]);
 // fast=2 / medium=1 / slow=0 — the rhythm-arc lint ranks scenes by pace.
 const PACING_RANK = Object.freeze({ slow: 0, medium: 1, fast: 2 });
 
@@ -1413,7 +1418,7 @@ function captionContainedInScene(seg, scene) {
     && seg.start_seconds >= c.in_seconds - tol && seg.end_seconds <= c.out_seconds + tol);
 }
 
-function lintCaptionSegments(scenes, warnings) {
+function lintCaptionSegments(scenes, warnings, transcriptAligned) {
   scenes.forEach((scene, ix) => {
     if (!isPlainObject(scene) || !Array.isArray(scene.caption_segments)) return;
     const hasClipWindow = (Array.isArray(scene.source_clips) ? scene.source_clips : [])
@@ -1457,6 +1462,22 @@ function lintCaptionSegments(scenes, warnings) {
           scene_index: ix,
           scene_id: sceneIdOf(scene),
           data: { start_seconds: seg.start_seconds, end_seconds: seg.end_seconds },
+        });
+      }
+      // Karaoke / word-by-word highlight at the WORD level — they need
+      // frame-accurate per-word timing, which only forced alignment (INSPECT P1,
+      // state.inspect.transcript_aligned) provides. On an unaligned transcript the
+      // words drift; warn and steer to chunk-level "pop" (or an alignment
+      // backend). Feasibility, not editorial style — so it's universal (not
+      // ruleset-gated): a tutorial or long-form karaoke caption needs alignment too.
+      if (transcriptAligned !== true && isNonEmptyString(seg.animation)
+        && WORD_LEVEL_CAPTION_ANIMATIONS.has(seg.animation)) {
+        warnings.push({
+          code: "PLAN_CAPTION_KARAOKE_UNALIGNED",
+          message: `scenes[${ix}].caption_segments[${segIx}] asks for "${seg.animation}" (word-level) animation, but the transcript is not forced-aligned (INSPECT reported transcript_aligned=false) — per-word timing is approximate, so karaoke will drift. Use animation:"pop" (chunk-level, timing-tolerant) here, or re-run INSPECT with an alignment backend (pip install whisperx)`,
+          scene_index: ix,
+          scene_id: sceneIdOf(scene),
+          data: { animation: seg.animation, transcript_aligned: false },
         });
       }
     });
@@ -1527,6 +1548,11 @@ function lintStoryboardPlan(parsed, context) {
   const rules = isPlainObject(ctx.lintRules) ? ctx.lintRules : null;
   const disabled = rules && rules.disabled instanceof Set ? rules.disabled : new Set();
   const cleanCutOn = rules ? rules.clean_cut === true : true;
+  // INSPECT P1 marks the winner transcript karaoke-grade (forced-aligned). Word-
+  // level caption animations need it; the caption lint warns when they don't have it.
+  const transcriptAligned = isPlainObject(ctx.state) && isPlainObject(ctx.state.inspect)
+    ? ctx.state.inspect.transcript_aligned === true
+    : false;
   const scenes = Array.isArray(parsed.scenes) ? parsed.scenes : [];
   const sceneById = new Map();
   scenes.forEach((scene, ix) => {
@@ -1537,7 +1563,7 @@ function lintStoryboardPlan(parsed, context) {
   lintCaptionsOnSilent(scenes, ctx.transcript, errors, ctx.transcriptForFileIndex);
   lintBrollPlacements(parsed, scenes, sceneById, errors);
   lintOverlays(scenes, ctx, errors, warnings);
-  lintCaptionSegments(scenes, warnings);
+  lintCaptionSegments(scenes, warnings, transcriptAligned);
 
   // B-roll gaps: informational warnings, never blockers — the plan gate is
   // where the human decides "upload these N shots or hold on the spine".
