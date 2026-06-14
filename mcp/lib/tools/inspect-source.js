@@ -91,6 +91,9 @@ async function inspectSource(args) {
         audio_path: summary.audio_present ? inspectAudioPath(id) : null,
         speech_detected: summary.speech_detected,
         asr_backend: summary.asr_backend || null,
+        transcript_aligned: summary.transcript_aligned === true,
+        audio_analysis_path: summary.audio_analysis_path || null,
+        audio: summary.audio || null,
         scene_detection_skipped: summary.scene_detection_skipped === true,
         transcript_path: summary.transcript_path ? inspectTranscriptPath(id) : null,
         transcript_summary_path: summary.transcript_summary_path || null,
@@ -146,6 +149,9 @@ async function inspectSource(args) {
       speech_detected: summary.speech_detected,
       asr_backend: summary.asr_backend || null,
       asr_attempts: summary.asr_attempts || null,
+      transcript_aligned: summary.transcript_aligned === true,
+      audio_analysis_path: next.inspect.audio_analysis_path,
+      audio: next.inspect.audio,
       scene_detection_skipped: summary.scene_detection_skipped === true,
       transcript_path: next.inspect.transcript_path,
       transcript_summary_path: next.inspect.transcript_summary_path,
@@ -174,7 +180,7 @@ async function inspectSource(args) {
 
 module.exports = Object.freeze({
   name: "vob_inspect_source",
-  description: "Analyze ingested sources: thumbnails (480w grid + contact sheet per file), per-file word-level transcripts (pluggable ASR, content-hash cached in transcript_cache/), clean-speech keep-spans, per-file segments (scene cuts + silence + per-segment energy/speech-rate) with 512w keyframes tiled into contact strips (strips/legend.json maps cells to segments), hook candidates, and inspect/digest.md — the compact INSPECT handoff. Re-running overwrites artifacts and resets user_acknowledged. Requires phase INSPECT. Long-running; timeouts scale with duration. skip_scene_detection:true skips the slowest pass; skip_transcription:true skips ASR; skip_thumbnails:true skips the grid + contact sheets (segment keyframes/strips still extract). Long-GOP sources auto-switch single-frame extracts to keyframe-aligned fast seeks (one decoded frame per extract; result carries thumb_seek_modes + a thumbnails_keyframe_mode warning marking frame_K timestamps approximate).",
+  description: "Analyze ingested sources: thumbnails (480w grid + contact sheet per file), per-file word-level transcripts (pluggable ASR, content-hash cached in transcript_cache/; whisperx adds wav2vec2 forced alignment → karaoke-grade word timing, surfaced as transcript_aligned), clean-speech keep-spans, per-channel audio analysis (LUFS/balance/phase + a −14 LUFS normalization advisory → inspect/audio_analysis.json, surfaced as `audio`), per-file segments (scene cuts + silence + per-segment energy/speech-rate/loudness-proxy) with 512w keyframes tiled into contact strips (strips/legend.json maps cells to segments), hook candidates, and inspect/digest.md — the compact INSPECT handoff. Re-running overwrites artifacts and resets user_acknowledged. Requires phase INSPECT. Long-running; timeouts scale with duration. skip_scene_detection:true skips the slowest pass; skip_transcription:true skips ASR; skip_thumbnails:true skips the grid + contact sheets (segment keyframes/strips still extract); VOB_DISABLE_AUDIO_ANALYSIS=1 skips the channel-analysis pass. Long-GOP sources auto-switch single-frame extracts to keyframe-aligned fast seeks (one decoded frame per extract; result carries thumb_seek_modes + a thumbnails_keyframe_mode warning marking frame_K timestamps approximate).",
   inputSchema: {
     type: "object",
     properties: {
@@ -216,6 +222,7 @@ module.exports = Object.freeze({
     "inspect/transcript_summary.md",
     "inspect/transcript_paragraphs.json",
     "inspect/clean_speech.json",
+    "inspect/audio_analysis.json",
     "inspect/inspect.json",
     "inspect/segments.json",
     "inspect/segment_keyframes/file_*/seg_*.jpg",

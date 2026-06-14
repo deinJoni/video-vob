@@ -33,14 +33,24 @@ acknowledge.
    - The result's `asr_backend` says which engine transcribed. If `speech_detected` is false on
      a source you know has speech, check `asr_attempts` — a `no_asr_backend` reason means the
      engine is missing, not that the audio is silent.
+   - `transcript_aligned` says whether word timing is **karaoke-grade** (forced-aligned via the
+     `whisperx` backend) or **approximate** (native Whisper timestamps, which drift across
+     pauses). When the user wants word-by-word caption highlighting and `transcript_aligned` is
+     false, mention that `pip install whisperx` would make timing frame-accurate (set `VOB_ALIGN=0`
+     in the MCP launch env to force alignment off). Either way captions still work — alignment
+     only sharpens per-word timing.
 
 3. On success the result carries `{ thumbs_dir, thumb_count, thumb_interval_seconds,
    sample_thumb_paths, contact_sheet_paths, audio_present, speech_detected, transcript_path,
-   transcript_summary_path, transcript_paragraphs_path, paragraph_count, word_count,
-   segments_path, segment_count, segment_keyframe_count, skipped_reason, digest_path,
-   clean_speech_path, strips_legend_path, strip_count, transcripts, hook_candidate_count,
-   hook_candidates_top }`. NB: per-strip image paths are NOT a return/summary field — they live
-   in `strips/legend.json` `strips[].path` (the inspector reads that legend, not you).
+   transcript_aligned, transcript_summary_path, transcript_paragraphs_path, paragraph_count,
+   word_count, audio, audio_analysis_path, segments_path, segment_count, segment_keyframe_count,
+   skipped_reason, digest_path, clean_speech_path, strips_legend_path, strip_count, transcripts,
+   hook_candidate_count, hook_candidates_top }`. NB: per-strip image paths are NOT a return/summary
+   field — they live in `strips/legend.json` `strips[].path` (the inspector reads that legend, not
+   you). `audio` is the compact per-file loudness/channel summary (full detail in
+   `audio_analysis.json`): layout, integrated LUFS, L/R balance, dead-channel/out-of-phase flags,
+   and the gain each file needs toward −14 LUFS (`gain_to_target_db`) with `clip_risk`. The pass
+   skips when `VOB_DISABLE_AUDIO_ANALYSIS=1`.
 
 4. **Ground yourself before speaking: read `digest_path` (the INSPECT digest — per-file
    one-liners, paragraph map, clean-cut stats, segment table, hook candidates), then read each
@@ -63,6 +73,11 @@ acknowledge.
    - If `audio_present && !speech_detected`: "audio extracted but no speech detected (likely
      ambient/music only)."
    - If `!audio_present`: "no audio streams in the source."
+   - If `audio_present` and the `audio` summary flags trouble, surface it in one line: a
+     `dead_channel` ("audio is on the left channel only — I'll mono it before the cut"), an
+     `out_of_phase` file (mono-cancellation risk), or `any_clip_risk`/`any_quiet`
+     ("file N is quiet — +Xdb to reach −14 LUFS"). These are captured now so leveling at
+     COMPOSE/PACKAGE is a lookup; nothing blocks on them.
    - If `skipped_reason` is set and the user didn't ask to skip: explain (e.g.
      `transcription_failed`) and offer to retry or skip.
    - If the result carries `warnings` (thumbnail/contact-sheet degradation — stand-in frames,

@@ -236,6 +236,14 @@ function transcriptMapSection({ paragraphs, asr }) {
     lines.push(`n/a — ${(asr && asr.skippedReason) || "no transcript"}`);
     return lines.join("\n");
   }
+  // Word-timing accuracy: aligned (forced alignment) is karaoke-grade; otherwise
+  // native Whisper timestamps drift across pauses — snap cuts to silence times,
+  // and word-by-word caption highlighting will be approximate.
+  if (asr && asr.aligned === true) {
+    lines.push(`Word timing: **aligned** (forced alignment${asr.backend ? ` via ${asr.backend}` : ""}) — karaoke-grade, safe for word-by-word caption highlighting.`);
+  } else {
+    lines.push("Word timing: approximate (native timestamps — no alignment backend). Karaoke highlighting will drift; `pip install whisperx` for frame-accurate word timing.");
+  }
   for (const p of ps.slice(0, MAX_PARAGRAPH_LINES)) {
     lines.push(`- ¶${p.n} [${fmtMmSs(p.start)}–${fmtMmSs(p.end)}] ${truncateText(p.text, 120)}`);
   }
@@ -359,6 +367,35 @@ function visualIndexSection(strips, thumbs) {
   return lines.join("\n");
 }
 
+// v3.1 P2 — per-file loudness/channel layout/balance + the −14 LUFS gain plan
+// and the recommended clean voice track. `audio` is the compact summary from
+// runAudioAnalysisPass (or null when the pass was disabled / found no audio).
+function audioSection(audio) {
+  const lines = ["## Audio"];
+  if (!audio || !Array.isArray(audio.files) || audio.files.length === 0) {
+    lines.push("n/a — audio analysis disabled or no audio streams");
+    return lines.join("\n");
+  }
+  lines.push(`| # | LUFS | layout | balance | →${audio.target_lufs} LUFS | clip risk | flags |`);
+  lines.push("|---|------|--------|---------|---------|-----------|-------|");
+  for (const f of audio.files) {
+    const flags = [];
+    if (f.dead_channel) flags.push(`${f.dead_channel} dead`);
+    if (f.out_of_phase) flags.push("out-of-phase");
+    const gain = isNum(f.gain_to_target_db) ? `${f.gain_to_target_db > 0 ? "+" : ""}${f.gain_to_target_db} dB` : "—";
+    lines.push(`| ${f.file_index} | ${isNum(f.lufs_integrated) ? f.lufs_integrated : "—"} | ${f.layout || "—"} | ${f.balance || "—"} | ${gain} | ${f.clip_risk ? "⚠ yes" : "no"} | ${flags.join(", ")} |`);
+  }
+  if (audio.clean_audio_source_index != null) {
+    lines.push(`Recommended clean voice track: file ${audio.clean_audio_source_index}.`);
+  }
+  const advisories = [];
+  if (audio.any_clip_risk) advisories.push("normalizing to target would clip — a limiter/true-peak pass is needed");
+  if (audio.any_quiet) advisories.push("one or more files are quiet (large positive gain)");
+  if (advisories.length) lines.push(`NB: ${advisories.join("; ")}. Full per-channel detail: inspect/audio_analysis.json.`);
+  else lines.push("Per-channel detail + normalization advisory: inspect/audio_analysis.json.");
+  return lines.join("\n");
+}
+
 function captionRiskSection(lowConfidenceWords) {
   const lines = ["## Caption risk (low-confidence words)"];
   const words = Array.isArray(lowConfidenceWords) ? lowConfidenceWords : [];
@@ -390,6 +427,7 @@ function buildInspectDigest({
   thumbs,
   lowConfidenceWords,
   asr,
+  audio,
   sceneDetectionSkipped,
   transcribedFileIndex,
 } = {}) {
@@ -407,6 +445,7 @@ function buildInspectDigest({
     cleanSpeechSection(cleanSpeechStats),
     hookCandidatesSection(hookCandidates, { transcribedFileIndex, manifestFiles }),
     segmentTableSection(fileSummaries),
+    audioSection(audio),
     visualIndexSection(strips, thumbs),
     captionRiskSection(lowConfidenceWords),
   ].join("\n\n") + "\n";

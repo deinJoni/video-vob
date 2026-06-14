@@ -34,11 +34,16 @@ const PACINGS = Object.freeze(["fast", "medium", "slow"]);
 const CLIP_ROLES = Object.freeze(["a_roll", "b_roll", "overlay"]);
 // Deliberately tiny enum — only what renders reliably on the 8 GB reference host.
 const SCENE_TRANSITIONS = Object.freeze(["cut", "fade"]);
+// Kinetic-caption animation styles the composer implements (caption_segments).
+const CAPTION_ANIMATIONS = Object.freeze(["pop", "word-by-word", "karaoke"]);
 
 const PURPOSE_SET = new Set(PURPOSES);
 const PACING_SET = new Set(PACINGS);
 const CLIP_ROLE_SET = new Set(CLIP_ROLES);
 const SCENE_TRANSITION_SET = new Set(SCENE_TRANSITIONS);
+const CAPTION_ANIMATION_SET = new Set(CAPTION_ANIMATIONS);
+// fast=2 / medium=1 / slow=0 — the rhythm-arc lint ranks scenes by pace.
+const PACING_RANK = Object.freeze({ slow: 0, medium: 1, fast: 2 });
 
 function clipRoleOf(clip) {
   return clip && typeof clip.role === "string" && clip.role.trim() ? clip.role : "a_roll";
@@ -180,8 +185,11 @@ function typedOverlaysOf(scene) {
 }
 
 // Optional per-scene caption_segments (SOURCE-time): the storyboarder's timed
-// caption plan. No cross-check against `captions` — that string stays the
-// human-readable summary.
+// caption plan — now a first-class, lint-bound layer. No cross-check against
+// `captions` — that string stays the human-readable summary. All the v3 fields
+// (emphasis_words / animation / style_ref / position) are optional and additive
+// (no schema-version gate, same as target.fps); plain {text,start,end,emphasis?}
+// stays valid forever.
 function validateCaptionSegment(seg, sceneIx, segIx, errors, wherePrefix = "") {
   const where = `${wherePrefix}scenes[${sceneIx}].caption_segments[${segIx}]`;
   if (!isPlainObject(seg)) {
@@ -199,6 +207,66 @@ function validateCaptionSegment(seg, sceneIx, segIx, errors, wherePrefix = "") {
   }
   if (seg.emphasis !== undefined && seg.emphasis !== null && typeof seg.emphasis !== "boolean") {
     errors.push(`${where}.emphasis must be a boolean when present`);
+  }
+  // emphasis_words: which words inside `text` the composer animates/colors.
+  if (seg.emphasis_words !== undefined && seg.emphasis_words !== null) {
+    if (!Array.isArray(seg.emphasis_words) || !seg.emphasis_words.every((w) => isNonEmptyString(w))) {
+      errors.push(`${where}.emphasis_words must be an array of non-empty strings when present`);
+    }
+  }
+  if (seg.animation !== undefined && seg.animation !== null && !CAPTION_ANIMATION_SET.has(seg.animation)) {
+    errors.push(`${where}.animation must be one of: ${CAPTION_ANIMATIONS.join(", ")} when present`);
+  }
+  // style_ref: a freeform handle into the design system's caption look (e.g. a
+  // target.design caption_style name); the composer interprets it.
+  if (seg.style_ref !== undefined && seg.style_ref !== null && !isNonEmptyString(seg.style_ref)) {
+    errors.push(`${where}.style_ref must be a non-empty string when present`);
+  }
+  if (seg.position !== undefined && seg.position !== null) {
+    const p = seg.position;
+    if (!isPlainObject(p)) {
+      errors.push(`${where}.position must be an object when present`);
+    } else {
+      if (p.anchor !== undefined && p.anchor !== null && !OVERLAY_ANCHOR_SET.has(p.anchor)) {
+        errors.push(`${where}.position.anchor must be one of: ${OVERLAY_ANCHORS.join(", ")}`);
+      }
+      if (p.offset_px !== undefined && p.offset_px !== null
+        && (!Array.isArray(p.offset_px) || p.offset_px.length !== 2 || !p.offset_px.every((n) => isFiniteNumber(n)))) {
+        errors.push(`${where}.position.offset_px must be a [x, y] pair of finite numbers when present`);
+      }
+    }
+  }
+}
+
+// Optional target.design: a machine-readable mirror of the brief's Design
+// language section — structured look tokens the composer renders from (and
+// --like copies verbatim instead of "mirror the vibe"). Additive and
+// non-version-gated like target.fps. Loosely shape-checked on purpose: there is
+// NO engine-side font allowlist (the only font constraint is hyperframes' own
+// lint — see the font-kit invariant), and caption_style/motion/grade are
+// freeform conventions, not enums, so the brief's tone table can grow without a
+// schema edit. Every field is optional.
+function validateDesign(design, errors, where = "target.design") {
+  if (!isPlainObject(design)) {
+    errors.push(`${where} must be an object when present`);
+    return;
+  }
+  for (const block of ["palette", "typography"]) {
+    if (design[block] === undefined || design[block] === null) continue;
+    if (!isPlainObject(design[block])) {
+      errors.push(`${where}.${block} must be an object when present`);
+      continue;
+    }
+    for (const [k, v] of Object.entries(design[block])) {
+      if (v !== undefined && v !== null && !isNonEmptyString(v)) {
+        errors.push(`${where}.${block}.${k} must be a non-empty string when present (${block === "palette" ? "hex or CSS color" : "a font-kit family name"})`);
+      }
+    }
+  }
+  for (const field of ["caption_style", "motion", "grade"]) {
+    if (design[field] !== undefined && design[field] !== null && !isNonEmptyString(design[field])) {
+      errors.push(`${where}.${field} must be a non-empty string when present`);
+    }
   }
 }
 
@@ -721,6 +789,10 @@ function validateStoryboard(input) {
       && (!isFiniteNumber(input.target.fps) || input.target.fps <= 0)) {
       errors.push("target.fps must be a positive finite number when present (e.g. 24, 25, 30, 50, 60)");
     }
+    // v3: optional structured design tokens (mirror of the brief Design language).
+    if (input.target.design !== undefined && input.target.design !== null) {
+      validateDesign(input.target.design, errors);
+    }
   }
   const sceneOpts = { typedOverlaysAllowed: input.schema_version === "1.2" };
   if (hasShorts) {
@@ -857,6 +929,9 @@ const PLAN_LINT_THRESHOLDS = Object.freeze({
   broll_span_tolerance_s: 0.25,
   straddle_removed_min_s: 0.8,
   short_duration_range_tolerance_s: 0.5,
+  caption_chunk_max_words: 7,
+  caption_chunk_max_chars: 42,
+  caption_window_tolerance_s: 0.1,
 });
 
 function round1(value) {
@@ -1018,6 +1093,45 @@ function warnHookShape(scenes, warnings, disabledRules) {
       scene_id: sceneIdOf(first),
       data: { target_duration_seconds: first.target_duration_seconds },
     });
+  }
+}
+
+// Rhythm-arc lints over the existing scene `pacing` field (no schema change).
+//   PLAN_PACING_MONOTONE — ≥4 scenes all the SAME pace read as a flat edit
+//     (universal: an all-identical pacing track is monotonous in any format).
+//   PLAN_RHYTHM_ARC_INVERTED — the opening scene is the (uniquely) slowest while
+//     a later scene is faster: the energy is back-loaded. A RETENTION heuristic
+//     (front-load the energy); the non-retention rulesets disable it because
+//     cinematic/long-form legitimately build to a climax.
+function warnPacingArc(scenes, warnings, disabledRules) {
+  const disabled = disabledRules instanceof Set ? disabledRules : new Set();
+  const paced = scenes.filter((s) => isPlainObject(s) && typeof s.pacing === "string" && s.pacing in PACING_RANK);
+  if (paced.length < 3) return; // too short to have an arc
+  if (paced.length >= 4 && !disabled.has("PLAN_PACING_MONOTONE")) {
+    const distinct = new Set(paced.map((s) => s.pacing));
+    if (distinct.size === 1) {
+      warnings.push({
+        code: "PLAN_PACING_MONOTONE",
+        message: `all ${paced.length} scenes share pacing "${paced[0].pacing}" — vary the rhythm so the edit breathes (a flat pacing track reads as monotonous)`,
+        data: { pacing: paced[0].pacing, scene_count: paced.length },
+      });
+    }
+  }
+  if (!disabled.has("PLAN_RHYTHM_ARC_INVERTED")) {
+    const ranks = paced.map((s) => PACING_RANK[s.pacing]);
+    const firstRank = ranks[0];
+    const maxRank = Math.max(...ranks);
+    const minRank = Math.min(...ranks);
+    if (firstRank === minRank && firstRank < maxRank) {
+      const peakIx = ranks.findIndex((r) => r === maxRank);
+      warnings.push({
+        code: "PLAN_RHYTHM_ARC_INVERTED",
+        message: `the opening scene is the slowest-paced ("${paced[0].pacing}") while scene ${peakIx + 1} runs "${paced[peakIx].pacing}" — front-load the energy (open at or near your fastest; don't make the viewer wait for the pace to pick up)`,
+        scene_index: 0,
+        scene_id: sceneIdOf(paced[0]),
+        data: { hook_pacing: paced[0].pacing, peak_pacing: paced[peakIx].pacing },
+      });
+    }
   }
 }
 
@@ -1279,6 +1393,76 @@ function lintOverlays(scenes, ctx, errors, warnings) {
   });
 }
 
+// --- Caption-plan lint (v3) ---------------------------------------------------
+// caption_segments are SOURCE-time; the composer re-times each against the
+// containing scene clip (master = clip_start + (seg_start - clip.in_seconds)).
+// All caption lints are WARNINGS (advisory — the composer legitimately
+// re-chunks/animates captions; a hard error would false-reject good cuts).
+//   PLAN_CAPTION_CHUNK_TOO_LONG    — a chunk runs long enough to overflow / not
+//                                    read as a kinetic caption.
+//   PLAN_CAPTION_EMPHASIS_NOT_IN_TEXT — an emphasis_word isn't in `text`, so the
+//                                    composer has nothing to emphasize.
+//   PLAN_CAPTION_TIMING_DRIFT      — the segment's source-time window falls
+//                                    outside every clip in its scene, so the
+//                                    composer's re-timing math lands it at the
+//                                    wrong place (it can't be cut to the cut).
+function captionContainedInScene(seg, scene) {
+  const tol = PLAN_LINT_THRESHOLDS.caption_window_tolerance_s;
+  const clips = Array.isArray(scene.source_clips) ? scene.source_clips : [];
+  return clips.some((c) => isPlainObject(c) && clipHasWindow(c)
+    && seg.start_seconds >= c.in_seconds - tol && seg.end_seconds <= c.out_seconds + tol);
+}
+
+function lintCaptionSegments(scenes, warnings) {
+  scenes.forEach((scene, ix) => {
+    if (!isPlainObject(scene) || !Array.isArray(scene.caption_segments)) return;
+    const hasClipWindow = (Array.isArray(scene.source_clips) ? scene.source_clips : [])
+      .some((c) => isPlainObject(c) && clipHasWindow(c));
+    scene.caption_segments.forEach((seg, segIx) => {
+      if (!isPlainObject(seg)) return;
+      if (isNonEmptyString(seg.text)) {
+        const trimmed = seg.text.trim();
+        const words = trimmed.split(/\s+/).length;
+        if (words > PLAN_LINT_THRESHOLDS.caption_chunk_max_words || trimmed.length > PLAN_LINT_THRESHOLDS.caption_chunk_max_chars) {
+          warnings.push({
+            code: "PLAN_CAPTION_CHUNK_TOO_LONG",
+            message: `scenes[${ix}].caption_segments[${segIx}] is ${words} words / ${trimmed.length} chars ("${trimmed.slice(0, 40)}${trimmed.length > 40 ? "…" : ""}") — kinetic caption chunks read best at ≤${PLAN_LINT_THRESHOLDS.caption_chunk_max_words} words; split it on a clause boundary`,
+            scene_index: ix,
+            scene_id: sceneIdOf(scene),
+            data: { words, chars: trimmed.length },
+          });
+        }
+      }
+      if (Array.isArray(seg.emphasis_words) && isNonEmptyString(seg.text)) {
+        const haystack = seg.text.toLowerCase();
+        const missing = seg.emphasis_words.filter((w) => isNonEmptyString(w) && !haystack.includes(w.toLowerCase()));
+        if (missing.length > 0) {
+          warnings.push({
+            code: "PLAN_CAPTION_EMPHASIS_NOT_IN_TEXT",
+            message: `scenes[${ix}].caption_segments[${segIx}] emphasis_words ${JSON.stringify(missing)} do not appear in the caption text "${seg.text.trim().slice(0, 40)}" — the composer can't emphasize a word that isn't there`,
+            scene_index: ix,
+            scene_id: sceneIdOf(scene),
+            data: { missing },
+          });
+        }
+      }
+      // Timing drift: the segment must live inside one of the scene's clip
+      // windows or it cannot be re-timed onto the cut. Only meaningful when the
+      // scene HAS clip windows (overlay-only scenes are exempt).
+      if (hasClipWindow && isFiniteNumber(seg.start_seconds) && isFiniteNumber(seg.end_seconds)
+        && !captionContainedInScene(seg, scene)) {
+        warnings.push({
+          code: "PLAN_CAPTION_TIMING_DRIFT",
+          message: `scenes[${ix}].caption_segments[${segIx}] window ${round1(seg.start_seconds)}–${round1(seg.end_seconds)}s falls outside the scene's source clip windows — caption_segments are SOURCE-time and must sit inside a clip so the composer can re-time them to the cut`,
+          scene_index: ix,
+          scene_id: sceneIdOf(scene),
+          data: { start_seconds: seg.start_seconds, end_seconds: seg.end_seconds },
+        });
+      }
+    });
+  });
+}
+
 // Per-render-unit <video> budget (warning): clips + planned PiP overlays. The
 // caller picks the unit — the whole timeline normally, each declared segment
 // when segments[] chunk the render, each short in fan-out (its scenes view).
@@ -1353,6 +1537,7 @@ function lintStoryboardPlan(parsed, context) {
   lintCaptionsOnSilent(scenes, ctx.transcript, errors, ctx.transcriptForFileIndex);
   lintBrollPlacements(parsed, scenes, sceneById, errors);
   lintOverlays(scenes, ctx, errors, warnings);
+  lintCaptionSegments(scenes, warnings);
 
   // B-roll gaps: informational warnings, never blockers — the plan gate is
   // where the human decides "upload these N shots or hold on the spine".
@@ -1372,6 +1557,7 @@ function lintStoryboardPlan(parsed, context) {
   });
 
   warnHookShape(scenes, warnings, disabled);
+  warnPacingArc(scenes, warnings, disabled);
   warnDurations(parsed, scenes, ctx.targetSeconds, warnings);
   warnBrollHolds(scenes, warnings);
   warnBrollRepeats(parsed, sceneById, warnings);
@@ -1651,6 +1837,7 @@ module.exports = {
   PACINGS,
   CLIP_ROLES,
   SCENE_TRANSITIONS,
+  CAPTION_ANIMATIONS,
   PLAN_LINT_THRESHOLDS,
   BROLL_RENDER_MODES,
   allStoryboardScenes,

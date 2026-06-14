@@ -22,6 +22,31 @@ function formatTimecode(value) {
   return `${String(minutes).padStart(2, "0")}:${seconds.toFixed(2).padStart(5, "0")}`;
 }
 
+// target.design (v3): the structured Design language tokens, rendered as a
+// "Design" sub-block under Target so the human sees the look contract at the
+// plan gate. Returns [] when absent.
+function renderDesign(design) {
+  if (!design || typeof design !== "object" || Array.isArray(design)) return [];
+  const lines = [];
+  const kv = (obj) => Object.entries(obj)
+    .filter(([, v]) => typeof v === "string" || typeof v === "number")
+    .map(([k, v]) => `${k} ${v}`)
+    .join(", ");
+  if (design.typography && typeof design.typography === "object" && kv(design.typography)) {
+    lines.push(`  - Typography: ${kv(design.typography)}`);
+  }
+  if (design.palette && typeof design.palette === "object" && kv(design.palette)) {
+    lines.push(`  - Palette: ${kv(design.palette)}`);
+  }
+  const scalar = ["caption_style", "motion", "grade"]
+    .filter((f) => typeof design[f] === "string" && design[f].trim() !== "")
+    .map((f) => `${f.replace("_", " ")} ${design[f]}`)
+    .join("; ");
+  if (scalar) lines.push(`  - Look: ${scalar}`);
+  if (lines.length > 0) lines.unshift("- Design:");
+  return lines;
+}
+
 function renderClip(clip) {
   const note = typeof clip.note === "string" && clip.note.trim() !== "" ? ` — ${clip.note.trim()}` : "";
   const duration = formatSeconds(clip.out_seconds - clip.in_seconds);
@@ -123,7 +148,11 @@ function renderScene(scene, heading = "##") {
     scene.caption_segments.forEach((seg) => {
       const emphasis = seg && seg.emphasis === true ? " **(emphasis)**" : "";
       const text = seg && typeof seg.text === "string" ? seg.text : "";
-      lines.push(`  - ${formatTimecode(seg && seg.start_seconds)} → ${formatTimecode(seg && seg.end_seconds)} "${text}"${emphasis}`);
+      const anim = seg && typeof seg.animation === "string" ? ` _${seg.animation}_` : "";
+      const words = seg && Array.isArray(seg.emphasis_words) && seg.emphasis_words.length > 0
+        ? ` — emphasize ${seg.emphasis_words.map((w) => `**${w}**`).join(", ")}`
+        : "";
+      lines.push(`  - ${formatTimecode(seg && seg.start_seconds)} → ${formatTimecode(seg && seg.end_seconds)} "${text}"${emphasis}${anim}${words}`);
     });
     lines.push("");
   }
@@ -163,6 +192,7 @@ function renderStoryboardMarkdown(storyboard, options = {}) {
   lines.push(`- Platform: ${target.platform || "(?)"}`);
   lines.push(`- Duration${fanOut ? " (per-short ideal)" : ""}: ${formatSeconds(target.duration_seconds)}`);
   lines.push(`- Tone: ${target.tone || "(?)"}`);
+  renderDesign(target.design).forEach((l) => lines.push(l));
   if (fanOut) {
     lines.push(`- Shorts: ${timelines.length}`);
     lines.push(`- Total target across shorts: ${formatSeconds(shortsTotal)}`);

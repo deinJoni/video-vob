@@ -24,12 +24,33 @@ const AUDIO_TREATMENT_VALUES = Object.freeze([
 ]);
 
 // Optional keys are recordable but NEVER required — missingIntentKeys ignores
-// them, so no gate can block on one (v3 contract: no new required keys).
-// `video_type` selects the preset (social-short / long-form / cinematic / ...);
-// unanswered, the engine derives it from platform + duration at resolve time
-// (see video-types.js).
+// them, so no gate can block on one (v3 contract: no new required keys). They
+// are the "guided INTENT" surface: the orchestrator PROPOSES a value from the
+// preset / INSPECT signal / --like source and the human confirms or overrides,
+// so a downstream phase never has to ask. Each must have a real consumer:
+//   - `video_type`      — selects the preset (social-short / long-form / cinematic
+//                         / ...); unanswered, the engine derives it from
+//                         platform + duration at resolve time (see video-types.js).
+//   - `design_language` — the confirmed concrete look (headline/caption fonts,
+//                         palette, caption shape, motion), seeded from the
+//                         tone→design table; PLAN binds it into the brief's
+//                         Design language section, which the composer implements.
+//   - `pacing_intent`   — fast / medium / slow + cut density; the storyboarder's
+//                         explicit scene-duration target (tone ≠ pacing).
+//   - `hook_intent`     — which opening moment to lead on; the storyboarder locks
+//                         scene 1 to it instead of taking hook_candidates[0] blind.
+//   - `broll_intent`    — b-roll coverage appetite (minimal / illustrative / dynamic,
+//                         or "use only A-roll"); the storyboarder's cutaway-density
+//                         and gap-declaration target. Grounded by INSPECT's P3
+//                         file_roles[] + b_roll_role tags (propose realistic coverage).
+// All but video_type stay plain free-text (no server canonicalization) — the
+// storyboarder/composer interpret them, the engine never parses them.
 const OPTIONAL_INTENT_KEYS = Object.freeze([
   "video_type",
+  "design_language",
+  "pacing_intent",
+  "hook_intent",
+  "broll_intent",
 ]);
 
 const ALL_INTENT_KEYS = Object.freeze([

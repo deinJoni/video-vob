@@ -2,6 +2,13 @@
 Read once while drafting the brief in PLAN. The Design language section is BINDING for the
 composer — anything left vague here will be vague on screen.
 
+**Source of the Design language section.** When `intent.answers.design_language` is present, the
+user already confirmed the concrete look at INTENT (it was PROPOSED from the table below) —
+transcribe it into the Design language section verbatim; the tone→design table is then just the
+lineage of that proposal, not a re-derivation. Only when `design_language` is absent do you fill
+the section from the table directly. Either way the platform safe bands + 56px caption floor are
+hard constraints the look cannot override.
+
 ## Brief skeleton
 
 ```markdown
@@ -60,6 +67,14 @@ Fill the Design language section from this table, then adjust ONLY where the use
 `captions_style` / rough idea / `--like` source brief say otherwise. The composer implements the
 Design language section verbatim — it does not re-derive look from tone, so anything you leave
 vague here will be vague on screen.
+
+**Seed from the preset, then make it concrete.** The summary's `video_type.design_default`
+(palette / typography / caption_style / motion / grade for the active format) is the format-level
+starting point — use it as the baseline and override per the tone row + the user's answers. The
+**storyboarder mirrors your final Design language into structured `target.design` tokens** in the
+storyboard, so the composer reads the look as data and a `--like` project copies it verbatim rather
+than re-interpreting prose. Keep the brief's Design language and `target.design` consistent — the
+brief is what the human signs off; `target.design` is its machine-readable twin.
 
 **The kit is wider than this table — these are just tone defaults.** The composer ships 23
 families (its kit table is the full list): also available are Hanken Grotesk, Montserrat, Poppins,

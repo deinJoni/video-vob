@@ -119,13 +119,20 @@ function runDoctor({ projectId = null } = {}) {
     name: "asr-backend",
     level: level(asr.ok, true),
     detail: asr.ok
-      ? `usable: ${asr.available_backends.length ? asr.available_backends.join(", ") : "(hyperframes/whisper-cpp only — unverified)"}; selected=${asr.selected || "?"}`
+      ? `usable: ${asr.available_backends.length ? asr.available_backends.join(", ") : "(hyperframes/whisper-cpp only — unverified)"}; selected=${asr.selected || "?"}; `
+        + (asr.alignment_available
+          ? `alignment: ${asr.alignment_backend} (karaoke-grade word timing${asr.alignment_enabled ? "" : ", DISABLED via VOB_ALIGN"})`
+          : "alignment: none (word timing approximate)")
       : (asr.error || "no ASR backend"),
     recommendation: asr.available_backends.length
-      ? null
-      : "No local ASR engine detected. `pip install faster-whisper` (recommended) so INSPECT can transcribe — without it captions/transcripts are unavailable and you must pass skip_transcription. hyperframes transcribe needs whisper-cpp.",
+      ? (asr.alignment_available
+        ? null
+        : "Transcription works, but word timing is approximate (native Whisper timestamps drift across pauses). For karaoke-grade word-by-word caption timing, `pip install whisperx` (faster-whisper + wav2vec2 forced alignment; no HF token, no diarization).")
+      : "No local ASR engine detected. `pip install whisperx` (recommended — also gives karaoke-grade word timing) or `pip install faster-whisper` so INSPECT can transcribe — without it captions/transcripts are unavailable and you must pass skip_transcription. hyperframes transcribe needs whisper-cpp.",
     blocker: false,
     backends: asr.all_backends || [],
+    alignment_available: asr.alignment_available === true,
+    alignment_backend: asr.alignment_backend || null,
     python: asr.python || null,
   });
 

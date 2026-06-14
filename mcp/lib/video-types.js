@@ -44,18 +44,23 @@ const OVERLAY_TYPES = Object.freeze([
 
 // Plan-lint rulesets: per-rule disable sets + the chaptered extras flag.
 // `retention` is the v2.1 behavior (hook-first heuristics ON).
+// PLAN_RHYTHM_ARC_INVERTED is a retention heuristic too — front-loading the
+// energy is a short-form rule; cinematic/long-form legitimately BUILD to a
+// climax, so the non-retention rulesets disable it (same gating as the hook
+// rules). PLAN_PACING_MONOTONE stays on everywhere (an all-identical pacing
+// track reads flat in any format).
 const LINT_RULESETS = Object.freeze({
   retention: Object.freeze({ disabled_rules: Object.freeze([]), chapter_rules: false }),
   chaptered: Object.freeze({
-    disabled_rules: Object.freeze(["PLAN_HOOK_NOT_FIRST", "PLAN_HOOK_TOO_LONG"]),
+    disabled_rules: Object.freeze(["PLAN_HOOK_NOT_FIRST", "PLAN_HOOK_TOO_LONG", "PLAN_RHYTHM_ARC_INVERTED"]),
     chapter_rules: true,
   }),
   montage: Object.freeze({
-    disabled_rules: Object.freeze(["PLAN_HOOK_NOT_FIRST", "PLAN_HOOK_TOO_LONG"]),
+    disabled_rules: Object.freeze(["PLAN_HOOK_NOT_FIRST", "PLAN_HOOK_TOO_LONG", "PLAN_RHYTHM_ARC_INVERTED"]),
     chapter_rules: false,
   }),
   general: Object.freeze({
-    disabled_rules: Object.freeze(["PLAN_HOOK_NOT_FIRST", "PLAN_HOOK_TOO_LONG"]),
+    disabled_rules: Object.freeze(["PLAN_HOOK_NOT_FIRST", "PLAN_HOOK_TOO_LONG", "PLAN_RHYTHM_ARC_INVERTED"]),
     chapter_rules: false,
   }),
 });
@@ -73,6 +78,11 @@ const BUILT_IN_VIDEO_TYPES = Object.freeze({
       "kinetic_caption", "caption_block", "title_card", "lower_third", "logo_bug", "cta", "end_card",
     ]),
     render: Object.freeze({ segmentation: "single" }),
+    design_default: Object.freeze({
+      caption_style: "bold-pop", motion: "fast-snap", grade: "high-contrast",
+      typography: Object.freeze({ headline: "Anton", caption: "Inter" }),
+      palette: Object.freeze({ bg: "#000000", text: "#FFFFFF", accent: "#FF3B30" }),
+    }),
   }),
   "long-form": Object.freeze({
     platform_default: "youtube_long",
@@ -83,6 +93,11 @@ const BUILT_IN_VIDEO_TYPES = Object.freeze({
       "progress_bar", "caption_block", "logo_bug", "cta", "end_card", "pip",
     ]),
     render: Object.freeze({ segmentation: "auto" }),
+    design_default: Object.freeze({
+      caption_style: "clean-pill", motion: "medium-soft", grade: "none",
+      typography: Object.freeze({ headline: "Hanken Grotesk", caption: "Inter" }),
+      palette: Object.freeze({ bg: "#0A0A0A", text: "#F5F5F0", accent: "#3B82F6" }),
+    }),
   }),
   cinematic: Object.freeze({
     platform_default: "cinematic",
@@ -91,6 +106,11 @@ const BUILT_IN_VIDEO_TYPES = Object.freeze({
     lint_ruleset: "montage",
     overlay_vocabulary: Object.freeze(["title_card", "section_title", "caption_block", "end_card"]),
     render: Object.freeze({ segmentation: "auto" }),
+    design_default: Object.freeze({
+      caption_style: "minimal-lower-third", motion: "slow-cinematic", grade: "desaturated",
+      typography: Object.freeze({ headline: "Playfair Display", caption: "Inter" }),
+      palette: Object.freeze({ bg: "#000000", text: "#F2EFE8", accent: "#C9A227" }),
+    }),
   }),
   tutorial: Object.freeze({
     platform_default: "tutorial",
@@ -101,6 +121,11 @@ const BUILT_IN_VIDEO_TYPES = Object.freeze({
       "progress_bar", "pip", "data_viz", "cta", "end_card",
     ]),
     render: Object.freeze({ segmentation: "auto" }),
+    design_default: Object.freeze({
+      caption_style: "clean-pill", motion: "medium-soft", grade: "none",
+      typography: Object.freeze({ headline: "Inter", caption: "Inter" }),
+      palette: Object.freeze({ bg: "#0B0B0C", text: "#F5F5F0", accent: "#22C55E" }),
+    }),
   }),
   podcast: Object.freeze({
     platform_default: "youtube_long",
@@ -113,6 +138,11 @@ const BUILT_IN_VIDEO_TYPES = Object.freeze({
       "logo_bug", "progress_bar", "end_card", "pip",
     ]),
     render: Object.freeze({ segmentation: "auto" }),
+    design_default: Object.freeze({
+      caption_style: "minimal-lower-third", motion: "medium-soft", grade: "none",
+      typography: Object.freeze({ headline: "Hanken Grotesk", caption: "Inter" }),
+      palette: Object.freeze({ bg: "#111111", text: "#F5F5F0", accent: "#8B5CF6" }),
+    }),
   }),
   // The generalized default an unknown preset name falls back to.
   general: Object.freeze({
@@ -121,6 +151,11 @@ const BUILT_IN_VIDEO_TYPES = Object.freeze({
     lint_ruleset: "general",
     overlay_vocabulary: OVERLAY_TYPES,
     render: Object.freeze({ segmentation: "auto" }),
+    design_default: Object.freeze({
+      caption_style: "clean-pill", motion: "medium-soft", grade: "none",
+      typography: Object.freeze({ headline: "Inter", caption: "Inter" }),
+      palette: Object.freeze({ bg: "#000000", text: "#FFFFFF", accent: "#3B82F6" }),
+    }),
   }),
 });
 
@@ -198,6 +233,21 @@ function mergePreset(base, override) {
   if (Array.isArray(override.overlay_vocabulary)) {
     const filtered = override.overlay_vocabulary.filter((t) => OVERLAY_TYPES.includes(t));
     if (filtered.length > 0) merged.overlay_vocabulary = Object.freeze(filtered);
+  }
+  // design_default: scalars (caption_style/motion/grade) replace; palette and
+  // typography deep-merge one level so a user preset can tweak just the accent
+  // without redeclaring the whole block. base.design_default always exists
+  // (every built-in carries one); a user preset that omits it inherits via the
+  // `...base` spread above.
+  if (isPlainObject(override.design_default)) {
+    const baseD = isPlainObject(base.design_default) ? base.design_default : {};
+    const ovD = override.design_default;
+    merged.design_default = Object.freeze({
+      ...baseD,
+      ...ovD,
+      palette: Object.freeze({ ...(isPlainObject(baseD.palette) ? baseD.palette : {}), ...(isPlainObject(ovD.palette) ? ovD.palette : {}) }),
+      typography: Object.freeze({ ...(isPlainObject(baseD.typography) ? baseD.typography : {}), ...(isPlainObject(ovD.typography) ? ovD.typography : {}) }),
+    });
   }
   return Object.freeze(merged);
 }
@@ -370,6 +420,18 @@ function activeLintRules(state) {
 
 // --- introspection (vob_doctor / read_state_summary) --------------------------
 
+function designDigest(preset) {
+  const d = isPlainObject(preset.design_default) ? preset.design_default : null;
+  if (!d) return null;
+  return {
+    caption_style: typeof d.caption_style === "string" ? d.caption_style : null,
+    motion: typeof d.motion === "string" ? d.motion : null,
+    grade: typeof d.grade === "string" ? d.grade : null,
+    typography: isPlainObject(d.typography) ? { ...d.typography } : null,
+    palette: isPlainObject(d.palette) ? { ...d.palette } : null,
+  };
+}
+
 function presetDigest(name, preset) {
   return {
     name,
@@ -379,6 +441,7 @@ function presetDigest(name, preset) {
     clean_cut: preset.editorial.clean_cut,
     scene_detect: preset.editorial.scene_detect,
     overlay_vocabulary: [...preset.overlay_vocabulary],
+    design_default: designDigest(preset),
   };
 }
 
@@ -406,6 +469,10 @@ function summarizeActiveVideoType(state) {
     segmentation: vt.preset.render.segmentation,
     clean_cut: vt.preset.editorial.clean_cut,
     overlay_vocabulary: [...vt.preset.overlay_vocabulary],
+    // The format's design tokens — the orchestrator seeds the brief's Design
+    // language from these (then adjusts by tone), and the storyboarder mirrors
+    // the resolved look into storyboard target.design.
+    design_default: designDigest(vt.preset),
   };
 }
 

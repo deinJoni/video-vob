@@ -69,21 +69,34 @@ function attachTranscriptOverlap(segments, transcriptWords) {
 // Per-segment energy aggregates from 0.5s RMS windows. Pure. A window covers
 // [t, t+windowSeconds); it belongs to a segment when its midpoint falls inside
 // [start_seconds, end_seconds). Segments with zero windows get nulls.
-function attachAudioFeatures(segments, energyWindows, windowSeconds = 0.5) {
+//
+// loudnessRefLufs (optional): the file's REAL integrated LUFS (ebur128). When
+// provided, we calibrate a cheap per-segment LUFS proxy: offset = file_LUFS −
+// mean(all window RMS), then loudness_lufs_approx = segment_mean_RMS + offset.
+// This grounds the proxy in the one true loudness measurement we already have
+// (so a later normalization pass can level per-segment, not just per-file)
+// without a second full ebur128 decode. Null when no ref or no windows.
+function attachAudioFeatures(segments, energyWindows, windowSeconds = 0.5, loudnessRefLufs = null) {
   if (!Array.isArray(segments)) return [];
   const windows = Array.isArray(energyWindows)
     ? energyWindows.filter((w) => w && Number.isFinite(w.t) && Number.isFinite(w.rms_db))
     : [];
+  // File-level RMS mean → LUFS offset, computed once over all windows.
+  let lufsOffset = null;
+  if (Number.isFinite(loudnessRefLufs) && windows.length > 0) {
+    const fileMeanRms = windows.reduce((a, w) => a + w.rms_db, 0) / windows.length;
+    if (Number.isFinite(fileMeanRms)) lufsOffset = loudnessRefLufs - fileMeanRms;
+  }
   return segments.map((seg) => {
     if (windows.length === 0) {
-      return { ...seg, energy_rms_db: null, energy_peak_db: null };
+      return { ...seg, energy_rms_db: null, energy_peak_db: null, loudness_lufs_approx: null };
     }
     const hits = windows.filter((w) => {
       const mid = w.t + windowSeconds / 2;
       return mid >= seg.start_seconds && mid < seg.end_seconds;
     });
     if (hits.length === 0) {
-      return { ...seg, energy_rms_db: null, energy_peak_db: null };
+      return { ...seg, energy_rms_db: null, energy_peak_db: null, loudness_lufs_approx: null };
     }
     const mean = hits.reduce((a, w) => a + w.rms_db, 0) / hits.length;
     const peak = hits.reduce((a, w) => Math.max(a, w.rms_db), -Infinity);
@@ -91,6 +104,7 @@ function attachAudioFeatures(segments, energyWindows, windowSeconds = 0.5) {
       ...seg,
       energy_rms_db: Math.round(mean * 10) / 10,
       energy_peak_db: Math.round(peak * 10) / 10,
+      loudness_lufs_approx: lufsOffset != null ? Math.round((mean + lufsOffset) * 10) / 10 : null,
     };
   });
 }

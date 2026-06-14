@@ -8,6 +8,7 @@ const { writeFileAtomic, readJsonFile } = require("./storage.js");
 const { runFfmpegBlocking, inputAutorotateArgs } = require("./ffmpeg-runner.js");
 const { asrTranscribe, resolvedAsrParams } = require("./asr-backend.js");
 const {
+  inspectAudioAnalysisPath,
   inspectAudioFeaturesDir,
   inspectAudioPath,
   inspectCleanSpeechPath,
@@ -33,6 +34,14 @@ const {
 const { buildTranscriptSummary } = require("./transcript-summary.js");
 const { detectSceneChanges } = require("./scene-detector.js");
 const { detectSilences } = require("./silence-detector.js");
+const {
+  analyzeAudioFile,
+  audioAnalysisDisabled,
+  buildNormalizationAdvisory,
+  pickCleanAudioSource,
+  AUDIO_ANALYSIS_TARGET_LUFS,
+  AUDIO_ANALYSIS_TRUE_PEAK_CEILING,
+} = require("./audio-analysis.js");
 const { computeCleanSpans } = require("./clean-cut.js");
 const { buildSegments } = require("./segment-model.js");
 const {
@@ -445,7 +454,7 @@ async function transcribeAudio({ audioPath, inspectDirAbs, expectedTranscriptPat
     durationSeconds,
   });
   if (res.ok) {
-    return { ok: true, word_count: res.word_count || 0, backend: res.backend, attempts: res.attempts || [] };
+    return { ok: true, word_count: res.word_count || 0, backend: res.backend, aligned: res.aligned === true, attempts: res.attempts || [] };
   }
   return { ok: false, reason: res.reason || "transcription_failed", attempts: res.attempts || [] };
 }
@@ -465,15 +474,21 @@ function readTranscriptCache(projectId, hash, params) {
   if (!doc || doc.schema_version !== TRANSCRIPT_CACHE_VERSION) return null;
   const p = doc.params || {};
   if (p.backend !== params.backend || p.model !== params.model || p.language !== params.language) return null;
+  // `align` keys karaoke-grade timing: a cache written before alignment was
+  // available (p.align undefined → false) is NOT served when alignment is now
+  // wanted (params.align true). Missing == false keeps pre-v3.1 caches valid
+  // when no alignment backend is present.
+  if ((p.align === true) !== (params.align === true)) return null;
   if (!Array.isArray(doc.words)) return null;
   return {
     words: doc.words,
     word_count: Number.isFinite(doc.word_count) ? doc.word_count : doc.words.length,
     backend_used: doc.backend_used || null,
+    aligned: doc.aligned === true,
   };
 }
 
-function writeTranscriptCache(projectId, hash, params, words, backendUsed) {
+function writeTranscriptCache(projectId, hash, params, words, backendUsed, aligned) {
   if (typeof hash !== "string" || !hash || !Array.isArray(words)) return;
   let cachePath;
   try { cachePath = transcriptCachePath(projectId, hash); } catch { return; }
@@ -484,6 +499,7 @@ function writeTranscriptCache(projectId, hash, params, words, backendUsed) {
     file_hash: hash,
     params,
     backend_used: backendUsed || null,
+    aligned: aligned === true,
     word_count: words.length,
     words,
     created_at: nowIso(),
@@ -652,7 +668,12 @@ async function segmentSourceFiles({ projectId, manifest, transcriptsByFile, skip
     // not just the winner (the old single-transcript gate left multi-file
     // B-roll speech invisible to classification).
     segments = attachTranscriptOverlap(segments, transcriptsByFile.get(i) || null);
-    segments = attachAudioFeatures(segments, audioFeatures ? audioFeatures.energy_windows : null);
+    segments = attachAudioFeatures(
+      segments,
+      audioFeatures ? audioFeatures.energy_windows : null,
+      0.5,
+      audioFeatures && audioFeatures.loudness ? audioFeatures.loudness.lufs_integrated : null,
+    );
     const kf = await extractSegmentKeyframes({
       projectId,
       fileIndex: i,
@@ -717,6 +738,117 @@ function collectLowConfidenceWords(words) {
     if (out.length >= LOW_CONFIDENCE_MAX) break;
   }
   return out;
+}
+
+// Resolve an audio file's channel count + layout for the analysis pass. Prefers
+// the v3.1 enriched manifest detail (audio_streams_detail) but falls back to the
+// retained raw ffprobe `probe` (legacy/unchanged manifest entries lack the
+// enriched field) so the pass works on any manifest vintage.
+function resolveAudioStreamInfo(file) {
+  const detail = Array.isArray(file && file.audio_streams_detail) ? file.audio_streams_detail : null;
+  if (detail && detail.length > 0) {
+    const d = detail[0] || {};
+    return {
+      channels: Number.isFinite(d.channels) ? d.channels : null,
+      channel_layout: typeof d.channel_layout === "string" ? d.channel_layout : null,
+    };
+  }
+  const streams = file && file.probe && Array.isArray(file.probe.streams) ? file.probe.streams : [];
+  const a = streams.find((s) => s && s.codec_type === "audio");
+  if (a) {
+    const ch = Number(a.channels);
+    return {
+      channels: Number.isFinite(ch) ? ch : null,
+      channel_layout: typeof a.channel_layout === "string" ? a.channel_layout : null,
+    };
+  }
+  return { channels: null, channel_layout: null };
+}
+
+// v3.1 P2 — per audio file: per-channel loudness/balance/phase analysis on the
+// ORIGINAL stream (not the mono ASR downmix), the −14 LUFS normalization
+// advisory, and the clean-voice-track hint. Writes inspect/audio_analysis.json
+// and returns a compact summary for state/result/digest. Best-effort: a failure
+// (or VOB_DISABLE_AUDIO_ANALYSIS) returns null and never aborts INSPECT.
+async function runAudioAnalysisPass({ projectId, manifest, audioFileIndices, transcriptsByFile }) {
+  if (audioAnalysisDisabled() || !Array.isArray(audioFileIndices) || audioFileIndices.length === 0) {
+    return null;
+  }
+  const workDir = inspectAudioFeaturesDir(projectId);
+  try { fs.mkdirSync(workDir, { recursive: true }); } catch { /* best-effort */ }
+
+  const fileResults = [];
+  const advisoryEntries = [];
+  const cleanEntries = [];
+  for (const idx of audioFileIndices) {
+    const file = manifest.files[idx];
+    if (!file || typeof file.path !== "string") continue;
+    const { channels, channel_layout: channelLayout } = resolveAudioStreamInfo(file);
+    let analysis;
+    try {
+      analysis = await analyzeAudioFile(file.path, {
+        channels,
+        channelLayout,
+        durationSeconds: Number(file.duration_seconds),
+        fileIndex: idx,
+        workDir,
+      });
+    } catch (error) {
+      analysis = { ok: false, path: file.path, reason: error && error.message ? error.message : String(error), notes: [] };
+    }
+    fileResults.push({ file_index: idx, ...analysis });
+    advisoryEntries.push({ file_index: idx, analysis: analysis && analysis.ok ? analysis : null });
+    cleanEntries.push({
+      file_index: idx,
+      analysis: analysis && analysis.ok ? analysis : null,
+      prior: file.prior || null,
+      word_count: transcriptsByFile.has(idx) ? (transcriptsByFile.get(idx) || []).length : 0,
+    });
+  }
+
+  const normalization = buildNormalizationAdvisory(advisoryEntries, {
+    targetLufs: AUDIO_ANALYSIS_TARGET_LUFS,
+    truePeakCeiling: AUDIO_ANALYSIS_TRUE_PEAK_CEILING,
+  });
+  const cleanAudioSource = pickCleanAudioSource(cleanEntries);
+
+  const analysisPath = inspectAudioAnalysisPath(projectId);
+  try {
+    writeFileAtomic(analysisPath, `${JSON.stringify({
+      schema_version: "1.0",
+      project_id: projectId,
+      generated_at: nowIso(),
+      target_lufs: AUDIO_ANALYSIS_TARGET_LUFS,
+      true_peak_ceiling: AUDIO_ANALYSIS_TRUE_PEAK_CEILING,
+      files: fileResults,
+      normalization,
+      clean_audio_source: cleanAudioSource,
+    }, null, 2)}\n`);
+  } catch { return null; }
+
+  const advByFile = new Map(normalization.files.map((f) => [f.file_index, f]));
+  const audioSummary = {
+    analysis_path: analysisPath,
+    file_count: fileResults.length,
+    target_lufs: AUDIO_ANALYSIS_TARGET_LUFS,
+    any_clip_risk: normalization.any_clip_risk,
+    any_quiet: normalization.any_quiet,
+    clean_audio_source_index: cleanAudioSource ? cleanAudioSource.file_index : null,
+    files: fileResults.map((f) => {
+      const adv = advByFile.get(f.file_index) || null;
+      return {
+        file_index: f.file_index,
+        layout: f.ok ? f.layout : null,
+        lufs_integrated: f.ok && f.loudness ? f.loudness.lufs_integrated : null,
+        balance: f.ok ? f.balance : null,
+        dead_channel: f.ok ? f.dead_channel : null,
+        out_of_phase: f.ok ? f.out_of_phase : null,
+        gain_to_target_db: adv ? adv.gain_db : null,
+        clip_risk: adv ? adv.clip_risk : false,
+      };
+    }),
+  };
+  return { analysisPath, audioSummary };
 }
 
 async function runInspect({ projectId, manifest, options = {} }) {
@@ -880,6 +1012,7 @@ async function runInspect({ projectId, manifest, options = {} }) {
   let skippedReason = null;
   let asrBackend = null;
   let asrAttempts = null;
+  let transcriptAligned = false; // winner timing is karaoke-grade (forced-aligned)?
   let transcriptsSummary = [];
   let transcriptCacheHits = 0;
   const transcriptsByFile = new Map(); // idx -> canonical words (ok files only)
@@ -911,6 +1044,7 @@ async function runInspect({ projectId, manifest, options = {} }) {
         perFile.set(idx, {
           ok: true, path: outPath, words: cached.words,
           word_count: cached.word_count, backend: cached.backend_used,
+          aligned: cached.aligned === true,
           from_cache: true, reason: null, attempts: null, wav: null,
         });
         continue;
@@ -937,7 +1071,7 @@ async function runInspect({ projectId, manifest, options = {} }) {
           const w = readJsonFile(outPath);
           if (Array.isArray(w)) words = w;
         } catch { words = null; }
-        if (words) writeTranscriptCache(projectId, file.hash, asrParams, words, tr.backend);
+        if (words) writeTranscriptCache(projectId, file.hash, asrParams, words, tr.backend, tr.aligned);
       }
       perFile.set(idx, {
         ok: tr.ok && !!words,
@@ -945,6 +1079,7 @@ async function runInspect({ projectId, manifest, options = {} }) {
         words,
         word_count: words ? words.length : 0,
         backend: tr.backend || null,
+        aligned: tr.aligned === true,
         from_cache: false,
         reason: tr.ok ? null : (tr.reason || "transcription_failed"),
         attempts: tr.attempts || null,
@@ -981,6 +1116,7 @@ async function runInspect({ projectId, manifest, options = {} }) {
       transcriptPathOut = transcriptAbs;
       wordCount = win.word_count;
       speechDetected = wordCount > 0;
+      transcriptAligned = win.aligned === true;
     } else {
       skippedReason = win.reason || "transcription_failed";
     }
@@ -991,6 +1127,7 @@ async function runInspect({ projectId, manifest, options = {} }) {
         path: info.path,
         word_count: info.word_count,
         backend: info.backend,
+        aligned: info.aligned === true,
         from_cache: info.from_cache === true,
         reason: info.ok ? null : (info.reason || "transcription_failed"),
       };
@@ -1082,6 +1219,20 @@ async function runInspect({ projectId, manifest, options = {} }) {
     files: segmentation.fileSummaries,
   }, null, 2)}\n`);
 
+  // Audio analysis (v3.1 P2): per-channel loudness/balance/phase + normalization
+  // advisory + clean-track hint on the ORIGINAL audio. Best-effort, never aborts.
+  let audioAnalysisPathOut = null;
+  let audioSummaryOut = null;
+  try {
+    const aa = await runAudioAnalysisPass({ projectId, manifest, audioFileIndices, transcriptsByFile });
+    if (aa) {
+      audioAnalysisPathOut = aa.analysisPath;
+      audioSummaryOut = aa.audioSummary;
+    }
+  } catch {
+    // best-effort: audio analysis is an optional planning aid
+  }
+
   // Strip legend: one JSON mapping every strip cell -> {segment, timestamps}.
   // Strip failures are non-fatal (singles fallback); strip_count reflects reality.
   let stripsLegendPathOut = null;
@@ -1135,7 +1286,8 @@ async function runInspect({ projectId, manifest, options = {} }) {
         approximate: thumbSeekModes.filter((m) => m.mode === "keyframe"),
       },
       lowConfidenceWords: collectLowConfidenceWords(winnerWords),
-      asr: { backend: asrBackend, skippedReason },
+      asr: { backend: asrBackend, skippedReason, aligned: transcriptAligned },
+      audio: audioSummaryOut,
       sceneDetectionSkipped: skipSceneDetection,
       transcribedFileIndex,
     });
@@ -1164,6 +1316,9 @@ async function runInspect({ projectId, manifest, options = {} }) {
     speech_detected: speechDetected,
     asr_backend: asrBackend,
     asr_attempts: asrAttempts,
+    transcript_aligned: transcriptAligned,
+    audio_analysis_path: audioAnalysisPathOut,
+    audio: audioSummaryOut,
     scene_detection_skipped: skipSceneDetection,
     transcript_path: transcriptPathOut,
     transcript_summary_path: transcriptSummaryPathOut,

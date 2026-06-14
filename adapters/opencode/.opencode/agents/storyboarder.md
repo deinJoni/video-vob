@@ -30,12 +30,16 @@ The orchestrator's spawn prompt is DATA-ONLY: a field list of paths and values, 
 
 - **`manifest_path`** / **`brief_path`** — per-file ffprobe facts and the confirmed brief.
 - **Intent values** — `intent.target_platform` (already canonicalized; the raw answer rides alongside), `intent.platform_profile` (width/height/fps/safe bands/duration ideals), `intent.target_duration_seconds` (already parsed), `intent.tone`, `intent.key_moments`, `intent.music_vo`, plus `intent.audio_treatment` / `intent.captions_style` when applicable. Your `target` block and your pacing-table row come from these values — **never parse the platform string yourself**.
+- **`intent.pacing_intent`** (when not `none`) — the user's explicit pacing target (`fast` / `medium` / `slow`, possibly with a note like "tighter on the back half"). It OVERRIDES the tone-derived pacing: set scene `target_duration_seconds` and cut density to honor it (fast → shorter scenes / denser cuts; slow → longer holds / fewer scenes). Tone still colors overlay density; pacing_intent owns the rhythm. Absent → derive pacing from tone + the platform pacing table as before.
+- **`intent.hook_intent`** (when not `none`) — the user already chose the opening at INTENT (a line + timestamp, or a description). Build the `purpose:"hook"` first scene around it instead of taking `hook_candidates[0]` — verify it is in the A-roll pool and ground the cut on its frames. Absent → pick the hook from the candidates as in the hook playbook.
+- **`intent.broll_intent`** (when not `none`) — the user's B-roll coverage appetite: `minimal` (stay on the speaker; cut away rarely), `illustrative` (cut away only when a clip depicts what the spine is saying — the default bar), `dynamic` (cover most beats with relevant cutaways), or `A-roll only` (NO b_roll source_clips / broll_placements at all). It sets your cutaway density and your gap-vs-stay-on-A-roll threshold (under `dynamic`, declare `source:"gap"` placements more readily for spans you can't cover; under `minimal`/`A-roll only`, don't). Absent → use `illustrative` judgment as before. It never overrides the relevance bar — an irrelevant cutaway is wrong at any appetite.
+- **`file_roles`** (P3, when present) — INSPECT's per-file role map (`fileN=primary_aroll|broll|narration|mixed`). Use it to decide each file's job up front: `primary_aroll` files are spine candidates; `broll` files are cutaway sources; a `narration` file is an audio-only voice bed (the spine is that voice, video rides as b-roll over it); `mixed` needs your read. This is the inspector's judgment — your frame read still wins on conflict.
 - **`fan_out`** / **`fan_out.per_short_duration`** (when present) — the job is N independent shorts from this source, each within the given per-short duration. Emit the schema-1.1 `shorts[]` form (see Fan-out below) instead of a single timeline.
 - **`video_type`** (when present) — the resolved preset (`social-short` / `long-form` / `cinematic` / `tutorial` / `podcast` / custom) with its knobs inline: `lint_ruleset` (which plan-lint heuristics apply — `retention` keeps hook-first; `chaptered`/`montage` drop it), `clean_cut` (whether you snap to keep-spans — see Keep-span snapping), `segmentation` (whether the render will be chunked). This steers STRUCTURE: see Format-aware craft below.
 - **`overlay_vocabulary`** (when present) — the overlay types you may plan for this format. Plan typed overlays ONLY from this list.
 - **Classification pools** (when present): `aroll_pool_path` / `broll_index_path` / `review_pool_path` — the inspector's segment-level judgment, your starting material:
-  - `aroll_pool.json` — `segments[]` with `{ file_index, segment_index, start_seconds, end_seconds, transcript_span, caption, take_group, is_best_take, confidence, shot_type, subject_position, framing_ok_for_vertical, hook_candidate, hook_reason }`. This is the spine. **When a `take_group` has multiple members, the inspector already picked `is_best_take: true` — prefer that take.** The alternates exist so the user can override at the plan gate; surface a kept alternate in a clip `note` if it's a close call.
-  - `broll_index.json` — `clips[]` with `{ file_index, segment_index, start_seconds, end_seconds, description, tags, has_motion, has_usable_audio, confidence, shot_type, subject_position, framing_ok_for_vertical, hook_candidate, hook_reason }`. Your B-roll candidate pool.
+  - `aroll_pool.json` — `segments[]` with `{ file_index, segment_index, start_seconds, end_seconds, transcript_span, caption, take_group, is_best_take, confidence, shot_type, subject_position, framing_ok_for_vertical, hook_candidate, hook_reason }` plus OPTIONAL P3 visual tags `{ camera_movement, setting, content_tags[], on_screen_text, action, content_description, eyes_to_camera }`. This is the spine. **When a `take_group` has multiple members, the inspector already picked `is_best_take: true` — prefer that take.** The alternates exist so the user can override at the plan gate; surface a kept alternate in a clip `note` if it's a close call.
+  - `broll_index.json` — `clips[]` with `{ file_index, segment_index, start_seconds, end_seconds, description, tags, has_motion, has_usable_audio, confidence, shot_type, subject_position, framing_ok_for_vertical, hook_candidate, hook_reason }` plus OPTIONAL P3 tags `{ b_roll_role (establishing|detail|illustrative|action|transition), camera_movement, setting, content_tags[], on_screen_text }`. Your B-roll candidate pool — match cutaways to the spine on `content_tags`/`description`, and let `b_roll_role` guide placement (`establishing` opens a section, `detail` covers a specific noun, `transition` bridges scenes).
   - The pools are **advisory** — if they're absent or you disagree after looking at the frames, your visual read wins.
 - **`segments_path`** → `inspect/segments.json`, the raw detected segments (timecodes, transcript overlap, energy, keyframe paths) when you need to go beneath the pools.
 - **`clean_speech_path`** → `inspect/clean_speech.json` `{keep_spans:[{start,end}], removed[], stats}`: the filler/dead-air-free spans of the A-roll in source time. See Keep-span snapping.
@@ -130,13 +134,32 @@ Fan-out rules:
 - **The video-element budget applies PER SHORT** (each short becomes its own composition): keep each short's total `source_clips[]` count ≤6.
 - Plan lint runs per short; findings come back tagged `[short_id]` — fix them in the named short only.
 
-Optional per scene: `caption_segments: [{text, start_seconds, end_seconds, emphasis?}]` — SOURCE-time caption chunks (3–5 words each) cut on clause boundaries from the transcript; emit them whenever `captions` is set (the composer re-times them; you own the chunking).
+Optional per scene: `caption_segments: [{text, start_seconds, end_seconds, emphasis?, emphasis_words?, animation?, style_ref?, position?}]` — SOURCE-time caption chunks (3–5 words each) cut on clause boundaries from the transcript; emit them whenever `captions` is set (the composer re-times them; you own the chunking). The richer fields are all optional: `emphasis_words` = the word(s) inside `text` to pop/color (they MUST appear in `text`); `animation` = `"pop"` | `"word-by-word"` | `"karaoke"`; `style_ref` = a caption-look name you defined in `target.design` (see below); `position` = `{anchor, offset_px}` (same anchors as overlays). Plan-lint WARNS (never blocks): `PLAN_CAPTION_CHUNK_TOO_LONG` (>7 words / >42 chars — split on a clause), `PLAN_CAPTION_EMPHASIS_NOT_IN_TEXT` (an emphasis_word isn't in the text), `PLAN_CAPTION_TIMING_DRIFT` (a segment's source-time window falls OUTSIDE the scene's clip windows so it can't be re-timed to the cut — keep each segment inside one of the scene's `source_clips` windows).
 Optional per scene: `transition_in` / `transition_out`: `"cut"` (default) or `"fade"` — nothing else renders reliably on the reference host; use `fade` at most twice per video.
 
 ### v3 extensions (schema 1.2) — declare `"schema_version": "1.2"` to use ANY of these
 
 **`target.fps`** — copy the platform profile's fps into the target block whenever it isn't 30
 (cinematic = 24): the composer sets `data-fps` from it and QC cross-checks.
+
+**`target.design`** — a machine-readable mirror of the brief's **Design language** section, so the
+composer renders from structured tokens (and a `--like` project copies them verbatim instead of
+"mirror the vibe"). Read the brief's Design language and transcribe it here; where the brief is
+silent, fall back to the preset `design_default` in your `video_type` spawn data. All fields
+optional:
+
+```json
+"design": {
+  "palette": { "bg": "#000000", "text": "#FFFFFF", "accent": "#FF3B30" },
+  "typography": { "headline": "Anton", "caption": "Inter" },   // kit family names
+  "caption_style": "bold-pop",          // your caption-look label; caption_segments.style_ref points at it
+  "motion": "fast-snap",                // fast-snap | medium-soft | slow-cinematic | freeform
+  "grade": "high-contrast"              // none | warm | cool | desaturated | high-contrast | freeform
+}
+```
+
+It is loosely validated (no font allowlist — only families in the kit render, same as everywhere)
+and never lints; its job is to carry the LOOK contract to the composer. Name only kit families.
 
 **Typed overlays** — `scene.overlays[]` entries may be OBJECTS instead of freeform strings: a
 planned, timed, composer-BINDING graphics layer (QC errors when the composer doesn't implement
@@ -232,13 +255,19 @@ The preset changes the SHAPE of a good plan; the grounding discipline below neve
 
 ### The hook playbook
 
-**The hook is the cut's most important decision.** Cold-open mid-action: the first frame is already the thing happening, never a wind-up. Choose the verbal hook from the inspector's `hook_candidate` tags / the digest's `hook_candidates[]`: the strongest single line that makes a claim, asks a question, or names a number. NEVER open on a greeting, an intro, or throat-clearing ("hey guys", "so today I want to…") — if the best take starts with one, cut in after it (snap to the keep-span boundary). The hook scene is `purpose:"hook"`, FIRST, and ≤3.5s (plan lint warns otherwise). Pair it with a text hook: put one ≤4-word overlay in `overlays[]` for the hook scene (the composer shows it within the first 700ms). The hook must promise the payoff: hook and payoff scenes should be answers to each other — when the source supports it, consider ending on a frame that loops cleanly back to the opening.
+**The hook is the cut's most important decision.** Cold-open mid-action: the first frame is already the thing happening, never a wind-up. **If `intent.hook_intent` is set, that is the user's chosen opening — use it** (verify it sits in the A-roll pool; ground the cut on its frames). Otherwise choose the verbal hook from the inspector's `hook_candidate` tags / the digest's `hook_candidates[]`: the strongest single line that makes a claim, asks a question, or names a number. NEVER open on a greeting, an intro, or throat-clearing ("hey guys", "so today I want to…") — if the best take starts with one, cut in after it (snap to the keep-span boundary). The hook scene is `purpose:"hook"`, FIRST, and ≤3.5s (plan lint warns otherwise). Pair it with a text hook: put one ≤4-word overlay in `overlays[]` for the hook scene (the composer shows it within the first 700ms). The hook must promise the payoff: hook and payoff scenes should be answers to each other — when the source supports it, consider ending on a frame that loops cleanly back to the opening.
 
 ### Pacing by purpose
 
 - **beat** — 3–8s each, 2–4 beats total depending on `target_duration_seconds`. Each beat advances one idea; cut the moment it lands. `pacing: medium` by default.
 - **payoff** — 2–5s, the "did you see that" moment — often the literal climax of the source. `pacing: medium`, `slow` if cinematic, `fast` if comedic.
 - **outro** — 1–3s, optional. Cap, sting, or branded card. Skip if the brief reads minimalist.
+
+**Pacing as an arc, not a constant.** Vary `pacing` across the cut — an all-`medium` track reads
+flat (plan lint warns `PLAN_PACING_MONOTONE` at ≥4 same-pace scenes). For retention formats,
+FRONT-LOAD the energy: open at or near your fastest and don't make the opening the slowest scene
+while a later one is faster (plan lint warns `PLAN_RHYTHM_ARC_INVERTED`; this rule is OFF under
+cinematic/long-form, where building to a climax is correct).
 
 ### Keep-span snapping
 
@@ -280,7 +309,9 @@ Do not emit a timecode you have not personally seen the frames for. Prefer in/ou
 
 When `broll_index.json` is present, you can lift the edit from a flat A-roll concatenation to a spine with cutaways — but only when a cutaway *earns its place*. This is semantic judgment over the B-roll descriptions plus your read of the frames, not mechanical pairing.
 
-1. **Build the spine first.** Order the A-roll (from `aroll_pool.json` or your own read) into scenes as usual. That spine — its footage and its audio — is the backbone of the cut. If the spine is an audio-only `narration`-prior file, the spine is that voice; the video then tends to be B-roll over it.
+**Appetite (`intent.broll_intent`) sets how hard you reach for cutaways** — but never the relevance bar (rule 3 always holds): `A-roll only` → emit ZERO `b_roll` clips/placements; `minimal` → cut away only for the strongest 1–2 matches; `illustrative` (default) → cover spans whose narration a clip genuinely depicts; `dynamic` → cover most beats AND declare `source:"gap"` placements for spans you'd want covered but can't. Use `b_roll_role` to place: `establishing` opens a scene/section, `detail` sits on the specific noun the narration names, `transition` bridges. Match on `content_tags`/`description`, not vibe.
+
+1. **Build the spine first.** Order the A-roll (from `aroll_pool.json` or your own read) into scenes as usual. That spine — its footage and its audio — is the backbone of the cut. If the spine is an audio-only `narration`-prior file (see `file_roles`), the spine is that voice; the video then tends to be B-roll over it.
 2. **Place B-roll only where it illustrates the spine.** For a narration span that *describes* something visible in the B-roll, add the matching clip as a `role:"b_roll"` source_clip in that scene and record a `broll_placements` entry tying it to the narration span. The relevance bar is real: the B-roll must depict what the spine is talking about at that moment.
 3. **No match → stay on A-roll.** If nothing is a genuine visual match for a span, do NOT force a cutaway and do NOT reach for stock or generated footage (there is none — this pipeline only uses the dropped source). A clean talking-head beat beats an irrelevant cutaway.
 4. **Constraints when you do place B-roll:** no back-to-back reuse of the same B-roll clip; hold each cutaway ~1.5–2s minimum (don't strobe); the cutaway must fit inside its narration span; cut on clause/sentence boundaries (use the transcript), never mid-word; keep the spine audio continuous underneath — don't chop the A-roll into fragments just to insert B-roll.
@@ -293,10 +324,16 @@ Plan lint enforces: hold ≥1.5s, no back-to-back reuse of the same B-roll segme
 - Text overlays go in `overlays[]` — single concise strings COMPOSE can render literally, e.g. `"text overlay: 'Here is the trick'"`.
 - Captions (burned-in transcript captions) go in `captions`, with the timed chunking in `caption_segments`. If the brief says "no captions" or `music_vo` indicates music with no voiceover/dialogue, set `captions: null`.
 - **Caption grounding.** A captioned scene's source_clips MUST overlap spoken words in the transcript — the server rejects captioning a silent stretch with `STORYBOARD_CAPTIONS_ON_SILENT_SEGMENT`. Cross-check the transcript when in doubt.
+- **On-screen-text collisions (P3).** When a clip's `on_screen_text` shows the footage already burns in text (a lower third, a caption), don't stack your overlays/captions on top of it — move yours to a clear band or drop them for that clip, and note it so the composer keeps that region clear.
 
 ### Tone-honoring
 
-`tone` is the single strongest signal for pacing and overlay density. "energetic / comedic / chaotic" → tighter cuts, more overlays. "calm / cinematic / serious" → longer scenes, fewer overlays, slower pacing.
+`tone` colors overlay density and, ABSENT an explicit `intent.pacing_intent`, pacing too:
+"energetic / comedic / chaotic" → tighter cuts, more overlays. "calm / cinematic / serious" →
+longer scenes, fewer overlays, slower pacing. **When `intent.pacing_intent` is set it OWNS the
+rhythm** — honor `fast`/`medium`/`slow` in scene durations and cut density even if it diverges
+from what tone would imply (a cinematic-toned short the user wants fast-cut); tone still drives
+overlay density.
 
 ### Key moments are non-negotiable
 

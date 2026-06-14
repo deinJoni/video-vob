@@ -188,6 +188,28 @@ function probeKeyframeInterval(filePath, { durationSeconds, timeoutMs = KEYFRAME
   };
 }
 
+// Per-audio-stream detail for the v3.1 audio-analysis pass (channels/layout/
+// sample rate/bit depth/language). Additive: the scalar `audio_streams` count
+// stays for back-compat. bit_depth prefers bits_per_raw_sample (the true source
+// depth) over bits_per_sample (0 for compressed codecs).
+function summarizeAudioStream(s, index) {
+  const channels = Number(s.channels);
+  const sampleRate = Number(s.sample_rate);
+  const rawDepth = Number(s.bits_per_raw_sample);
+  const sampDepth = Number(s.bits_per_sample);
+  const lang = s.tags && typeof s.tags === "object" ? (s.tags.language || s.tags.LANGUAGE || null) : null;
+  return {
+    index: Number.isFinite(Number(s.index)) ? Number(s.index) : index,
+    codec: s.codec_name || null,
+    channels: Number.isFinite(channels) && channels > 0 ? channels : null,
+    channel_layout: typeof s.channel_layout === "string" ? s.channel_layout : null,
+    sample_rate: Number.isFinite(sampleRate) && sampleRate > 0 ? sampleRate : null,
+    bit_depth: Number.isFinite(rawDepth) && rawDepth > 0 ? rawDepth : (Number.isFinite(sampDepth) && sampDepth > 0 ? sampDepth : null),
+    language: typeof lang === "string" && lang ? lang : null,
+    default: Boolean(s.disposition && s.disposition.default),
+  };
+}
+
 function summarizeProbe(filePath, probe) {
   const streams = Array.isArray(probe.streams) ? probe.streams : [];
   const videoStreams = streams.filter(
@@ -215,6 +237,7 @@ function summarizeProbe(filePath, probe) {
     duration_seconds: Number.isFinite(durationSeconds) ? durationSeconds : null,
     video_streams: videoStreams.length,
     audio_streams: audioStreams.length,
+    audio_streams_detail: audioStreams.map((s, i) => summarizeAudioStream(s, i)),
     has_video: videoStreams.length > 0,
     has_audio: audioStreams.length > 0,
     resolution: width && height ? `${width}x${height}` : null,

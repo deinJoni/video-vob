@@ -214,8 +214,8 @@ function storyboard({ manifestPath, briefPath, sourcePath, windows, speech }) {
       ...(speech
         ? {
             caption_segments: [
-              { text: "walker caption one", start_seconds: round3(windows.beat.in + 0.2), end_seconds: round3(windows.beat.in + 1.4) },
-              { text: "walker caption two", start_seconds: round3(windows.beat.in + 1.5), end_seconds: round3(windows.beat.in + 2.8), emphasis: true },
+              { text: "walker caption one", start_seconds: round3(windows.beat.in + 0.2), end_seconds: round3(windows.beat.in + 1.4), animation: "word-by-word", style_ref: "bold-pop" },
+              { text: "walker caption two", start_seconds: round3(windows.beat.in + 1.5), end_seconds: round3(windows.beat.in + 2.8), emphasis: true, emphasis_words: ["caption"], animation: "pop" },
             ],
           }
         : {}),
@@ -240,7 +240,15 @@ function storyboard({ manifestPath, briefPath, sourcePath, windows, speech }) {
     project_id: PROJECT_ID,
     generated_at: new Date().toISOString(),
     source: { manifest_path: manifestPath, brief_path: briefPath },
-    target: { platform: "tiktok", duration_seconds: 8, tone: "cinematic" },
+    target: {
+      platform: "tiktok", duration_seconds: 8, tone: "cinematic",
+      // v3 structured design tokens (mirror of the brief Design language).
+      design: {
+        palette: { bg: "#000000", text: "#FFFFFF", accent: "#FFD60A" },
+        typography: { headline: "Anton", caption: "Inter" },
+        caption_style: "bold-pop", motion: "fast-snap", grade: "high-contrast",
+      },
+    },
     scenes,
     total_target_duration_seconds: 8,
     notes: "Walker fixture — 8s, three beats, hook-first, plan-lint-clean.",
@@ -440,6 +448,17 @@ function cannedClassification(segmentsDoc) {
           confidence: 0.9,
           take_group: null,
           is_best_take: true,
+          // v3.1 P3 richer visual fields (exercise validation + counts).
+          shot_type: "medium",
+          subject_position: "center",
+          framing_ok_for_vertical: true,
+          camera_movement: "static",
+          setting: "studio",
+          content_tags: ["walker", "talking-head"],
+          on_screen_text: "WALKER",
+          action: "speaking to camera",
+          content_description: "walker spine shot",
+          eyes_to_camera: true,
         });
       } else {
         broll.push({
@@ -452,14 +471,33 @@ function cannedClassification(segmentsDoc) {
           has_motion: false,
           has_usable_audio: false,
           confidence: 0.9,
+          // v3.1 P3 richer visual fields.
+          shot_type: "wide",
+          subject_position: "none",
+          framing_ok_for_vertical: true,
+          camera_movement: "static",
+          setting: "studio",
+          content_tags: ["walker", "coverage"],
+          on_screen_text: "WALKER",
+          action: "test pattern",
+          b_roll_role: "detail",
         });
       }
     }
   }
+  // v3.1 P3 multi-file role map — one entry per file (seeded from its prior).
+  const fileRoles = files
+    .filter((f) => Number.isInteger(f.file_index))
+    .map((f) => ({
+      file_index: f.file_index,
+      role: f.prior === "narration" ? "narration" : (f.prior === "broll" ? "broll" : "mixed"),
+      summary: "walker fixture file",
+    }));
   return {
     aroll_pool: { segments: aroll },
     broll_index: { clips: broll },
     review: { segments: [] },
+    file_roles: fileRoles,
   };
 }
 
@@ -900,11 +938,56 @@ async function bootstrapToPlan({ projectId, target, intentAnswers, briefBody }) 
   const inspect = await step("inspect (ffmpeg + ASR)", () =>
     call("vob_inspect_source", { project_id: projectId }),
   );
+  // v3.1 INSPECT deep-inspect signals (P1 alignment marker + P2 audio analysis).
+  // Degrade-aware: transcript_aligned is true only when an alignment backend
+  // (whisperx) is installed — the assertions hold either way.
+  await step("v3.1 inspect signals (P1 transcript_aligned + P2 audio)", async () => {
+    assert(typeof inspect.transcript_aligned === "boolean",
+      `transcript_aligned must be boolean, got ${JSON.stringify(inspect.transcript_aligned)}`);
+    if (inspect.audio_present) {
+      assert(inspect.audio && Array.isArray(inspect.audio.files) && inspect.audio.files.length > 0,
+        `audio_present but no audio summary: ${JSON.stringify(inspect.audio)}`);
+      assert(typeof inspect.audio_analysis_path === "string" && fs.existsSync(inspect.audio_analysis_path),
+        `audio_analysis.json missing at ${inspect.audio_analysis_path}`);
+      const aa = JSON.parse(fs.readFileSync(inspect.audio_analysis_path, "utf8"));
+      assert(aa.normalization && Array.isArray(aa.normalization.files),
+        "audio_analysis.json lacks a normalization advisory");
+      assert(aa.target_lufs === -14, `expected −14 LUFS target, got ${aa.target_lufs}`);
+      assert("clean_audio_source" in aa, "audio_analysis.json lacks clean_audio_source");
+      // P2 per-segment loudness proxy: additive field on every segment.
+      const segDoc = JSON.parse(fs.readFileSync(inspect.segments_path, "utf8"));
+      const segs = segDoc.files.flatMap((f) => f.segments || []);
+      assert(segs.length === 0 || segs.every((s) => "loudness_lufs_approx" in s),
+        "segments missing the loudness_lufs_approx field");
+      // P2.1 manifest enrichment carried per audio stream.
+      const audioFile = ingest.files.find((f) => f && Array.isArray(f.audio_streams_detail) && f.audio_streams_detail.length > 0);
+      assert(audioFile, "no manifest file carries audio_streams_detail");
+      assert(Number.isFinite(audioFile.audio_streams_detail[0].channels),
+        `audio_streams_detail[0].channels not captured: ${JSON.stringify(audioFile.audio_streams_detail[0])}`);
+    }
+  });
   if (inspect.segment_count > 0) {
     const segmentsDoc = JSON.parse(fs.readFileSync(inspect.segments_path, "utf8"));
-    await step("save classification (canned)", () =>
+    const cls = await step("save classification (canned)", () =>
       call("vob_save_classification", { project_id: projectId, ...cannedClassification(segmentsDoc) }),
     );
+    // v3.1 P3: richer-tagging coverage counts + the multi-file role map, both on
+    // the save return and surfaced by read_state_summary (quality notes, no gate).
+    await step("v3.1 classification tagging (P3 counts + file_roles)", async () => {
+      const fileCount = Array.isArray(segmentsDoc.files) ? segmentsDoc.files.length : 0;
+      assert(cls.file_role_count === fileCount,
+        `file_role_count ${cls.file_role_count} != file count ${fileCount}`);
+      assert(Array.isArray(cls.file_roles) && cls.file_roles.length === fileCount,
+        "classification return missing file_roles[]");
+      if ((cls.aroll_count + cls.broll_count) > 0) {
+        assert(cls.content_tagged_count > 0, `content_tagged_count should be >0, got ${cls.content_tagged_count}`);
+        assert(cls.on_screen_text_count > 0, `on_screen_text_count should be >0, got ${cls.on_screen_text_count}`);
+      }
+      const s = await call("vob_read_state_summary", { project_id: projectId });
+      const sc = s.inspect && s.inspect.classification;
+      assert(sc && Number.isInteger(sc.content_tagged_count) && Number.isInteger(sc.on_screen_text_count) && Number.isInteger(sc.file_role_count),
+        `read_state_summary classification missing P3 counts: ${JSON.stringify(sc)}`);
+    });
   }
   await step("acknowledge inspect", () => call("vob_acknowledge_inspect", { project_id: projectId }));
   await step("transition INSPECT→INTENT", () =>
@@ -949,7 +1032,7 @@ async function bootstrapToPlan({ projectId, target, intentAnswers, briefBody }) 
 // lint-ruleset gating at save (chaptered vs retention), and the target.fps →
 // data-fps QC path. No renders.
 
-function generalScene({ sceneId, sequence, purpose, win, targetSeconds, sourcePath }) {
+function generalScene({ sceneId, sequence, purpose, win, targetSeconds, sourcePath, pacing = "medium" }) {
   return {
     scene_id: sceneId,
     sequence,
@@ -961,7 +1044,7 @@ function generalScene({ sceneId, sequence, purpose, win, targetSeconds, sourcePa
     ],
     overlays: [],
     captions: null,
-    pacing: "medium",
+    pacing,
   };
 }
 
@@ -992,6 +1075,30 @@ async function runGeneral() {
       `expected derived long-form, got ${JSON.stringify(v)}`);
     assert(v.lint_ruleset === "chaptered" && v.segmentation === "auto" && v.clean_cut === true,
       `unexpected long-form preset digest: ${JSON.stringify(v)}`);
+  });
+
+  // 1b. Guided-INTENT optional keys (design_language / pacing_intent / hook_intent):
+  //     recordable as plain free-text, NEVER gate (absent from missing_required_keys),
+  //     and ride through the summary's intent.answers verbatim so PLAN/COMPOSE read them.
+  await step("optional guided-intent keys record, never gate, ride through", async () => {
+    const guided = {
+      design_language: "headline Anton; captions Inter 900; bg #000 / text #FFF / accent #FF3B30; bold-pop ALL-CAPS captions",
+      pacing_intent: "fast, tighter on the back half",
+      hook_intent: "open on the result at 1:10",
+      broll_intent: "illustrative — cut away when it depicts the point",
+    };
+    for (const [k, v] of Object.entries(guided)) {
+      const rec = await call("vob_record_intent_answer", { project_id: GEN, key: k, value: v });
+      assert(typeof rec.recorded.value === "string" && rec.recorded.value === v,
+        `optional key ${k} must stay a plain free-text string (not canonicalized to an object), got ${JSON.stringify(rec.recorded.value)}`);
+      assert(!(rec.missing_required_keys || []).includes(k),
+        `optional key ${k} must never appear in missing_required_keys, got ${JSON.stringify(rec.missing_required_keys)}`);
+    }
+    const s = await call("vob_read_state_summary", { project_id: GEN });
+    for (const [k, v] of Object.entries(guided)) {
+      assert(s.intent.answers[k] === v,
+        `summary must echo optional key ${k} verbatim, got ${JSON.stringify(s.intent.answers[k])}`);
+    }
   });
 
   // 2. Free-text intent answer canonicalizes; summary rotates to source:intent;
@@ -1091,6 +1198,97 @@ async function runGeneral() {
       `retention ruleset must warn hook-not-first, got ${JSON.stringify(codes)}`);
     assert(!codes.includes("PLAN_CHAPTERS_MISSING"),
       `retention ruleset must not run chapter rules, got ${JSON.stringify(codes)}`);
+  });
+
+  // 6b. v3 PLAN levers — design tokens, pacing arc, caption plan. social-short
+  //     (retention) is the active video_type here.
+  await step("design_default surfaces (summary + doctor)", async () => {
+    const s = await call("vob_read_state_summary", { project_id: GEN });
+    const dd = s.video_type.design_default;
+    assert(dd && dd.caption_style && dd.typography && dd.palette,
+      `summary video_type.design_default missing: ${JSON.stringify(dd)}`);
+    const doc = await call("vob_doctor", { project_id: GEN });
+    const social = (doc.video_types.presets || []).find((p) => p.name === "social-short");
+    assert(social && social.design_default && social.design_default.caption_style === "bold-pop",
+      `doctor preset design_default missing/wrong: ${JSON.stringify(social && social.design_default)}`);
+  });
+
+  const dw = [0.1, 0.3, 0.5, 0.7].map((f) => placeWindow({ keepSpans: null, len: 2, preferStart: D * f, durationSeconds: D }));
+  const genSb = (extra) => ({
+    schema_version: "1.0", project_id: GEN, generated_at: new Date().toISOString(),
+    source: { manifest_path: boot.summary.manifest.path, brief_path: boot.savedBrief.brief_path },
+    target: { platform: "tiktok", duration_seconds: 8, tone: "energetic" },
+    total_target_duration_seconds: 8,
+    ...extra,
+  });
+
+  await step("pacing-arc: monotone (4× medium) warns; design tokens clean", async () => {
+    const sb = genSb({
+      target: {
+        platform: "tiktok", duration_seconds: 8, tone: "energetic",
+        design: { palette: { bg: "#000", accent: "#FFD60A" }, typography: { headline: "Anton", caption: "Inter" }, caption_style: "bold-pop", motion: "fast-snap" },
+      },
+      scenes: [
+        generalScene({ sceneId: "m001", sequence: 1, purpose: "hook", win: dw[0], targetSeconds: 2, sourcePath: srcPath, pacing: "medium" }),
+        generalScene({ sceneId: "m002", sequence: 2, purpose: "beat", win: dw[1], targetSeconds: 2, sourcePath: srcPath, pacing: "medium" }),
+        generalScene({ sceneId: "m003", sequence: 3, purpose: "beat", win: dw[2], targetSeconds: 2, sourcePath: srcPath, pacing: "medium" }),
+        generalScene({ sceneId: "m004", sequence: 4, purpose: "payoff", win: dw[3], targetSeconds: 2, sourcePath: srcPath, pacing: "medium" }),
+      ],
+    });
+    const saved = await call("vob_save_storyboard", { project_id: GEN, content: sb });
+    assert(saved.plan_lint.error_count === 0, "design/pacing fixture reported plan-lint errors");
+    const codes = (saved.plan_lint.warnings || []).map((w) => w.code);
+    assert(codes.includes("PLAN_PACING_MONOTONE"), `expected PLAN_PACING_MONOTONE, got ${JSON.stringify(codes)}`);
+    assert(!codes.includes("PLAN_RHYTHM_ARC_INVERTED"), `all-equal pacing is not inverted, got ${JSON.stringify(codes)}`);
+    // The structured design block validates and never lints.
+    const md = fs.readFileSync(saved.markdown_path, "utf8");
+    assert(/- Design:/.test(md) && /caption style bold-pop/.test(md), "storyboard.md missing the Design block");
+  });
+
+  const invertedSb = genSb({
+    target: { platform: "tiktok", duration_seconds: 6, tone: "energetic" },
+    total_target_duration_seconds: 6,
+    scenes: [
+      generalScene({ sceneId: "i001", sequence: 1, purpose: "hook", win: dw[0], targetSeconds: 2, sourcePath: srcPath, pacing: "slow" }),
+      generalScene({ sceneId: "i002", sequence: 2, purpose: "beat", win: dw[1], targetSeconds: 2, sourcePath: srcPath, pacing: "fast" }),
+      generalScene({ sceneId: "i003", sequence: 3, purpose: "payoff", win: dw[2], targetSeconds: 2, sourcePath: srcPath, pacing: "fast" }),
+    ],
+  });
+  await step("pacing-arc: inverted (slow hook → fast) warns under retention", async () => {
+    const saved = await call("vob_save_storyboard", { project_id: GEN, content: invertedSb });
+    const codes = (saved.plan_lint.warnings || []).map((w) => w.code);
+    assert(codes.includes("PLAN_RHYTHM_ARC_INVERTED"), `expected PLAN_RHYTHM_ARC_INVERTED, got ${JSON.stringify(codes)}`);
+  });
+  await step("pacing-arc: inverted is GATED OFF under the cinematic ruleset", async () => {
+    process.env.VOB_VIDEO_TYPE = "cinematic";
+    try {
+      const saved = await call("vob_save_storyboard", { project_id: GEN, content: invertedSb });
+      const codes = (saved.plan_lint.warnings || []).map((w) => w.code);
+      assert(!codes.includes("PLAN_RHYTHM_ARC_INVERTED"),
+        `cinematic ruleset must gate off PLAN_RHYTHM_ARC_INVERTED, got ${JSON.stringify(codes)}`);
+    } finally {
+      delete process.env.VOB_VIDEO_TYPE;
+    }
+  });
+
+  await step("caption-plan: chunk-too-long + emphasis-not-in-text + timing-drift warn", async () => {
+    const win = dw[0];
+    // captions:null avoids the captions-on-silent ERROR; caption_segments lint
+    // is independent of the `captions` summary string.
+    const capScene = {
+      ...generalScene({ sceneId: "cap1", sequence: 1, purpose: "hook", win, targetSeconds: 2, sourcePath: srcPath, pacing: "fast" }),
+      caption_segments: [
+        { text: "this kinetic caption chunk has far too many words to read", start_seconds: round3(win.in + 0.1), end_seconds: round3(win.in + 1.2) },
+        { text: "short and sweet", start_seconds: round3(win.in + 1.3), end_seconds: round3(win.in + 1.9), emphasis_words: ["absent"] },
+        { text: "way off", start_seconds: round3(win.out + 5), end_seconds: round3(win.out + 6) },
+      ],
+    };
+    const saved = await call("vob_save_storyboard", { project_id: GEN, content: genSb({ target: { platform: "tiktok", duration_seconds: 2, tone: "energetic" }, total_target_duration_seconds: 2, scenes: [capScene] }) });
+    const codes = (saved.plan_lint.warnings || []).map((w) => w.code);
+    for (const code of ["PLAN_CAPTION_CHUNK_TOO_LONG", "PLAN_CAPTION_EMPHASIS_NOT_IN_TEXT", "PLAN_CAPTION_TIMING_DRIFT"]) {
+      assert(codes.includes(code), `expected ${code}, got ${JSON.stringify(codes.filter((c) => /CAPTION/.test(c)))}`);
+    }
+    console.log(`\n   caption warnings: ${codes.filter((c) => /CAPTION/.test(c)).join(", ")}`);
   });
 
   // 7. fps path: cinematic 24fps plan → composition without data-fps warns
