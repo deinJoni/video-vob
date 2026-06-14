@@ -335,6 +335,35 @@ function validateDesign(design, errors, where = "target.design") {
   }
 }
 
+// Optional target.distribution: post-copy metadata the packager surfaces at
+// PACKAGE / import (title/description/hashtags/cta the human pastes into the
+// upload form). Additive and non-version-gated like target.design/target.fps,
+// loosely shape-checked on purpose: distribution is advisory creative copy, so
+// it NEVER lints and never gates — only a malformed *shape* rejects at save.
+// Every field is optional.
+function validateDistribution(distribution, errors, where = "target.distribution") {
+  if (!isPlainObject(distribution)) {
+    errors.push(`${where} must be an object when present`);
+    return;
+  }
+  for (const field of ["title", "description", "cta"]) {
+    if (distribution[field] !== undefined && distribution[field] !== null && !isNonEmptyString(distribution[field])) {
+      errors.push(`${where}.${field} must be a non-empty string when present`);
+    }
+  }
+  if (distribution.hashtags !== undefined && distribution.hashtags !== null) {
+    if (!Array.isArray(distribution.hashtags)) {
+      errors.push(`${where}.hashtags must be an array of non-empty strings when present`);
+    } else {
+      distribution.hashtags.forEach((tag, ix) => {
+        if (!isNonEmptyString(tag)) {
+          errors.push(`${where}.hashtags[${ix}] must be a non-empty string`);
+        }
+      });
+    }
+  }
+}
+
 function validateScene(scene, ix, errors, wherePrefix = "", opts = {}) {
   const typedOverlaysAllowed = opts.typedOverlaysAllowed === true;
   const where = `${wherePrefix}scenes[${ix}]`;
@@ -689,6 +718,28 @@ function collectSubjectPlacements(parsed) {
   return out;
 }
 
+// Normalize a storyboard's target.distribution into the post-copy block the
+// packager (and the fan-out deliverables manifest) emit. Chapters-agnostic on
+// purpose: chapters_paste_block is a single-timeline/segmented concept layered
+// on by package-output.js (the one place with chapters); fan-out shorts carry
+// no document-level segments. Returns null only when distribution is entirely
+// absent/not-a-plain-object; otherwise the normalized block, even with some
+// null fields, so an editor sees which fields the storyboarder filled.
+function distributionFromStoryboard(sb) {
+  const d = sb && isPlainObject(sb.target) ? sb.target.distribution : undefined;
+  if (!isPlainObject(d)) return null;
+  const hashtags = Array.isArray(d.hashtags)
+    ? d.hashtags.filter((t) => isNonEmptyString(t)).map((t) => t.trim())
+    : [];
+  return {
+    title: isNonEmptyString(d.title) ? d.title : null,
+    description: isNonEmptyString(d.description) ? d.description : null,
+    hashtags,
+    hashtags_line: hashtags.length > 0 ? hashtags.join(" ") : null,
+    cta: isNonEmptyString(d.cta) ? d.cta : null,
+  };
+}
+
 // --- Multi-short fan-out (schema 1.1) ---------------------------------------
 // shorts[]: N independent timelines in one document — one PLAN gate signs off
 // the whole set; COMPOSE/PREVIEW/RENDER then cycle per short (active-short
@@ -995,6 +1046,11 @@ function validateStoryboard(input) {
     // v3: optional structured design tokens (mirror of the brief Design language).
     if (input.target.design !== undefined && input.target.design !== null) {
       validateDesign(input.target.design, errors);
+    }
+    // PACKAGE-phase post-copy metadata (title/description/hashtags/cta).
+    // Loosely shape-checked, never linted/gated — same family as target.design.
+    if (input.target.distribution !== undefined && input.target.distribution !== null) {
+      validateDistribution(input.target.distribution, errors);
     }
   }
   const sceneOpts = { typedOverlaysAllowed: input.schema_version === "1.2" };
@@ -2296,6 +2352,7 @@ module.exports = {
   clipSpeedOf,
   collectBrollGaps,
   collectSubjectPlacements,
+  distributionFromStoryboard,
   effectiveClipDuration,
   expectedTimelineDurationSeconds,
   findTimeline,

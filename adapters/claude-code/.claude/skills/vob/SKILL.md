@@ -7,6 +7,7 @@ allowed-tools:
   - mcp__vob__vob_doctor
   - mcp__vob__vob_read_state
   - mcp__vob__vob_read_state_summary
+  - mcp__vob__vob_compare_iterations
   - mcp__vob__vob_transition_phase
   - mcp__vob__vob_ingest_file
   - mcp__vob__vob_inspect_source

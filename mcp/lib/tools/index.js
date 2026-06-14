@@ -5,6 +5,7 @@ const TOOL_MODULES = Object.freeze([
   require("./doctor.js"),
   require("./read-state.js"),
   require("./read-state-summary.js"),
+  require("./compare-iterations.js"),
   require("./transition-phase.js"),
   require("./ingest-file.js"),
   require("./inspect-source.js"),

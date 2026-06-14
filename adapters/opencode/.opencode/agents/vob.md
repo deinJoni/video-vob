@@ -268,7 +268,9 @@ refuses) — present `deliverables/manifest.json` instead. Import-deliverable es
 this phase file.
 
 **ITERATE** — `vob_vob_finalize_iteration`; offer done / revise-compose / revise-plan; back-edges
-archive automatically — surface the paths.
+archive automatically — surface the paths. With two or more archived iterations,
+`vob_vob_compare_iterations { project_id }` (read-only) shows the duration/size/revision/scene-set
+delta between cuts (`null` = unknown, never `0`) to ground a revise-vs-keep call.
 
 ## Escape hatch
 `vob_vob_import_deliverable` records finished deliverables — BOTH the on-rails fan-out loop

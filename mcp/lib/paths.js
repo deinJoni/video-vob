@@ -349,12 +349,31 @@ function packageThumbnailPath(projectId) {
   return path.join(packageDir(projectId), "thumbnail.jpg");
 }
 
+function packageCaptionsSrtPath(projectId) {
+  return path.join(packageDir(projectId), "captions.srt");
+}
+
+function packageCaptionsVttPath(projectId) {
+  return path.join(packageDir(projectId), "captions.vtt");
+}
+
+function packagePostersDir(projectId) {
+  return path.join(packageDir(projectId), "posters");
+}
+
 function packageManifestPath(projectId) {
   return path.join(packageDir(projectId), "manifest.json");
 }
 
 function packageReadmePath(projectId) {
   return path.join(packageDir(projectId), "README.md");
+}
+
+// Multi-aspect dumb-crop variants (opt-in, labeled-lossy). Lives UNDER package/,
+// so it is wiped/recreated every package run and archived with the rest of
+// package/ on a back-edge — never under deliverables/.
+function packageVariantsDir(projectId) {
+  return path.join(packageDir(projectId), "variants");
 }
 
 // Where externally-produced finals are recorded (the multi-deliverable / clip
@@ -417,11 +436,15 @@ module.exports = {
   inspectTranscriptsDir,
   manifestPath,
   deliverablesDir,
+  packageCaptionsSrtPath,
+  packageCaptionsVttPath,
   packageDir,
   packageFinalMp4Path,
   packageManifestPath,
+  packagePostersDir,
   packageReadmePath,
   packageThumbnailPath,
+  packageVariantsDir,
   previewDir,
   renderStderrLogPath,
   rendersDir,

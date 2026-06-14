@@ -38,3 +38,11 @@ back-edge to revise — back-edges from ITERATE archive the current iteration au
 
 4. The user never loses prior iterations — if they ask where v1 went after iterating to v2,
    point at `~/video-vob-sessions/<project_id>/archive/v1/`.
+
+5. **"What changed between cuts?"** — once two or more iterations are archived, answer with
+   `vob_vob_compare_iterations { project_id }` (read-only; defaults to the two most recent
+   archived versions, or pass explicit `from_version`/`to_version`). It returns render
+   duration + file-size deltas, composition/storyboard revision deltas, and the scene-id set
+   delta (`scenes.{added,removed,reordered}`). `null` deltas mean "unknown / not rendered at
+   that version" — never report them as `0`. Use it to ground a revise-vs-keep decision before
+   back-edging.
