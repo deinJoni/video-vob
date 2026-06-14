@@ -1,7 +1,7 @@
-# video-vob v4 — PRD: Deep Inspect
+# video-vob v3.2 — PRD: Deep Inspect
 
-**Status:** ALL THREE PILLARS SHIPPED (2026-06-14, `.vob/VERSION` → 3.1.0). v4 complete.
-**Target version:** `.vob/VERSION` 3.0.0 → **3.1.0** (additive, fully back-compatible — no FSM edges change, all new state/artifact fields are optional with read-time defaults)
+**Status:** ALL THREE PILLARS SHIPPED (2026-06-14, `.vob/VERSION` → 3.2.0). v3.2 complete.
+**Target version:** `.vob/VERSION` → **3.2.0** — the Deep Inspect increment ships as part of the 3.2 release (additive, fully back-compatible — no FSM edges change, all new state/artifact fields are optional with read-time defaults)
 
 > **Implementation note (P1+P2+P3, 2026-06-14).** All three pillars built and walker-verified
 > (`general`/`fanout`/`overlays`/`gaps` green). P2 audio analysis verified numerically on a live
@@ -30,9 +30,9 @@ but three things are deliberately shallow:
 | 2 | Audio analysis | Audio is extracted as **mono 16 kHz** for ASR (L/R discarded). Only **per-file** LUFS/LRA/true-peak captured; no channel/balance/correlation, no per-segment loudness, no normalization advisory. | `mcp/lib/inspect.js`, `mcp/lib/silence-detector.js`, `mcp/lib/ffprobe.js` |
 | 3 | Visual tagging | `shot_type` / `subject_position` / `framing_ok_for_vertical` + a B-roll `description`. No "what is shown" content fields, no on-screen text, no camera-movement, no explicit per-file roles for the multi-file case. | `mcp/lib/classification-schema.js`, `adapters/claude-code/.claude/agents/inspector.md` |
 
-v4 deepens INSPECT along those three axes **without** new engine npm deps (ASR stays a
+v3.2 deepens INSPECT along those three axes **without** new engine npm deps (ASR stays a
 pluggable Python subprocess; audio analysis is ffmpeg; tagging is the vision-capable
-inspector), without new FSM phases, and without breaking pre-v4 sessions.
+inspector), without new FSM phases, and without breaking pre-v3.2 sessions.
 
 ---
 
@@ -60,7 +60,7 @@ inspector), without new FSM phases, and without breaking pre-v4 sessions.
   alignment backend → native-timestamp transcript with `aligned:false`; no ffmpeg filter →
   current per-file LUFS only; classification fields stay optional.
 - **Disk is truth; additive state.** New fields are optional with read-time defaults;
-  `summarize*` helpers tolerate their absence. Pre-v4 `state.json` / `inspect.json` /
+  `summarize*` helpers tolerate their absence. Pre-v3.2 `state.json` / `inspect.json` /
   `segments.json` load unchanged.
 - **No FSM changes.** `INGEST→INSPECT` and `INSPECT→INTENT` gates are untouched (they check
   summary existence + acknowledgement, not these fields). No edges added.
@@ -204,7 +204,7 @@ shown** — with the multi-file case first-class.
 **Approach.**
 
 1. **Richer classification schema** (`classification-schema.js`, all **optional**,
-   validated only-when-present so pre-v4 payloads pass; bump `SCHEMA_VERSION` 1.0 → 1.1):
+   validated only-when-present so pre-v3.2 payloads pass; bump `SCHEMA_VERSION` 1.0 → 1.1):
    - shared/ref add: `camera_movement` enum (`static`/`pan`/`tilt`/`handheld`/`zoom`/`drone`/
      `other`), `setting` enum (`indoor`/`outdoor`/`studio`/`screen`/`graphic`/`other`),
      `content_tags[]` (free strings — subjects/objects), `on_screen_text` (string, vision-read),
@@ -240,7 +240,7 @@ shown** — with the multi-file case first-class.
 fields).
 
 **Acceptance.** A multi-file fixture classifies with `file_roles[]` populated, B-roll clips
-carry `b_roll_role` + `content_tags`, on-screen-text fields populate where present; pre-v4
+carry `b_roll_role` + `content_tags`, on-screen-text fields populate where present; pre-v3.2
 classification payloads (no new fields) still validate; `state.inspect.classification` carries
 the new counts; walker green on both paths.
 
@@ -252,7 +252,7 @@ the new counts; walker green on both paths.
   gains an optional per-segment loudness field (additive, no cache invalidation — the
   detection cache keys on `SEGMENT_SCHEMA_VERSION`, untouched). Transcript gains a doc-level
   `aligned` marker (not a per-word breaking change).
-- **`.vob/VERSION`:** 3.0.0 → 3.1.0 on completion.
+- **`.vob/VERSION`:** 3.2.0 on completion (folded into the 3.2 release).
 - **Gates:** none change. `INSPECT→INTENT` still checks summary existence + acknowledgement.
 - **State:** all additions optional with read-time defaults; `summarizeInspect` extended for
   the new `audio` / alignment / classification-count fields.

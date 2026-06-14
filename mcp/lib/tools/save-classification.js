@@ -55,7 +55,7 @@ function countHookTagged(arollPool, brollIndex) {
     + clips.filter((c) => c && c.hook_candidate === true).length;
 }
 
-// v3.1 P3 quality notes (never gates, like visual_coverage). Counted across BOTH
+// v3.2 P3 quality notes (never gates, like visual_coverage). Counted across BOTH
 // pools: entries that carry non-empty content_tags, and entries with on-screen
 // text the inspector read off the frame.
 function poolEntries(arollPool, brollIndex) {
@@ -83,7 +83,7 @@ function saveClassification(args) {
   const arollPool = args && args.aroll_pool;
   const brollIndex = args && args.broll_index;
   const review = args && args.review;
-  const fileRoles = args && args.file_roles; // optional (v3.1 P3)
+  const fileRoles = args && args.file_roles; // optional (v3.2 P3)
 
   const state = readSessionStateStrict(id);
   if (state.phase !== "INSPECT") {
@@ -167,7 +167,7 @@ function saveClassification(args) {
         broll_total: brollCount,
       },
       hook_tagged_count: countHookTagged(arollPool, brollIndex),
-      // v3.1 P3 — richer-tagging coverage notes + the multi-file role map.
+      // v3.2 P3 — richer-tagging coverage notes + the multi-file role map.
       content_tagged_count: countContentTagged(arollPool, brollIndex),
       on_screen_text_count: countOnScreenText(arollPool, brollIndex),
       file_role_count: Array.isArray(fileRoles) ? fileRoles.length : 0,
@@ -214,7 +214,7 @@ module.exports = Object.freeze({
       aroll_pool: { type: "object", additionalProperties: true },
       broll_index: { type: "object", additionalProperties: true },
       review: { type: "object", additionalProperties: true },
-      // Optional (v3.1 P3) top-level per-file role map. Free-form entries —
+      // Optional (v3.2 P3) top-level per-file role map. Free-form entries —
       // shape ({file_index, role, summary}) validated by the handler.
       file_roles: { type: "array", items: { type: "object", additionalProperties: true } },
     },

@@ -3,6 +3,10 @@ node_modules/
 .env
 .env.*
 
+# Local Claude Code session state (settings, locks, agent-memory) — not the
+# adapters/claude-code/.claude/ template, which is tracked.
+/.claude/
+
 # Source/render media — never commit large binaries to the template
 *.mp4
 *.MP4

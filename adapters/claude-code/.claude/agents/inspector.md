@@ -51,7 +51,7 @@ Classification is confidence-scored, not a hard binary — when a segment is pla
 
 **Structured visual fields.** For every A-roll and B-roll entry, also record what the frame shows: `shot_type`: one of `extreme_closeup | closeup | medium | wide | screen | graphic | other` (`screen` = screen-recording/UI capture, `graphic` = title card/slide/chart; drone footage is `wide`, cutaway detail shots are usually `closeup` or `other` — the enum has no other values, anything else is rejected); `subject_position`: `left | center | right | none` (`none` for empty/abstract frames with no primary subject); `framing_ok_for_vertical`: true when a 9:16 center crop keeps the subject and any on-frame text fully visible. These feed the storyboarder's platform framing decisions — judge them from the strip cell, not the metadata.
 
-**Richer "what is shown" fields (v3.1, all optional but record them when you can read them).** From the same strip cell / keyframe:
+**Richer "what is shown" fields (v3.2, all optional but record them when you can read them).** From the same strip cell / keyframe:
 - `camera_movement`: `static | pan | tilt | handheld | zoom | drone | other` — read motion across a strip's cells (a single still can't show motion; the strip's progression can). Default `static` if you can't tell.
 - `setting`: `indoor | outdoor | studio | screen | graphic | other`.
 - `content_tags`: a few free-text nouns for **what is in the frame** — subjects, objects, location ("whiteboard", "city skyline", "espresso machine", "hands typing"). This is the "what is shown" index the storyboarder searches for B-roll.

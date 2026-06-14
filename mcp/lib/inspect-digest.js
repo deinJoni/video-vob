@@ -367,7 +367,7 @@ function visualIndexSection(strips, thumbs) {
   return lines.join("\n");
 }
 
-// v3.1 P2 — per-file loudness/channel layout/balance + the −14 LUFS gain plan
+// v3.2 P2 — per-file loudness/channel layout/balance + the −14 LUFS gain plan
 // and the recommended clean voice track. `audio` is the compact summary from
 // runAudioAnalysisPass (or null when the pass was disabled / found no audio).
 function audioSection(audio) {

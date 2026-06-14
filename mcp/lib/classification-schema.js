@@ -7,7 +7,7 @@
 // real detected segment (so the agent can't hallucinate segments), while
 // staying permissive about extra descriptive fields the agent may add.
 
-// 1.1 (v3.1 P3): richer visual tagging — adds OPTIONAL camera_movement/setting/
+// 1.1 (v3.2 P3): richer visual tagging — adds OPTIONAL camera_movement/setting/
 // content_tags/on_screen_text/action (shared), content_description/eyes_to_camera
 // (A-roll), b_roll_role (B-roll), and a top-level file_roles[] map. Every
 // addition is validated only-when-present, so a 1.0 payload (no new fields) still
@@ -23,7 +23,7 @@ const SCHEMA_VERSION = "1.1";
 const SHOT_TYPES = Object.freeze(["extreme_closeup", "closeup", "medium", "wide", "screen", "graphic", "other"]);
 const SUBJECT_POSITIONS = Object.freeze(["left", "center", "right", "none"]);
 
-// v3.1 P3 enums (all OPTIONAL). camera_movement/setting describe HOW and WHERE a
+// v3.2 P3 enums (all OPTIONAL). camera_movement/setting describe HOW and WHERE a
 // shot was taken; b_roll_role is the editorial function of a coverage clip;
 // file_roles[].role is the per-file map for multi-file drops (which file is the
 // talking-head spine vs coverage vs voiceover).
@@ -96,7 +96,7 @@ function validateRef(entry, where, segIndex, errors) {
   if (entry.framing_ok_for_vertical !== undefined && typeof entry.framing_ok_for_vertical !== "boolean") {
     errors.push(`${where}.framing_ok_for_vertical must be a boolean when present`);
   }
-  // v3.1 P3 shared visual fields (all optional; on both A-roll and B-roll).
+  // v3.2 P3 shared visual fields (all optional; on both A-roll and B-roll).
   if (entry.camera_movement !== undefined && !CAMERA_MOVEMENTS.includes(entry.camera_movement)) {
     errors.push(`${where}.camera_movement must be one of ${CAMERA_MOVEMENTS.join("|")} when present`);
   }
@@ -154,7 +154,7 @@ function validateArollPool(pool, segIndex, errors) {
       if (seg && seg.hook_reason !== undefined && typeof seg.hook_reason !== "string") {
         errors.push(`${where}.hook_reason must be a string when present`);
       }
-      // v3.1 P3 A-roll fields (optional): what's shown beyond the words, and
+      // v3.2 P3 A-roll fields (optional): what's shown beyond the words, and
       // whether the subject addresses the camera.
       if (seg && seg.content_description !== undefined && typeof seg.content_description !== "string") {
         errors.push(`${where}.content_description must be a string when present`);
@@ -210,14 +210,14 @@ function validateBrollIndex(index, segIndex, errors) {
     if (clip && clip.hook_reason !== undefined && typeof clip.hook_reason !== "string") {
       errors.push(`${where}.hook_reason must be a string when present`);
     }
-    // v3.1 P3 B-roll field (optional): the editorial function of the coverage.
+    // v3.2 P3 B-roll field (optional): the editorial function of the coverage.
     if (clip && clip.b_roll_role !== undefined && !BROLL_ROLES.includes(clip.b_roll_role)) {
       errors.push(`${where}.b_roll_role must be one of ${BROLL_ROLES.join("|")} when present`);
     }
   });
 }
 
-// v3.1 P3 — the explicit multi-file map (optional, top-level). One entry per
+// v3.2 P3 — the explicit multi-file map (optional, top-level). One entry per
 // file naming whether it's the talking-head spine, coverage, voiceover, or
 // mixed. `validFileIndices` (a Set, when segments.json is available) rejects a
 // role pointing at a file that wasn't ingested.
@@ -279,7 +279,7 @@ function validateClassification(input, segmentsDoc = null) {
   else validateBrollIndex(input.broll_index, segIndex, errors);
   if (!isPlainObject(input.review)) errors.push("review is required");
   else validateReview(input.review, segIndex, errors);
-  // file_roles is OPTIONAL (v3.1 P3). When segments.json is available, cross-check
+  // file_roles is OPTIONAL (v3.2 P3). When segments.json is available, cross-check
   // each role's file_index against the real ingested files.
   if (input.file_roles !== undefined) {
     let validFileIndices = null;

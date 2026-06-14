@@ -476,7 +476,7 @@ function readTranscriptCache(projectId, hash, params) {
   if (p.backend !== params.backend || p.model !== params.model || p.language !== params.language) return null;
   // `align` keys karaoke-grade timing: a cache written before alignment was
   // available (p.align undefined → false) is NOT served when alignment is now
-  // wanted (params.align true). Missing == false keeps pre-v3.1 caches valid
+  // wanted (params.align true). Missing == false keeps pre-v3.2 caches valid
   // when no alignment backend is present.
   if ((p.align === true) !== (params.align === true)) return null;
   if (!Array.isArray(doc.words)) return null;
@@ -741,7 +741,7 @@ function collectLowConfidenceWords(words) {
 }
 
 // Resolve an audio file's channel count + layout for the analysis pass. Prefers
-// the v3.1 enriched manifest detail (audio_streams_detail) but falls back to the
+// the v3.2 enriched manifest detail (audio_streams_detail) but falls back to the
 // retained raw ffprobe `probe` (legacy/unchanged manifest entries lack the
 // enriched field) so the pass works on any manifest vintage.
 function resolveAudioStreamInfo(file) {
@@ -765,7 +765,7 @@ function resolveAudioStreamInfo(file) {
   return { channels: null, channel_layout: null };
 }
 
-// v3.1 P2 — per audio file: per-channel loudness/balance/phase analysis on the
+// v3.2 P2 — per audio file: per-channel loudness/balance/phase analysis on the
 // ORIGINAL stream (not the mono ASR downmix), the −14 LUFS normalization
 // advisory, and the clean-voice-track hint. Writes inspect/audio_analysis.json
 // and returns a compact summary for state/result/digest. Best-effort: a failure
@@ -1219,7 +1219,7 @@ async function runInspect({ projectId, manifest, options = {} }) {
     files: segmentation.fileSummaries,
   }, null, 2)}\n`);
 
-  // Audio analysis (v3.1 P2): per-channel loudness/balance/phase + normalization
+  // Audio analysis (v3.2 P2): per-channel loudness/balance/phase + normalization
   // advisory + clean-track hint on the ORIGINAL audio. Best-effort, never aborts.
   let audioAnalysisPathOut = null;
   let audioSummaryOut = null;

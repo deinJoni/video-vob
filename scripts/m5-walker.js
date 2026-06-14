@@ -460,7 +460,7 @@ function cannedClassification(segmentsDoc) {
           confidence: 0.9,
           take_group: null,
           is_best_take: true,
-          // v3.1 P3 richer visual fields (exercise validation + counts).
+          // v3.2 P3 richer visual fields (exercise validation + counts).
           shot_type: "medium",
           subject_position: "center",
           framing_ok_for_vertical: true,
@@ -483,7 +483,7 @@ function cannedClassification(segmentsDoc) {
           has_motion: false,
           has_usable_audio: false,
           confidence: 0.9,
-          // v3.1 P3 richer visual fields.
+          // v3.2 P3 richer visual fields.
           shot_type: "wide",
           subject_position: "none",
           framing_ok_for_vertical: true,
@@ -497,7 +497,7 @@ function cannedClassification(segmentsDoc) {
       }
     }
   }
-  // v3.1 P3 multi-file role map — one entry per file (seeded from its prior).
+  // v3.2 P3 multi-file role map — one entry per file (seeded from its prior).
   const fileRoles = files
     .filter((f) => Number.isInteger(f.file_index))
     .map((f) => ({
@@ -950,10 +950,10 @@ async function bootstrapToPlan({ projectId, target, intentAnswers, briefBody }) 
   const inspect = await step("inspect (ffmpeg + ASR)", () =>
     call("vob_inspect_source", { project_id: projectId }),
   );
-  // v3.1 INSPECT deep-inspect signals (P1 alignment marker + P2 audio analysis).
+  // v3.2 INSPECT deep-inspect signals (P1 alignment marker + P2 audio analysis).
   // Degrade-aware: transcript_aligned is true only when an alignment backend
   // (whisperx) is installed — the assertions hold either way.
-  await step("v3.1 inspect signals (P1 transcript_aligned + P2 audio)", async () => {
+  await step("v3.2 inspect signals (P1 transcript_aligned + P2 audio)", async () => {
     assert(typeof inspect.transcript_aligned === "boolean",
       `transcript_aligned must be boolean, got ${JSON.stringify(inspect.transcript_aligned)}`);
     if (inspect.audio_present) {
@@ -983,9 +983,9 @@ async function bootstrapToPlan({ projectId, target, intentAnswers, briefBody }) 
     const cls = await step("save classification (canned)", () =>
       call("vob_save_classification", { project_id: projectId, ...cannedClassification(segmentsDoc) }),
     );
-    // v3.1 P3: richer-tagging coverage counts + the multi-file role map, both on
+    // v3.2 P3: richer-tagging coverage counts + the multi-file role map, both on
     // the save return and surfaced by read_state_summary (quality notes, no gate).
-    await step("v3.1 classification tagging (P3 counts + file_roles)", async () => {
+    await step("v3.2 classification tagging (P3 counts + file_roles)", async () => {
       const fileCount = Array.isArray(segmentsDoc.files) ? segmentsDoc.files.length : 0;
       assert(cls.file_role_count === fileCount,
         `file_role_count ${cls.file_role_count} != file count ${fileCount}`);

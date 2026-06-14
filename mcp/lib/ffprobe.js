@@ -252,7 +252,7 @@ function signalstatsLuma(filePath, { timeoutMs = SIGNALSTATS_TIMEOUT_MS } = {}) 
   return { probed: true, ymin, yavg, ymax };
 }
 
-// Per-audio-stream detail for the v3.1 audio-analysis pass (channels/layout/
+// Per-audio-stream detail for the v3.2 audio-analysis pass (channels/layout/
 // sample rate/bit depth/language). Additive: the scalar `audio_streams` count
 // stays for back-compat. bit_depth prefers bits_per_raw_sample (the true source
 // depth) over bits_per_sample (0 for compressed codecs).

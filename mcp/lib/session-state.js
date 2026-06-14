@@ -213,7 +213,7 @@ function summarizeClassification(slot) {
     review_pool_path: strOrNull(c.review_pool_path != null ? c.review_pool_path : c.review_path),
     visual_coverage: asSlot(c.visual_coverage),
     hook_tagged_count: intOr(c.hook_tagged_count, null),
-    // v3.1 P3 richer-tagging coverage notes + the multi-file role map.
+    // v3.2 P3 richer-tagging coverage notes + the multi-file role map.
     content_tagged_count: intOr(c.content_tagged_count, 0),
     on_screen_text_count: intOr(c.on_screen_text_count, 0),
     file_role_count: intOr(c.file_role_count, 0),
@@ -235,7 +235,7 @@ function summarizeInspect(slot) {
     contact_sheet_paths: arrOr(i.contact_sheet_paths),
     audio_present: i.audio_present === true,
     speech_detected: i.speech_detected === true,
-    // v3.1 P1/P2 — karaoke-grade word timing marker + the audio-analysis summary.
+    // v3.2 P1/P2 — karaoke-grade word timing marker + the audio-analysis summary.
     transcript_aligned: i.transcript_aligned === true,
     audio: asSlot(i.audio),
     audio_analysis_path: strOrNull(i.audio_analysis_path),

@@ -64,7 +64,7 @@ function inspectCleanSpeechPath(projectId) {
 }
 
 // Per-channel loudness / balance / phase analysis + the −14 LUFS normalization
-// advisory (v3.1 P2). Regenerated each INSPECT run like the other inspect/ files.
+// advisory (v3.2 P2). Regenerated each INSPECT run like the other inspect/ files.
 function inspectAudioAnalysisPath(projectId) {
   return path.join(inspectDir(projectId), "audio_analysis.json");
 }
