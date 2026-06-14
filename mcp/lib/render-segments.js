@@ -27,6 +27,7 @@ const {
   storyboardSegments,
 } = require("./storyboard-schema.js");
 const { resolveActiveVideoType } = require("./video-types.js");
+const { packScenesGlueAware, seamOf } = require("./transition-glue.js");
 
 function isPlainObject(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -48,7 +49,9 @@ function chunkRow(segmentId, title, scenes, transitionOut) {
     scene_ids: scenes.map((s) => s.scene_id),
     target_duration_seconds: Math.round(scenes.reduce((acc, s) => acc + sceneDuration(s), 0) * 1000) / 1000,
     video_count: scenes.reduce((acc, s) => acc + sceneVideoCount(s), 0),
-    transition_out: transitionOut || "cut",
+    // Normalize to a real ffmpeg seam: a non-seam transition_out degrades to a
+    // dip-to-black "fade" (dissolve family) or a hard "cut" (PRD-02 §7.3).
+    transition_out: seamOf(transitionOut),
   };
 }
 
@@ -107,32 +110,39 @@ function deriveRenderPlan({ storyboard, state }) {
     };
   }
 
-  // auto: chunk within narrative boundaries when declared, else across all
-  // scenes. Splitting a narrative segment yields "<id>-p1", "<id>-p2", ... with
-  // hard cuts at the intra splits and the narrative transition_out on its last
-  // part.
+  // auto: GLUE-AWARE chunking (v3.3). Scenes joined by a non-cut, non-seam
+  // transition_in (isGlueTransition) must render in ONE composition, so we pack
+  // GLUE GROUPS (not bare scenes) to the budget; a glue group still over the hard
+  // cap is split at the cheapest internal boundary with the broken transition
+  // DOWNGRADED to a seam (plan-lint surfaces it as PLAN_TRANSITION_DOWNGRADED).
+  // Splitting a narrative segment yields "<id>-p1", "<id>-p2", ... with the
+  // computed seam (cut, or a downgraded fade) between parts and the narrative
+  // transition_out on its last part. With no glue transitions this reduces to
+  // the historical greedy budget pack (back-compat for all-cut storyboards).
+  const hardCap = hostProfile.videoHardCap();
   const segments = [];
   if (narrative.length > 0) {
     for (const seg of narrative) {
-      const chunks = chunkScenesToBudget(seg.scenes, budget);
+      const { chunks } = packScenesGlueAware(seg.scenes, budget, hardCap, sceneVideoCount);
       if (chunks.length === 1) {
-        segments.push(chunkRow(seg.segment_id, seg.title, chunks[0], seg.transition_out));
+        segments.push(chunkRow(seg.segment_id, seg.title, chunks[0].scenes, seg.transition_out));
       } else {
         chunks.forEach((chunk, ix) => {
           const last = ix === chunks.length - 1;
           segments.push(chunkRow(
             `${seg.segment_id}-p${ix + 1}`,
             `${seg.title} (part ${ix + 1})`,
-            chunk,
-            last ? seg.transition_out : "cut",
+            chunk.scenes,
+            last ? seg.transition_out : chunk.outSeam,
           ));
         });
       }
     }
   } else {
-    const chunks = chunkScenesToBudget(scenes, budget);
+    const { chunks } = packScenesGlueAware(scenes, budget, hardCap, sceneVideoCount);
     chunks.forEach((chunk, ix) => {
-      segments.push(chunkRow(`seg-${ix + 1}`, `Segment ${ix + 1}`, chunk, "cut"));
+      const last = ix === chunks.length - 1;
+      segments.push(chunkRow(`seg-${ix + 1}`, `Segment ${ix + 1}`, chunk.scenes, last ? "cut" : chunk.outSeam));
     });
   }
   if (segments.length <= 1) return { mode: "single" };

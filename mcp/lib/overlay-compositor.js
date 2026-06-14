@@ -101,8 +101,100 @@ async function compositeOverlayOverBase({ basePath, overlayPath, outPath, audio 
   return { ok: true, out_path: outPath, argv };
 }
 
+// --- Subject-compositing backdrop (v3.3) -------------------------------------
+//
+// Path (b) of subject compositing: a designed backdrop the matted subject sits
+// over, generated with ffmpeg from a `design_token` (no synthesized photo/scene —
+// just a solid or a 2-stop linear gradient straight off target.design tokens).
+// The result is fed to compositeOverlayOverBase as the BASE, the matte .webm as
+// the alpha overlay, and the subject's PRE-CUT clip as the audio source:
+//
+//   const bd = await generateBackdrop({ fill, width, height, durationSeconds, outPath });
+//   await compositeOverlayOverBase({ basePath: bd.out_path,
+//     overlayPath: mattePath(...), audio: transcodedClipPath(...), scaleToBase: true });
+//
+// (For a clip_ref / scene_base backdrop, skip generateBackdrop and pass the
+// ingested clip's pre-cut path as basePath — clip-over-clip needs no generation.)
+// compositeOverlayOverBase already covers the subject composite as-is:
+// overlay=format=auto preserves the matte's alpha, and `audio` accepts the
+// subject clip's path so the subject's SPEECH wins over a (muted) backdrop.
+
+// Map a design-token fill string to an ffmpeg color (named, or #RRGGBB -> 0xRRGGBB);
+// anything unparseable falls back to black (a solid, never a synthesized scene).
+function normalizeFfmpegColor(fill) {
+  if (typeof fill !== "string" || !fill.trim()) return "black";
+  const s = fill.trim();
+  if (/^#([0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/.test(s)) return `0x${s.slice(1)}`;
+  if (/^0x[0-9a-fA-F]{6,8}$/.test(s)) return s;
+  if (/^[0-9a-fA-F]{6}$/.test(s)) return `0x${s}`;
+  if (/^[a-zA-Z]+$/.test(s)) return s.toLowerCase();
+  return "black";
+}
+
+// Pull the first two hex stops out of a CSS gradient string for a 2-stop linear
+// ffmpeg gradient. Returns [c0, c1] (0xRRGGBB) or null (=> solid).
+function extractGradientColors(fill) {
+  if (typeof fill !== "string") return null;
+  const hexes = fill.match(/#([0-9a-fA-F]{6})/g);
+  if (hexes && hexes.length >= 2) return [`0x${hexes[0].slice(1)}`, `0x${hexes[1].slice(1)}`];
+  return null;
+}
+
+function buildBackdropArgv({ fill, width, height, durationSeconds, fps = 30, out }) {
+  const w = Math.max(2, Math.round(Number(width) || 1080));
+  const h = Math.max(2, Math.round(Number(height) || 1920));
+  const d = Number.isFinite(durationSeconds) && durationSeconds > 0 ? Number(durationSeconds) : 1;
+  const r = Number.isFinite(fps) && fps > 0 ? Math.round(fps) : 30;
+  const gradient = extractGradientColors(fill);
+  // NB: only the first two color STOPS are honored, and the gradient is always
+  // top→bottom — the CSS angle (e.g. "90deg") is ignored. Path (b) backdrops are
+  // intentionally simple; for a precise multi-stop / angled gradient, use path (a)
+  // (a real CSS background on an HTML/CSS backdrop div).
+  const src = gradient
+    ? `gradients=s=${w}x${h}:c0=${gradient[0]}:c1=${gradient[1]}:x0=0:y0=0:x1=0:y1=${h}:d=${d}:r=${r}`
+    : `color=c=${normalizeFfmpegColor(fill)}:s=${w}x${h}:d=${d}:r=${r}`;
+  return [
+    "-y",
+    "-f", "lavfi",
+    "-i", src,
+    "-c:v", "libx264",
+    "-preset", "medium",
+    "-crf", "18",
+    "-g", "30",
+    "-keyint_min", "30",
+    "-pix_fmt", "yuv420p",
+    "-movflags", "+faststart",
+    out,
+  ];
+}
+
+async function generateBackdrop({ fill, width, height, durationSeconds, fps = 30, outPath, timeoutMs = COMPOSITE_TIMEOUT_MS } = {}) {
+  if (typeof outPath !== "string" || !outPath) throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, "generateBackdrop: outPath is required");
+  fs.mkdirSync(path.dirname(outPath), { recursive: true });
+  const argv = buildBackdropArgv({ fill, width, height, durationSeconds, fps, out: outPath });
+  const result = await runFfmpegBlocking(argv, { timeoutMs });
+  if (result.timed_out) {
+    throw new ToolError(
+      ERROR_CODES.INTERNAL_ERROR,
+      `backdrop generation timed out after ${Math.round(timeoutMs / 1000)}s`,
+      { stderr_preview: stderrTail(result.stderr, 800) },
+    );
+  }
+  if (result.exit_code !== 0 || !fs.existsSync(outPath)) {
+    const stderrPreview = stderrTail(result.stderr, 1200);
+    throw new ToolError(
+      ERROR_CODES.INTERNAL_ERROR,
+      `backdrop generation failed (exit ${result.exit_code}): ${stderrPreview || "no stderr"}`,
+      { exit_code: result.exit_code, stderr_preview: stderrPreview, argv },
+    );
+  }
+  return { ok: true, out_path: outPath, argv };
+}
+
 module.exports = {
   COMPOSITE_TIMEOUT_MS,
   buildOverlayCompositeArgv,
   compositeOverlayOverBase,
+  buildBackdropArgv,
+  generateBackdrop,
 };

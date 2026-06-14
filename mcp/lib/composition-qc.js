@@ -12,6 +12,7 @@ const fs = require("fs");
 const path = require("path");
 
 const { findTimeline, storyboardHasShorts, typedOverlaysOf, captionSegmentsOf } = require("./storyboard-schema.js");
+const { transitionTypeOf } = require("./video-types.js");
 const hostProfile = require("./host-profile.js");
 
 // The <video>-element warn budget / hard cap are host-tunable (a big server
@@ -498,6 +499,54 @@ function runCompositionQc({ files, storyboard, sourceLinks, sceneClipLinks, chec
           el.file,
           el.tag.line,
         ));
+      }
+    }
+  }
+
+  // --- Scene transition realization (v3.3) — ADVISORY ONLY --------------------
+  // A planned non-cut transition_in should leave SOME trace in the composition.
+  // Unlike the overlay/exact-caption hard bindings, transitions are advisory: the
+  // composer may realize a "whip pan" however it likes, and CSS @keyframes can't
+  // be statically proven to animate. So this NEVER errors. Convention: stamp the
+  // incoming scene's transition element with data-vob-transition="<type>" (and,
+  // ideally, data-vob-transition-scene="<scene_id>"). If the composer adopts the
+  // convention we check each planned scene is covered; if it ignores it entirely
+  // we emit ONE gentle nudge rather than per-scene spam.
+  if (sb !== null) {
+    const plannedTransitions = [];
+    scenes.forEach((scene, ix) => {
+      if (!scene || typeof scene.scene_id !== "string" || ix === 0) return;
+      const type = transitionTypeOf(scene.transition_in);
+      if (type !== "cut") plannedTransitions.push({ scene_id: scene.scene_id, type });
+    });
+    if (plannedTransitions.length > 0) {
+      const markedScenes = new Set();
+      let anyMarker = false;
+      for (const f of parsedFiles) {
+        for (const tag of f.tags) {
+          if ("data-vob-transition" in tag.attrs) {
+            anyMarker = true;
+            const sid = tag.attrs["data-vob-transition-scene"];
+            if (typeof sid === "string" && sid) markedScenes.add(sid);
+          }
+        }
+      }
+      if (!anyMarker) {
+        findings.push(makeFinding(
+          "warning",
+          "vob/transition_not_realized",
+          `the plan declares ${plannedTransitions.length} non-cut scene transition(s) (e.g. ${plannedTransitions.slice(0, 3).map((t) => `${t.scene_id}:${t.type}`).join(", ")}) but no element carries data-vob-transition — if you realized them, stamp the incoming scene's transition element with data-vob-transition="<type>" data-vob-transition-scene="<scene_id>" so QC can confirm (advisory; transitions are NOT hard-bound)`,
+        ));
+      } else {
+        for (const t of plannedTransitions) {
+          if (!markedScenes.has(t.scene_id)) {
+            findings.push(makeFinding(
+              "warning",
+              "vob/transition_not_realized",
+              `planned "${t.type}" transition into scene "${t.scene_id}" has no matching data-vob-transition-scene="${t.scene_id}" element — confirm it was realized (advisory)`,
+            ));
+          }
+        }
       }
     }
   }

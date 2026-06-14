@@ -7,7 +7,16 @@ const { intentAnswerRaw } = require("./intent-schema.js");
 const { inspectCleanSpeechPath } = require("./paths.js");
 const { parseDurationSpec, parseDurationToSeconds } = require("./platform-profiles.js");
 const { readJsonFile } = require("./storage.js");
-const { activeLintRules, OVERLAY_TYPES } = require("./video-types.js");
+const {
+  activeLintRules,
+  OVERLAY_TYPES,
+  SEAM_TRANSITION_TYPES,
+  isShaderTransition,
+  resolveActiveVideoType,
+  transitionDurationOf,
+  transitionTypeOf,
+} = require("./video-types.js");
+const { glueDowngrades } = require("./transition-glue.js");
 const hostProfile = require("./host-profile.js");
 
 const SCHEMA_VERSION = "1.0";
@@ -381,12 +390,11 @@ function validateScene(scene, ix, errors, wherePrefix = "", opts = {}) {
       scene.caption_segments.forEach((seg, segIx) => validateCaptionSegment(seg, ix, segIx, errors, wherePrefix));
     }
   }
-  for (const field of ["transition_in", "transition_out"]) {
-    const value = scene[field];
-    if (value !== undefined && value !== null && !SCENE_TRANSITION_SET.has(value)) {
-      errors.push(`${where}.${field} must be one of: ${SCENE_TRANSITIONS.join(", ")} (omit for default cut)`);
-    }
-  }
+  // transition_in / transition_out (v3.3): widened to the typed transition layer
+  // — a string in the active vocabulary OR an object { type, duration_seconds?,
+  // direction?, intensity? }. Validation is LOOSE and FAIL-SAFE (mirrors
+  // target.design): an unknown / off-vocabulary / wrong-typed value NEVER rejects
+  // the save — it falls back to a hard cut and plan-lint WARNS (PLAN_TRANSITION_*).
 }
 
 // Optional top-level broll_placements[]: the storyboarder's explicit record of
@@ -407,8 +415,62 @@ function validateScene(scene, ix, errors, wherePrefix = "", opts = {}) {
 //                  collect into plan/broll_gaps.json (the shopping list) and
 //                  warn at the plan gate; the human resolves one by ingesting
 //                  more footage (the PLAN→INGEST back-edge).
-const BROLL_RENDER_MODES = Object.freeze(["full_frame", "pip", "overlay"]);
+//   subject (v3.3) — a real clip MATTED off its filmed background (hyperframes
+//                  remove-background) and composited over a declared `backdrop`.
+//                  A concrete clip-referencing placement (never a gap); the
+//                  matte is a content-hash-cached COMPOSE-entry side effect.
+const BROLL_RENDER_MODES = Object.freeze(["full_frame", "pip", "overlay", "subject"]);
 const BROLL_RENDER_MODE_SET = new Set(BROLL_RENDER_MODES);
+
+// Backdrop kinds a subject (render_mode:"subject") may be composited onto.
+// design_token (a solid/gradient/target.design palette key) | clip_ref (another
+// INGESTED clip already in the plan, {scene_id, clip_index}) | scene_base (the
+// subject scene's own first clip). NO synthesized/stock/AI backdrops — the same
+// ingested-only contract as the B-roll gap rule. The enum is enforced as a
+// human-visible plan-lint WARNING (PLAN_SUBJECT_BACKDROP_NOT_INGESTED), not a
+// hard shape error, so the "no synthesized backdrop" rule is legible at the gate.
+const BACKDROP_KINDS = Object.freeze(["design_token", "clip_ref", "scene_base"]);
+const BACKDROP_KIND_SET = new Set(BACKDROP_KINDS);
+
+// Shape-check a subject placement's backdrop. SHAPE ONLY — the kind-enum +
+// ingested-resolution semantics are the plan lint's job (a warning, never a
+// block), so a synthesized-backdrop kind reaches the human at the gate rather
+// than silently rejecting the save. Here we only reject a structurally broken
+// backdrop (a subject with nothing to composite onto, or a mistyped field).
+function validateBackdrop(backdrop, where, errors) {
+  if (!isPlainObject(backdrop)) {
+    errors.push(`${where} is required for render_mode:"subject" and must be an object { kind, ... }`);
+    return;
+  }
+  if (backdrop.kind !== undefined && backdrop.kind !== null && !isNonEmptyString(backdrop.kind)) {
+    errors.push(`${where}.kind must be a non-empty string when present`);
+  }
+  // For a RECOGNIZED kind, enforce its required field as a SHAPE error — a
+  // recognized-but-incomplete backdrop renders WRONG (a fill-less design_token
+  // silently falls back to black; a clip-less clip_ref has no base). An
+  // UNRECOGNIZED/missing kind is NOT a shape error — the plan lint warns
+  // PLAN_SUBJECT_BACKDROP_NOT_INGESTED (the human-visible ingested-only guard; a
+  // bad kind WARNS and the save stands, per the PRD contract).
+  if (backdrop.kind === "design_token" && !isNonEmptyString(backdrop.fill)) {
+    errors.push(`${where}.fill is required for a design_token backdrop (a target.design palette key, a #hex, or a CSS gradient)`);
+  }
+  if (backdrop.kind === "clip_ref" && !isPlainObject(backdrop.clip)) {
+    errors.push(`${where}.clip is required for a clip_ref backdrop — { scene_id, clip_index }`);
+  }
+  if (backdrop.fill !== undefined && backdrop.fill !== null && !isNonEmptyString(backdrop.fill)) {
+    errors.push(`${where}.fill must be a non-empty string when present (a target.design palette key, a #hex, or a CSS gradient)`);
+  }
+  if (backdrop.clip !== undefined && backdrop.clip !== null) {
+    const ref = backdrop.clip;
+    if (!isPlainObject(ref) || !isNonEmptyString(ref.scene_id) || !Number.isInteger(ref.clip_index) || ref.clip_index < 0) {
+      errors.push(`${where}.clip must be { scene_id, clip_index } (clip_index a non-negative integer) when present`);
+    }
+  }
+  if (backdrop.blur_px !== undefined && backdrop.blur_px !== null
+    && (!isFiniteNumber(backdrop.blur_px) || backdrop.blur_px < 0)) {
+    errors.push(`${where}.blur_px must be a non-negative finite number when present`);
+  }
+}
 
 function buildSceneClipIndex(scenes) {
   const index = new Map();
@@ -450,8 +512,17 @@ function validateBrollPlacementsList(placements, scenes, wherePrefix, errors, op
     if (p.motion !== undefined && p.motion !== null) {
       if (!v12) {
         errors.push(`${where}.motion requires schema_version "1.2"`);
+      } else if (isPlainObject(p.motion)) {
+        // Object form (subject in/out transitions): { in?, out? } — reuses the
+        // overlay motion vocabulary. Freeform-string treatment notes ("ken_burns",
+        // "speed_ramp") stay valid for the rectangular render modes.
+        for (const field of ["in", "out"]) {
+          if (p.motion[field] !== undefined && p.motion[field] !== null && !isNonEmptyString(p.motion[field])) {
+            errors.push(`${where}.motion.${field} must be a non-empty string when present`);
+          }
+        }
       } else if (!isNonEmptyString(p.motion)) {
-        errors.push(`${where}.motion must be a non-empty string when present`);
+        errors.push(`${where}.motion must be a non-empty string (treatment note) or an object { in?, out? } when present`);
       }
     }
     if (p.source !== undefined && p.source !== null && p.source !== "gap") {
@@ -462,6 +533,9 @@ function validateBrollPlacementsList(placements, scenes, wherePrefix, errors, op
       if (!v12) {
         errors.push(`${where} declares source:"gap" — schema_version must be "1.2"`);
         return;
+      }
+      if (p.render_mode === "subject") {
+        errors.push(`${where} declares render_mode:"subject" but is a gap — subject compositing needs a real clip to matte, not a coverage wish (use a concrete clip placement)`);
       }
       if (p.clip !== undefined && p.clip !== null) {
         errors.push(`${where} cannot carry BOTH clip and source:"gap" — a placement is concrete or a gap, never both`);
@@ -499,6 +573,30 @@ function validateBrollPlacementsList(placements, scenes, wherePrefix, errors, op
         errors.push(`${where}.clip.clip_index must be a non-negative integer`);
       } else if (p.clip.clip_index >= sceneClips.get(p.clip.scene_id).length) {
         errors.push(`${where}.clip.clip_index ${p.clip.clip_index} is out of range for scene "${p.clip.scene_id}" (has ${sceneClips.get(p.clip.scene_id).length} source_clips)`);
+      }
+    }
+    // Subject compositing (render_mode:"subject"): a concrete clip matted off its
+    // background and composited over a `backdrop`. The clip ref above is the
+    // subject footage; here we shape-check the backdrop + on-backdrop placement.
+    if (p.render_mode === "subject") {
+      validateBackdrop(p.backdrop, `${where}.backdrop`, errors);
+      if (p.position !== undefined && p.position !== null) {
+        const pos = p.position;
+        if (!isPlainObject(pos)) {
+          errors.push(`${where}.position must be an object when present`);
+        } else {
+          if (pos.anchor !== undefined && pos.anchor !== null && !OVERLAY_ANCHOR_SET.has(pos.anchor)) {
+            errors.push(`${where}.position.anchor must be one of: ${OVERLAY_ANCHORS.join(", ")}`);
+          }
+          if (pos.scale !== undefined && pos.scale !== null
+            && (!isFiniteNumber(pos.scale) || pos.scale <= 0 || pos.scale > 1)) {
+            errors.push(`${where}.position.scale must be a number in (0, 1] when present (fraction of the frame the subject fills)`);
+          }
+          if (pos.offset_px !== undefined && pos.offset_px !== null
+            && (!Array.isArray(pos.offset_px) || pos.offset_px.length !== 2 || !pos.offset_px.every((n) => isFiniteNumber(n)))) {
+            errors.push(`${where}.position.offset_px must be a [x, y] pair of finite numbers when present`);
+          }
+        }
       }
     }
     if (p.narration_span !== undefined && p.narration_span !== null) {
@@ -544,6 +642,51 @@ function collectBrollGaps(parsed) {
     });
   }
   return gaps;
+}
+
+// --- Subject compositing (schema 1.2 render_mode, v3.3) ----------------------
+function isSubjectPlacement(p) {
+  return isPlainObject(p) && p.render_mode === "subject" && !isGapPlacement(p);
+}
+
+// Every subject placement across both document forms, normalized for the matte
+// materializer (matte-materialize.js) and the compose/source symlinker. Each
+// entry resolves to the pre-cut clip key (scene_id, clip_index) the matte is
+// lifted from, plus its OUTPUT seconds (raw span / speed) for the host budget.
+// Fan-out-aware (mirrors collectBrollGaps): scene_ids are document-globally
+// unique, so (scene_id, clip_index) is an unambiguous matte key across shorts.
+function collectSubjectPlacements(parsed) {
+  const out = [];
+  for (const timeline of storyboardTimelines(parsed)) {
+    const clipsByScene = new Map();
+    for (const scene of timeline.scenes) {
+      if (isPlainObject(scene) && isNonEmptyString(scene.scene_id)) {
+        clipsByScene.set(scene.scene_id, Array.isArray(scene.source_clips) ? scene.source_clips : []);
+      }
+    }
+    timeline.broll_placements.forEach((p, ix) => {
+      if (!isSubjectPlacement(p)) return;
+      const ref = isPlainObject(p.clip) ? p.clip : null;
+      const sceneId = ref && isNonEmptyString(ref.scene_id) ? ref.scene_id : null;
+      const clipIndex = ref && Number.isInteger(ref.clip_index) ? ref.clip_index : null;
+      const sceneClips = sceneId && clipsByScene.has(sceneId) ? clipsByScene.get(sceneId) : null;
+      const clip = sceneClips && clipIndex !== null && clipIndex >= 0 && clipIndex < sceneClips.length
+        ? sceneClips[clipIndex]
+        : null;
+      out.push({
+        short_id: timeline.short_id,
+        placement_index: ix,
+        scene_id: sceneId,
+        clip_index: clipIndex,
+        backdrop: isPlainObject(p.backdrop) ? p.backdrop : null,
+        position: isPlainObject(p.position) ? p.position : null,
+        motion: p.motion !== undefined ? p.motion : null,
+        clip_seconds: isPlainObject(clip) ? effectiveClipDuration(clip) : null,
+        resolved: Boolean(clip),
+      });
+    });
+  }
+  return out;
 }
 
 // --- Multi-short fan-out (schema 1.1) ---------------------------------------
@@ -646,9 +789,13 @@ function validateSegments(input, errors) {
         }
       });
     }
+    // segment.transition_out is the render-chunk SEAM (cut/fade/dip). A non-seam
+    // value is normalized to a dip-to-black "fade" at the render plan
+    // (transition-glue::seamOf), not rejected (PRD-02 §7.3) — only a non-string
+    // is malformed.
     if (segment.transition_out !== undefined && segment.transition_out !== null
-      && !SCENE_TRANSITION_SET.has(segment.transition_out)) {
-      errors.push(`${where}.transition_out must be one of: ${SCENE_TRANSITIONS.join(", ")} (omit for default cut)`);
+      && typeof segment.transition_out !== "string") {
+      errors.push(`${where}.transition_out must be a string when present (a render seam: "cut" or "fade")`);
     }
     if (segment.notes !== undefined && segment.notes !== null && typeof segment.notes !== "string") {
       errors.push(`${where}.notes must be a string when present`);
@@ -1583,6 +1730,106 @@ function lintCaptionSegments(scenes, warnings, transcriptAligned) {
   });
 }
 
+// Typed scene transitions (v3.3) — all WARNINGS, never blockers (taste, not
+// safety; determinism is hyperframes' own lint). transition_in is the rich
+// intra-composition transition INTO a scene; cut/dip/fade are seam-expressible
+// and universally available, so they never warn for being "off vocabulary".
+function lintTransitions(parsed, scenes, ctx, disabled, warnings) {
+  const active = resolveActiveVideoType(isPlainObject(ctx) ? ctx.state : null);
+  const vocab = new Set(Array.isArray(active.preset.transition_vocabulary) ? active.preset.transition_vocabulary : []);
+  const shadersOk = hostProfile.shaderTransitionsAllowed();
+  const distinctTypes = new Set();
+
+  scenes.forEach((scene, ix) => {
+    // scene 0 has nothing to transition FROM — its transition_in is a no-op.
+    if (!isPlainObject(scene) || ix === 0) return;
+    const ti = scene.transition_in;
+    const type = transitionTypeOf(ti);
+    if (type === "cut") return;
+    distinctTypes.add(type);
+
+    if (isShaderTransition(ti)) {
+      // A shader type is RECOGNIZED (not "unknown"); it just needs a capable host.
+      if (!shadersOk) {
+        warnings.push({
+          code: "PLAN_TRANSITION_BUDGET",
+          message: `scenes[${ix}].transition_in "${type}" is a WebGL shader transition, but shader transitions are off on this host (low capacity / un-vendored) — the composer will substitute the nearest CSS transition (e.g. glitch→whip_pan, cross_warp→crossfade)`,
+          scene_index: ix,
+          scene_id: sceneIdOf(scene),
+          data: { type, shader_transitions_allowed: false },
+        });
+      }
+    } else if (!vocab.has(type) && !SEAM_TRANSITION_TYPES.includes(type)) {
+      warnings.push({
+        code: "PLAN_TRANSITION_UNKNOWN_TYPE",
+        message: `scenes[${ix}].transition_in "${type}" is not in the ${active.canonical} transition vocabulary (${[...vocab].join(", ")}) — it will fall back to a hard cut; pick one of the offered types`,
+        scene_index: ix,
+        scene_id: sceneIdOf(scene),
+        data: { type, vocabulary: [...vocab] },
+      });
+    }
+
+    // Too long (only when an explicit duration is given): a transition paints
+    // over EXISTING scene frames, so > half the shorter adjacent scene eats the shot.
+    const dur = transitionDurationOf(ti);
+    if (dur !== null) {
+      const prev = scenes[ix - 1];
+      const adj = [
+        isPlainObject(prev) && isFiniteNumber(prev.target_duration_seconds) ? prev.target_duration_seconds : null,
+        isFiniteNumber(scene.target_duration_seconds) ? scene.target_duration_seconds : null,
+      ].filter((v) => v !== null);
+      if (adj.length > 0) {
+        const shorter = Math.min(...adj);
+        if (dur > 0.5 * shorter) {
+          warnings.push({
+            code: "PLAN_TRANSITION_TOO_LONG",
+            message: `scenes[${ix}].transition_in "${type}" runs ${round1(dur)}s — over half the shorter adjacent scene (${round1(shorter)}s); keep it ≤${round1(0.5 * shorter)}s so it doesn't eat the shot`,
+            scene_index: ix,
+            scene_id: sceneIdOf(scene),
+            data: { duration_seconds: dur, shorter_adjacent_seconds: shorter },
+          });
+        }
+      }
+    }
+  });
+
+  // Inconsistent: > 3 distinct transition types in one timeline reads random
+  // rather than intentional. Gated OFF under montage (variety is the point).
+  if (!disabled.has("PLAN_TRANSITION_INCONSISTENT") && distinctTypes.size > 3) {
+    warnings.push({
+      code: "PLAN_TRANSITION_INCONSISTENT",
+      message: `this timeline mixes ${distinctTypes.size} distinct transition types (${[...distinctTypes].join(", ")}) — settle on a consistent transition language (≤3) so the cuts feel intentional`,
+      data: { types: [...distinctTypes] },
+    });
+  }
+
+  // Downgraded: a glue group (scenes joined by a non-cut, non-seam transition_in)
+  // that exceeds the host <video> hard cap can't render in one composition, so
+  // the render plan splits it and the broken transition becomes a seam. Only
+  // meaningful when the render is actually chunked (auto/manual segmentation).
+  const requested = isNonEmptyString(parsed.render_segmentation)
+    ? parsed.render_segmentation
+    : active.preset.render.segmentation;
+  // Fan-out shorts always render single (no chunking), so a glue group can't be
+  // split there — only a real segmented single-timeline render can downgrade.
+  if (requested !== "single" && !storyboardHasShorts(parsed)) {
+    const budget = hostProfile.videoBudget();
+    const hardCap = hostProfile.videoHardCap();
+    const narrative = storyboardSegments(parsed);
+    const runs = narrative.length > 0 ? narrative.map((s) => s.scenes) : [scenes];
+    for (const run of runs) {
+      for (const dg of glueDowngrades(run, budget, hardCap, sceneVideoCount)) {
+        warnings.push({
+          code: "PLAN_TRANSITION_DOWNGRADED",
+          message: `the transition into scene "${dg.scene_id}" ("${dg.from_type}") glues more <video> elements than the host renders in one composition (>${hardCap}) — the render plan will split there and downgrade it to a "${dg.to_seam}" seam; shorten the glued run or simplify those scenes to keep it intra-composition`,
+          scene_id: dg.scene_id,
+          data: { from_type: dg.from_type, to_seam: dg.to_seam, hard_cap: hardCap },
+        });
+      }
+    }
+  }
+}
+
 // Per-render-unit <video> budget (warning): clips + planned PiP overlays. The
 // caller picks the unit — the whole timeline normally, each declared segment
 // when segments[] chunk the render, each short in fan-out (its scenes view).
@@ -1629,6 +1876,81 @@ function warnCleanSpeechStraddles(scenes, cleanSpeech, warnings) {
   });
 }
 
+// Subject-compositing plan lint (v3.3) — WARNINGS only, never blocks sign-off
+// (consistent with the B-roll-gap + overlay warnings). Runs per render unit:
+// lintStoryboardPlan is invoked once for a single timeline and once per short in
+// fan-out (on a per-short view), so both `parsed.broll_placements` and the budget
+// tally are correctly scoped.
+//   PLAN_SUBJECT_BACKDROP_NOT_INGESTED — the no-synthesized-backdrop guard, made
+//     human-visible at the plan gate: a backdrop kind outside BACKDROP_KINDS, a
+//     design_token without a fill, or a clip_ref/scene_base that doesn't resolve
+//     to a real ingested clip.
+//   PLAN_SUBJECT_BUDGET_EXCEEDED — total subject seconds in this render unit
+//     exceed the host budget; matting (per-frame inference) will be slow here.
+function lintSubjectPlacements(parsed, sceneById, warnings) {
+  const placements = Array.isArray(parsed.broll_placements) ? parsed.broll_placements : [];
+  let subjectSecondsTotal = 0;
+  const seenBudget = new Set(); // count each unique clip's matte cost once
+  placements.forEach((p, k) => {
+    if (!isSubjectPlacement(p)) return;
+    const sceneId = isPlainObject(p.clip) && isNonEmptyString(p.clip.scene_id) ? p.clip.scene_id : null;
+    const backdrop = isPlainObject(p.backdrop) ? p.backdrop : null;
+    const kind = backdrop && typeof backdrop.kind === "string" ? backdrop.kind : null;
+    let detail = null;
+    if (!kind || !BACKDROP_KIND_SET.has(kind)) {
+      detail = `backdrop kind ${kind ? `"${kind}"` : "(missing)"} is not one of ${BACKDROP_KINDS.join(", ")}`;
+    } else if (kind === "design_token") {
+      if (!isNonEmptyString(backdrop.fill)) {
+        detail = "design_token backdrop has no fill (a palette key, #hex, or CSS gradient)";
+      }
+    } else if (kind === "clip_ref") {
+      const ref = isPlainObject(backdrop.clip) ? backdrop.clip : null;
+      const entry = ref && isNonEmptyString(ref.scene_id) ? sceneById.get(ref.scene_id) : null;
+      const clips = entry && Array.isArray(entry.scene.source_clips) ? entry.scene.source_clips : null;
+      if (!ref || !clips || !Number.isInteger(ref.clip_index) || ref.clip_index < 0 || ref.clip_index >= clips.length) {
+        detail = `clip_ref backdrop ${ref ? `${ref.scene_id}-${ref.clip_index}` : "(missing clip)"} does not resolve to an ingested clip`;
+      }
+    } else if (kind === "scene_base") {
+      const entry = sceneId ? sceneById.get(sceneId) : null;
+      const clips = entry && Array.isArray(entry.scene.source_clips) ? entry.scene.source_clips : null;
+      if (!clips || clips.length === 0) {
+        detail = `scene_base backdrop for scene "${sceneId || "?"}" has no source clip to sit behind the subject`;
+      }
+    }
+    if (detail) {
+      warnings.push({
+        code: "PLAN_SUBJECT_BACKDROP_NOT_INGESTED",
+        message: `broll_placements[${k}] subject: ${detail} — the backdrop must be a design token, an ingested clip, or the scene's own base (no synthesized/stock/AI backdrops)`,
+        placement_index: k,
+        scene_id: sceneId,
+        data: { backdrop_kind: kind },
+      });
+    }
+    const ref = isPlainObject(p.clip) ? p.clip : null;
+    const entry = ref && isNonEmptyString(ref.scene_id) ? sceneById.get(ref.scene_id) : null;
+    const clip = entry && Array.isArray(entry.scene.source_clips) && Number.isInteger(ref.clip_index)
+      ? entry.scene.source_clips[ref.clip_index]
+      : null;
+    if (isPlainObject(clip)) {
+      const bkey = `${ref.scene_id}:${ref.clip_index}`;
+      if (!seenBudget.has(bkey)) {
+        seenBudget.add(bkey);
+        subjectSecondsTotal += effectiveClipDuration(clip);
+      }
+    }
+  });
+  if (subjectSecondsTotal > 0) {
+    const budget = hostProfile.subjectBudget().subjectSecondsMax;
+    if (subjectSecondsTotal > budget) {
+      warnings.push({
+        code: "PLAN_SUBJECT_BUDGET_EXCEEDED",
+        message: `${round1(subjectSecondsTotal)}s of subject footage planned against the host budget of ${budget}s — background matting (remove-background) runs per frame, so this render unit will matte slowly on this host (raise VOB_SUBJECT_SECONDS_MAX, split the work, or drop a subject treatment)`,
+        data: { subject_seconds: round1(subjectSecondsTotal), subject_seconds_max: budget },
+      });
+    }
+  }
+}
+
 // context = { state, manifest, transcript, cleanSpeech, targetSeconds,
 // lintRules } — all best-effort/nullable. lintRules (activeLintRules(state))
 // gates the preset-dependent checks: hook heuristics under `retention` only,
@@ -1663,6 +1985,8 @@ function lintStoryboardPlan(parsed, context) {
   lintBrollPlacements(parsed, scenes, sceneById, errors);
   lintOverlays(scenes, ctx, errors, warnings);
   lintCaptionSegments(scenes, warnings, transcriptAligned);
+  lintTransitions(parsed, scenes, ctx, disabled, warnings);
+  lintSubjectPlacements(parsed, sceneById, warnings);
 
   // B-roll gaps: informational warnings, never blockers — the plan gate is
   // where the human decides "upload these N shots or hold on the spine".
@@ -1965,15 +2289,18 @@ module.exports = {
   CAPTION_ANIMATIONS,
   PLAN_LINT_THRESHOLDS,
   BROLL_RENDER_MODES,
+  BACKDROP_KINDS,
   allStoryboardScenes,
   captionSegmentsOf,
   clipRoleOf,
   clipSpeedOf,
   collectBrollGaps,
+  collectSubjectPlacements,
   effectiveClipDuration,
   expectedTimelineDurationSeconds,
   findTimeline,
   isGapPlacement,
+  isSubjectPlacement,
   lintStoryboardPlan,
   sceneVideoCount,
   storyboardHasSegments,

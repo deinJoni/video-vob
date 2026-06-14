@@ -278,6 +278,23 @@ function transcodedClipSidecarPath(projectId, sceneId, clipIndex) {
   return path.join(transcodedClipsDir(projectId), `${transcodedClipStem(sceneId, clipIndex)}.json`);
 }
 
+// Subject mattes (v3.3 subject compositing): the alpha .webm lifted off each
+// subject clip via hyperframes remove-background, plus a content-hash sidecar.
+// Mirrors the transcoded-clip helpers EXACTLY (same stem, sibling dir under
+// transcoded/) so a back-edge COMPOSE re-entry re-uses the cache — same
+// discipline as the pre-cut clips.
+function mattesDir(projectId) {
+  return path.join(transcodedDir(projectId), "mattes");
+}
+
+function mattePath(projectId, sceneId, clipIndex) {
+  return path.join(mattesDir(projectId), `${transcodedClipStem(sceneId, clipIndex)}.webm`);
+}
+
+function matteSidecarPath(projectId, sceneId, clipIndex) {
+  return path.join(mattesDir(projectId), `${transcodedClipStem(sceneId, clipIndex)}.json`);
+}
+
 function previewDir(projectId) {
   return path.join(sessionDir(projectId), "preview");
 }
@@ -429,6 +446,9 @@ module.exports = {
   transcodedClipStem,
   transcodedClipsDir,
   transcodedDir,
+  mattesDir,
+  mattePath,
+  matteSidecarPath,
   transcriptCacheDir,
   transcriptCachePath,
 };

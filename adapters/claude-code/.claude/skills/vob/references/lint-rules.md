@@ -238,6 +238,27 @@ A bound caption element lacks `data-start` (it renders static — re-time scene-
 an element carries a `data-vob-caption-id` the plan's active scope never declared (typo'd id, or a
 caption the storyboard didn't ask to bind — remove it or fix the id).
 
+### `vob/caption_overflow` (warning)
+A caption (or typed-overlay) element's text overflows its container box — it spills past the box on
+render (attributed to the caption/overlay id when resolvable). ADVISORY: it never gates
+COMPOSE→PREVIEW (only errors do). The message carries hyperframes' `fixHint` (e.g. "shrink
+font-size from 140px to ~40px, or allow wrapping with max-width/fitTextFontSize"). Fix per the hint:
+shorten the chunk, drop the font-size (use the component's fit hook), widen the container with
+`max-width`, or move it off the safe band. Emitted by the layout/legibility inspect pass folded
+into the merged lint (gated to scopes with captions/typed overlays; knob `VOB_LAYOUT_QC`, default
+`auto`).
+
+### `vob/layout_overflow` (warning)
+The same text/box overflow on a NON-caption, non-overlay element (a title card, kicker, or other
+graphic); off-canvas placement reports at info severity. Same advisory status (never gates) and the
+same fixes — shorten the text, drop the font-size, widen/`max-width` the container, or reposition
+inside the frame. Carries hyperframes' `fixHint`.
+
+### `vob/layout_qc_skipped` (info)
+The layout/legibility inspect pass timed out, crashed, or returned something unparseable — legibility
+was NOT verified this run. Purely informational: it never gates and needs no fix. Re-save to retry,
+or set `VOB_LAYOUT_QC=off` to suppress the pass (or `always` to force it).
+
 ### `vob/design_font_mismatch` (warning)
 The storyboard's `target.design.typography` declares a font kit (headline/caption/body) but the
 composition's `font-family` declarations reference NONE of them — the composer went off-brief. Use
@@ -288,6 +309,52 @@ Each planned overlay type maps to a known HTML/CSS shape. Shared skeleton — a 
   planned track; src is a normal `./source/<scene_id>-<k>.mp4` clip; COUNTS against the video
   budget; `data-media-start="0"` like every scene clip.
 
+### Subject compositing (`render_mode: "subject"`, schema 1.2 / v3.3)
+
+A `subject` b-roll placement is a clip MATTED off its filmed background and composited over a
+`backdrop` — a floating cut-out, not a rectangle. The engine pre-mattes it at COMPOSE entry
+(hyperframes `remove-background`, content-hash cached) to an alpha `.webm` symlinked at
+`./source/<scene_id>-<clip_index>.webm`; the subject's own `.mp4` clip stays at
+`./source/<scene_id>-<clip_index>.mp4` (use it for **audio** — the matte `.webm` is visual-only).
+Prefer a subject treatment on `podcast`/`cinematic` when a single speaker dominates the frame.
+The `backdrop` is one of: `design_token` (a `target.design` palette key / `#hex` / CSS gradient),
+`clip_ref` (another **ingested** clip), or `scene_base` (the scene's own clip) — **never** a
+synthesized/stock/AI image (plan lint warns `PLAN_SUBJECT_BACKDROP_NOT_INGESTED`).
+
+**If the matte is absent** (`vob_read_state_summary.subject_mattes.{skipped,unavailable,failed}` > 0
+— model unavailable, host disabled, or over budget): fall back to a rectangular `pip` on the same
+clip. Subject mode is advisory at COMPOSE QC (no `data-vob-overlay-id`-style hard binding), so a
+fallback never fails QC.
+
+**Path (a) — DEFAULT: alpha `<video>` over an HTML/CSS backdrop** (richest; full motion/captions on
+the backdrop). The backdrop is pure CSS from `target.design`; the matte rides a higher track; the
+subject audio is a separate `<audio class="clip">` from the `.mp4`:
+
+```html
+<div class="clip" id="bg" data-start="0" data-duration="6.5"
+     style="background:linear-gradient(180deg,#111,#8B5CF6);"></div>
+<video class="clip" id="subj" muted playsinline
+       data-start="0" data-media-start="0" data-duration="6.5" data-track-index="1"
+       style="position:absolute;inset:0;object-fit:contain;z-index:2;"
+       src="./source/scene-03-0.webm"></video>
+<audio class="clip" id="subj-a" data-start="0" data-media-start="0" data-duration="6.5"
+       data-track-index="2" src="./source/scene-03-0.mp4"></audio>
+```
+
+This puts an (alpha VP9) `<video>` into the composition — the documented headless-Chrome
+fragility. On a sub-10 GB host, prefer path (b).
+
+**Path (b) — FALLBACK: ffmpeg composite (no browser `<video>`)**. Build it under `<session>/work/`
+and record with `vob_import_deliverable`: generate the design-token backdrop (or use an ingested
+`clip_ref`/`scene_base` clip as the base), composite the matte over it, mux the SUBJECT clip's
+audio. `overlay-compositor.js::compositeOverlayOverBase` does exactly this (`overlay=format=auto`
+preserves alpha; `audio:` = the subject `.mp4`); `buildBackdropArgv`/`generateBackdrop` makes the
+solid/gradient backdrop. Steadier when the host is low-RAM, when alpha-`<video>` capture proves
+fragile, or when the backdrop is itself a clip (clip-over-clip is cheaper in ffmpeg).
+
+**Audio gotcha (both paths):** the matte `.webm` is silent — the subject's speech comes from the
+`.mp4` clip; a `clip_ref`/`scene_base` backdrop clip is laid MUTED so the subject's audio wins.
+
 ### Caption binding (`caption_segments`)
 
 A `caption_segment` carrying an `id` (or `exact:true`) is a **bound** caption — stamp the
@@ -305,6 +372,152 @@ implementing chunk div with `data-vob-caption-id="<id>"` plus `class="clip"` and
   if you legitimately re-chunk).
 - **id-less `caption_segments` are freeform** — chunk and time them however reads best; no binding.
 - One element per id; never stamp an id the plan didn't declare (`vob/unplanned_caption_element`).
+
+### Caption components
+
+The kit in `compose/captions/` realizes the `caption_segment.animation` enum. Read
+`./captions/manifest.json` (placed next to `./fonts.css`), take the default component for the
+segment's `animation` (or an alternate named by `style_ref` / `target.design`), and ADAPT the
+chosen `./captions/<name>/<name>.html` reference — reproduce its technique, don't copy it. Three
+adaptation rules apply to EVERY component: load fonts from `./fonts.css` (drop the reference's
+`fonts.googleapis.com` `<link>` — it trips `google_fonts_import`; substitute the nearest kit family
+when `font_in_kit` is `false`); keep any GSAP timeline at `window.__timelines["<composition-id>"]`
+(`{paused:true}`); stamp `data-vob-caption-id="<id>"` on id-bearing segments (§Caption binding).
+
+**`pop`** (default `caption-highlight`) — chunk-level. One timed `class="clip"` div per 3–5-word
+chunk; the whole chunk pops in/out. No transcript needed.
+```html
+<div class="clip caption cap-pop" data-vob-caption-id="cap-2"
+     data-start="10.2" data-duration="1.6" data-track-index="3">
+  and that's the <span class="emph">whole</span> secret
+</div>
+```
+
+**`word-by-word`** (default `caption-kinetic-slam`) — word-level; wants a real per-word transcript.
+One `class="clip"` div per chunk; inside it, one `<span>` per word, each revealed/slammed on its own
+word time. Drive word times from the matching `inspect/transcripts/file_<i>.json` entries
+(`per_clip_transcripts`), re-timed source→master.
+
+**`karaoke`** (default `caption-pill-karaoke`) — word-level fill-as-spoken; wants a per-word
+transcript AND a GSAP timeline. Render the chunk on a pill, wrap each word in a `<span>`, and tween a
+per-word highlight across them on the timeline:
+```html
+<div class="clip caption cap-karaoke" data-vob-caption-id="cap-7"
+     data-start="14.0" data-duration="2.0" data-track-index="3">
+  <span class="kw">wait</span> <span class="kw">for</span> <span class="kw">it</span>
+</div>
+```
+```js
+// per-word [{text,start,end}] inlined from per_clip_transcripts (source→master re-timed)
+window.__timelines = window.__timelines || {};
+window.__timelines["master"] = (window.__timelines["master"] || gsap.timeline({ paused: true }))
+  .to(".cap-karaoke .kw:nth-child(1)", { duration: 0.01, className: "+=on" }, 14.0)
+  .to(".cap-karaoke .kw:nth-child(2)", { duration: 0.01, className: "+=on" }, 14.6)
+  .to(".cap-karaoke .kw:nth-child(3)", { duration: 0.01, className: "+=on" }, 15.2);
+```
+
+- **Emphasis words.** Map `caption_segment.emphasis_words[]` to the component's per-word emphasis
+  hook — wrap each emphasized word in the component's emphasis span/class (e.g. `.emph` above) so it
+  gets the louder weight/scale/color the reference defines. Emphasis is ADVISORY at QC — there is no
+  binding error if you realize it differently.
+- **Karaoke wiring.** Inline the `[{text,start,end}]` per-word entries from `per_clip_transcripts`
+  (re-timed source→master); register the highlight timeline at `window.__timelines["<comp-id>"]`
+  (`{paused:true}`) — never play it. One word-span per word, in order.
+- **NOT-ALIGNED fallback.** When the spawn's `transcript_aligned` is `false` (or
+  `per_clip_transcripts` is `none`), word timing is approximate — DOWNGRADE `word-by-word`/`karaoke`
+  to chunk-level `pop` (mirrors plan-lint `PLAN_CAPTION_KARAOKE_UNALIGNED`). Don't author a
+  word-level component on an unaligned transcript.
+- Captions stay ADVISORY at COMPOSE-QC (no hard binding beyond the id stamp); the only caption ERROR
+  is the `exact:true` `vob/caption_missing_element` contract.
+
+## Scene transition recipes (v3.3) — CSS `@keyframes`, NO GSAP
+
+Realize `scene.transition_in` as a CSS `@keyframes` animation on the INCOMING scene element. hyperframes'
+native **css adapter** scrubs a paused CSS animation deterministically to every rendered frame (per seek it
+sets `animation-play-state: paused` and `animation-delay = -(T − element's data-start)s`, clamped at 0). So
+**GSAP is not needed and is not loaded at render** — these recipes are verified 0 errors / 0 warnings on
+hyperframes 0.6.97, and a crossfade renders to an MP4 of the exact expected duration. Contract:
+
+- The animation goes on the timed scene element (the `<video>` clip — you may animate a `class="clip"`
+  element directly; no wrapper needed). Use the marker attribute as the style hook:
+  `[data-vob-transition="<type>"] { animation: <name> <dur>s <easing> both; animation-play-state: paused; }`.
+- **`animation-fill-mode: both` is MANDATORY** — without it the element snaps to its un-animated state
+  outside the active window and the scrub shows the wrong frame. Keep `animation-play-state: paused` too
+  (the runtime sets both each seek; presetting them keeps a plain browser preview deterministic).
+- **Duration-EXACT:** a transition only repaints frames the scenes already own. Never change the master
+  root's `data-duration` (= Σ scene `target_duration_seconds`).
+- No `requestAnimationFrame`, no `Math.random()`/`Date.now()` (the determinism rules — pure CSS needs none).
+- The composition's `window.__timelines["<id>"]` stub must expose **`duration()` (returns the master
+  seconds) and `pause()` (a method)** — the render driver calls them unconditionally; the inert stub bob
+  already emits covers this. A stub missing `pause()` lints clean but dies at frame 0 ("zero duration").
+- Stamp `data-vob-transition="<type>"` + `data-vob-transition-scene="<incoming scene_id>"` on the animated
+  element (QC `vob/transition_not_realized` is advisory — these let it confirm the plan was realized).
+
+Two patterns. **ENTRANCE** (push/slide/whip_pan/zoom_punch/iris/clock_wipe/shutter): the animation lives on
+the incoming scene, anchored at its own `data-start` (= the cut). It animates over the first `dur` seconds of
+the scene's natural window — `data-start`/`data-duration` unchanged, no extra concurrent `<video>`.
+**OVERLAP** (crossfade/blur_dissolve/focus_pull): for a true dissolve both scenes must be on screen at once,
+so pull the incoming's `data-start` back by `dur`, put it on a HIGHER `data-track-index`, and EXTEND its
+`data-duration` by `dur` so it still ENDS at its natural time (master unchanged). Costs +1 concurrent
+`<video>` for `dur` seconds — `deriveRenderPlan` already glues these scenes into one render chunk.
+
+### crossfade — OVERLAP (boundary at 6s, dur 0.6s; outgoing scene ends at 6 on track 0)
+```html
+<style>
+  @keyframes vob-crossfade-in { from { opacity: 0; } to { opacity: 1; } }
+  [data-vob-transition="crossfade"] { animation: vob-crossfade-in 0.6s linear both; animation-play-state: paused; }
+</style>
+<!-- incoming: data-start = 6 − 0.6, data-duration = 3 + 0.6 (ends at 9, its natural end), higher track -->
+<video id="s002-0-video" class="clip full-bleed" src="./source/s002-0.mp4" muted
+       data-start="5.4" data-duration="3.6" data-track-index="1" data-media-start="0"
+       data-vob-transition="crossfade" data-vob-transition-scene="s002"></video>
+```
+`blur_dissolve` = add `filter: blur(18px)`→`blur(0)` to the keyframes. `focus_pull` = blur only, no opacity.
+
+### push / slide — ENTRANCE (`translateX/Y`; pick the axis from `direction`)
+```html
+<style>
+  @keyframes vob-push-in { from { transform: translateX(100%); } to { transform: translateX(0); } }
+  [data-vob-transition="push"] { animation: vob-push-in 0.5s cubic-bezier(.22,1,.36,1) both; animation-play-state: paused; }
+</style>
+<video id="s002-0-video" class="clip full-bleed" src="./source/s002-0.mp4" muted
+       data-start="6" data-duration="3" data-track-index="1" data-media-start="0"
+       data-vob-transition="push" data-vob-transition-scene="s002"></video>
+```
+
+### whip_pan — ENTRANCE (`translateX` + `filter: blur()` smear that snaps into focus)
+```html
+<style>
+  @keyframes vob-whip-in { 0% { transform: translateX(60%); filter: blur(24px); }
+                           60% { transform: translateX(0); filter: blur(24px); }
+                           100% { transform: translateX(0); filter: blur(0); } }
+  [data-vob-transition="whip_pan"] { animation: vob-whip-in 0.35s cubic-bezier(.7,0,.3,1) both; animation-play-state: paused; }
+</style>
+```
+
+### zoom_punch — ENTRANCE (`scale` + opacity reveal)
+```html
+<style>
+  @keyframes vob-zoom-in { 0% { transform: scale(1.4); opacity: 0; } 40% { opacity: 1; } 100% { transform: scale(1); opacity: 1; } }
+  [data-vob-transition="zoom_punch"] { animation: vob-zoom-in 0.45s cubic-bezier(.2,.8,.2,1) both; animation-play-state: paused; transform-origin: 50% 50%; }
+</style>
+```
+
+### iris / clock_wipe / shutter — ENTRANCE (`clip-path` reveal)
+```html
+<style>
+  @keyframes vob-iris-in { from { clip-path: circle(0% at 50% 50%); } to { clip-path: circle(100% at 50% 50%); } }
+  [data-vob-transition="iris"] { animation: vob-iris-in 0.55s ease-in-out both; animation-play-state: paused; }
+</style>
+```
+(`circle(100%)` for full coverage; a smaller radius leaves a deliberate vignette. `clock_wipe` = animate a
+conic `clip-path`/mask; `shutter` = `inset()` bars.)
+
+### Shaders are GATED OFF in v3.3
+`glitch`/`light_leak`/`chromatic`/`cross_warp`/`swirl` need `@hyperframes/shader-transitions` (Proprietary,
+un-vendored) and never appear in your `transition_vocabulary`. If one is planned, or
+`shader_transitions_allowed:false`, substitute the nearest CSS transition: `glitch`→`whip_pan`,
+`light_leak`→`crossfade`, `chromatic`→`whip_pan`, `cross_warp`→`crossfade`, `swirl`→`zoom_punch`.
 
 ---
 If your code isn't here, `lint_report_path` is ground truth — fix what the report's

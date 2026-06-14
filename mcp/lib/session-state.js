@@ -9,7 +9,9 @@ const { getGate } = require("./phase-gates.js");
 const { archiveForIteration, currentIterationVersion, isArchivalTransition } = require("./archival.js");
 const { missingIntentKeys } = require("./intent-schema.js");
 const { materializeSceneClips } = require("./clip-materialize.js");
+const { materializeSubjectMattes } = require("./matte-materialize.js");
 const { summarizeActiveVideoType } = require("./video-types.js");
+const hostProfile = require("./host-profile.js");
 const { deriveRenderPlan, validSegmentRenders } = require("./render-segments.js");
 
 // INTENT -> PLAN -> COMPOSE: the former BRIEF and STORYBOARD phases are merged
@@ -174,6 +176,26 @@ function clipsDigest(projectId, transcodedClips) {
     skipped_scene_count: Number(s.skipped) || 0,
     audio_treatment: transcodedClips.audio_treatment || null,
     clips_dir: transcodedClipsDir(projectId),
+  };
+}
+
+// Lean digest of the subject-matte materialization (v3.3 subject compositing).
+// The full per-matte document persists in state.subject_mattes on disk; the
+// orchestrator reads this to know whether mattes are ready / over budget / on a
+// host without the backend, and falls back the composer accordingly.
+function summarizeSubjectMattes(slot) {
+  const m = asSlot(slot);
+  if (!m) return null;
+  const s = asSlot(m.summary) || {};
+  return {
+    count: Number(s.total) || 0,
+    matted: Number(s.matted) || 0,
+    cached: Number(s.cached) || 0,
+    failed: Number(s.failed) || 0,
+    skipped: Number(s.skipped) || 0,
+    unavailable: Number(s.unavailable) || 0,
+    over_budget: m.over_budget === true,
+    backend_available: typeof m.backend_available === "boolean" ? m.backend_available : null,
   };
 }
 
@@ -534,7 +556,9 @@ function buildStateSummary(state, projectId) {
     // Resolved video-type preset (env > intent > derived > default) — the
     // orchestrator reads this instead of re-deriving; `source` says which
     // precedence level won.
-    video_type: summarizeActiveVideoType(state),
+    // ...+ shader_transitions_allowed: the host-capability gate for shader scene
+    // transitions, surfaced here so the composer spawn carries it (v3.3 §7.8).
+    video_type: { ...summarizeActiveVideoType(state), shader_transitions_allowed: hostProfile.shaderTransitionsAllowed() },
     target_duration_seconds: summarizeTargetDurationSeconds(answers),
     target_duration_range: summarizeTargetDurationRange(answers),
     brief: summarizeBrief(state.brief),
@@ -542,6 +566,7 @@ function buildStateSummary(state, projectId) {
     clips: transcoded
       ? { generated_at: strOrNull(transcoded.generated_at), ...clipsDigest(projectId, transcoded) }
       : null,
+    subject_mattes: summarizeSubjectMattes(state.subject_mattes),
     composition: summarizeComposition(state.composition),
     render_plan: summarizeRenderPlan(state),
     assembly: summarizeAssembly(state),
@@ -646,22 +671,30 @@ async function transitionPhase(args) {
     // changed. Cutting before the state write means the user is never advanced
     // into COMPOSE with a half-prepared compose/source/ tree.
     let transcodedClips = null;
+    let subjectMattes = null;
     let renderPlan = null;
     if (toPhase === "COMPOSE") {
       transcodedClips = await materializeSceneClips({
         projectId: id,
         audioTreatment: readAudioTreatment(state),
       });
-      // Derive the render plan (v3 segmented render) from the storyboard on
-      // disk + the active preset. Recomputed on EVERY COMPOSE entry: same
-      // storyboard + same budget => same plan; a changed storyboard re-chunks
-      // and the registry's revision binding invalidates stale partials.
+      // Read the storyboard ONCE for the subject-matte + render-plan steps.
       let sbDoc = null;
       try {
         sbDoc = readJsonFile(storyboardPath(id));
       } catch {
         sbDoc = null;
       }
+      // Matte every render_mode:"subject" placement (alpha .webm per subject
+      // clip) right AFTER the scene clips — the matte INPUT is the already-pre-cut
+      // clip — and BEFORE the render plan. Content-hash cached, so a back-edge
+      // COMPOSE re-entry is a no-op; DEGRADES (never throws) on a matte failure so
+      // a missing/uncached model can't strand the user mid-COMPOSE.
+      subjectMattes = await materializeSubjectMattes({ projectId: id, storyboard: sbDoc });
+      // Derive the render plan (v3 segmented render) from the storyboard on
+      // disk + the active preset. Recomputed on EVERY COMPOSE entry: same
+      // storyboard + same budget => same plan; a changed storyboard re-chunks
+      // and the registry's revision binding invalidates stale partials.
       renderPlan = deriveRenderPlan({ storyboard: sbDoc, state });
     }
 
@@ -688,6 +721,16 @@ async function transitionPhase(args) {
       next.transcoded_clips = transcodedClips;
     }
     if (toPhase === "COMPOSE") {
+      // Stamp the matte materialization only when this entry actually mattes
+      // something; with no subject placements, DROP any stale slot from a prior
+      // COMPOSE entry (the matte set is recomputed fresh on every COMPOSE entry,
+      // and a non-COMPOSE transition never reaches here, so the COMPOSE value
+      // persists across the cycle).
+      if (subjectMattes && subjectMattes.summary && subjectMattes.summary.total > 0) {
+        next.subject_mattes = subjectMattes;
+      } else {
+        delete next.subject_mattes;
+      }
       if (renderPlan && renderPlan.mode === "segmented") {
         const sbRevision = state.storyboard && Number.isInteger(state.storyboard.revision_count)
           ? state.storyboard.revision_count
@@ -718,6 +761,16 @@ async function transitionPhase(args) {
           summary: transcodedClips.summary,
         }]
       : [];
+    const matteEvents = subjectMattes && subjectMattes.summary && subjectMattes.summary.total > 0
+      ? [{
+          kind: "subject_mattes_materialized",
+          at: ts,
+          device: subjectMattes.device,
+          backend_available: subjectMattes.backend_available,
+          over_budget: subjectMattes.over_budget,
+          summary: subjectMattes.summary,
+        }]
+      : [];
     const renderPlanEvents = renderPlan && renderPlan.mode === "segmented"
       ? [{
           kind: "render_plan_derived",
@@ -731,6 +784,7 @@ async function transitionPhase(args) {
       ...(Array.isArray(state.history) ? state.history : []),
       ...archiveEvents,
       ...clipEvents,
+      ...matteEvents,
       ...renderPlanEvents,
       {
         kind: "transition",

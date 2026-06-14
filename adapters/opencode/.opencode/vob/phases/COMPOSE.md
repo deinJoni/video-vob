@@ -7,7 +7,7 @@ to the `composer` subagent; linting, snapshots, and transitions stay with you.
 ## Read sites
 | step | source | fields |
 |---|---|---|
-| 2 | `vob_read_state_summary` | `storyboard.artifact_path`, `brief.path`, `manifest.path`, `composition.*`, `inspect.{transcript_path,clean_speech_path}`, `platform{...}`, `intent.answers`, `style.derived_from` |
+| 2 | `vob_read_state_summary` | `storyboard.artifact_path`, `brief.path`, `manifest.path`, `composition.*`, `inspect.{transcript_path,clean_speech_path,transcript_aligned}`, `platform{...}`, `intent.answers`, `style.derived_from` |
 | 5 | composer-relayed save verdict; `vob_read_state_summary` `composition.{lint_status,lint_report_path}`; `vob_lint_composition` (fallback only) | `lint_status, error_count, warning_count, qc_error_count, qc_warning_count, findings_summary[≤10], report_path` |
 | 6 | `vob_snapshot_keyframes` result | `still_paths, contact_sheet_path, snapshots_dir` |
 
@@ -63,6 +63,8 @@ to the `composer` subagent; linting, snapshots, and transitions stay with you.
    manifest_path: <manifest.path>
    transcript_path: <inspect.transcript_path | none>
    clean_speech_path: <inspect.clean_speech_path | none>
+   transcript_aligned: <inspect.transcript_aligned true|false>
+   per_clip_transcripts: <comma-joined inspect/transcripts/file_<i>.json for the active scenes' clips | none>
    intent.target_platform: <canonical>
    intent.platform_profile: width=<w> height=<h> fps=<fps> safe_top_px=<t> safe_bottom_px=<b>
    intent.caption_defaults: anchor=<anchor> offset_px=<offset_px> min_font_px=<min_font_px> max_words_per_line=<max_words_per_line>
@@ -70,6 +72,8 @@ to the `composer` subagent; linting, snapshots, and transitions stay with you.
    intent.music_vo: <music_vo>
    intent.audio_treatment: <value | n/a>
    intent.captions_style: <value | n/a>
+   transition_vocabulary: <summary.video_type.transition_vocabulary, comma-joined>   (realize scene.transition_in ONLY from this list — see Scene transitions)
+   shader_transitions_allowed: <summary.video_type.shader_transitions_allowed true|false>   (false ⇒ substitute the nearest CSS transition for any shader type)
    fonts: ./fonts.css + ./fonts/ are present in compose/ (kit table in your instructions)
    style_source: <derived_from | none>
    style_source_compose: ~/video-vob-sessions/<derived_from>/compose/index.html | none
@@ -79,6 +83,15 @@ to the `composer` subagent; linting, snapshots, and transitions stay with you.
    lint_report_path: <composition.lint_report_path | none>
    Follow your agent instructions.
    ```
+
+   `transcript_aligned` is ALWAYS passed (it is the composer's not-aligned fallback trigger —
+   when `false`, the composer downgrades any word-by-word/karaoke caption to chunk-level `pop`).
+   `per_clip_transcripts` is conditional: populate it ONLY when the active scope (the whole
+   document, or the active short/segment) has ANY `caption_segment` whose `animation` is
+   `word-by-word` or `karaoke` — those word-level components want a real per-word transcript;
+   otherwise pass `none`. The `file_<i>` index is the manifest file index of each active scene's
+   clips (`source_clips[].manifest_file_index`); `inspect/transcripts/file_<i>.json` is the
+   per-file transcript path emitted by INSPECT. De-dupe the indices across the active scenes' clips.
 
 4. **Save-time QC rejection branch.** If the composer reports `vob_save_composition` rejected
    with QC findings (`details.qc_findings`), that is the same auto-retry path as lint errors

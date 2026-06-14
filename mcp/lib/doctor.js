@@ -13,7 +13,7 @@
 const os = require("os");
 
 const { checkFfmpegAvailable } = require("./ffmpeg-runner.js");
-const { checkHyperframesAvailable, resolveBrowserGpuMode, renderWorkerArgs } = require("./hyperframes-runner.js");
+const { checkHyperframesAvailable, resolveBrowserGpuMode, renderWorkerArgs, checkRemoveBackgroundAvailable, resolveRemoveBgDevice } = require("./hyperframes-runner.js");
 const { checkAsrAvailable } = require("./asr-backend.js");
 const { recommendedHeavyEncodeConcurrency } = require("./concurrency.js");
 const hostProfile = require("./host-profile.js");
@@ -80,6 +80,7 @@ function runDoctor({ projectId = null } = {}) {
   const ffprobe = checkFfprobe();
   const hyperframes = checkHyperframesAvailable();
   const asr = checkAsrAvailable();
+  const removeBg = checkRemoveBackgroundAvailable();
 
   const workerArgs = renderWorkerArgs();
   const renderWorkers = workerArgs.length === 2 ? workerArgs[1] : "auto (hyperframes calibrates)";
@@ -136,6 +137,29 @@ function runDoctor({ projectId = null } = {}) {
     python: asr.python || null,
   });
 
+  // remove-background (subject compositing v3.3): the local matte model. A
+  // missing backend or un-downloaded weights is a WARNING — subject mode is
+  // optional, so ok:false NEVER flips the doctor (only ffmpeg/ffprobe do).
+  const rbDevice = resolveRemoveBgDevice();
+  checks.push({
+    name: "remove-background",
+    level: level(removeBg.ok, true),
+    detail: removeBg.ok
+      ? `present (providers: ${removeBg.providers && removeBg.providers.length ? removeBg.providers.join(", ") : "?"}; `
+        + `model ${removeBg.model_cached === true ? "cached" : removeBg.model_cached === false ? "NOT cached — first matte downloads weights" : "?"}; `
+        + `device=${rbDevice})`
+      : (removeBg.error || "not available"),
+    recommendation: removeBg.ok
+      ? (removeBg.model_cached === false
+        ? "Subject compositing will download the background-removal model weights on the first matte (one-time, tens-to-hundreds of MB). The matte timeout floor is generous; pre-warm by running one `hyperframes remove-background` if you want it cached before COMPOSE."
+        : null)
+      : "Only needed for render_mode:\"subject\" (matted talking-head / PiP). hyperframes ships the model; coreml on Apple Silicon, cpu fallback (VOB_REMOVE_BG_DEVICE). Ignore if no storyboard uses subject mode.",
+    blocker: false,
+    providers: removeBg.providers || [],
+    model_cached: removeBg.model_cached,
+    device: rbDevice,
+  });
+
   // Video-type presets (v3): the resolved table + sources, mirroring the
   // report.tuning pattern. With a project_id, also that project's resolution.
   const videoTypes = {
@@ -189,6 +213,10 @@ function runDoctor({ projectId = null } = {}) {
     {
       name: "docker-banned",
       detail: "Rendering is ALWAYS native on the host. Docker is intentionally unsupported across the pipeline — never enable it.",
+    },
+    {
+      name: "subject-compositing",
+      detail: "render_mode:\"subject\" mattes a subject off its background (hyperframes remove-background, local — coreml/cpu, no cloud) and composites it over a designed/ingested backdrop. First run downloads the model weights; matting is per-frame (slow on long clips), capped by VOB_SUBJECT_SECONDS_MAX. NO synthesized/stock backdrops — design token, an ingested clip, or the scene's own base only.",
     },
   ];
 

@@ -11,7 +11,7 @@
 // spec.
 //
 // Phases: setup | preview | render | package | all | fanout | general |
-// longform | overlays | gaps | stillsqc. Heavy steps beyond setup are env-gated
+// longform | overlays | gaps | stillsqc | captions | subject | transitions. Heavy steps beyond setup are env-gated
 // by invocation; the in-COMPOSE snapshot QC step is gated by VOB_WALKER_SNAPSHOT=1.
 // `stillsqc` is fully synthetic (ffmpeg-generated stills, no source/render): it
 // covers the auto-QC-of-stills pass — the pure luma classifier (still-qc.js), the
@@ -2155,6 +2155,652 @@ async function runStillsQc() {
   console.log("=== stillsqc walker OK");
 }
 
+// ---------------------------------------------------------------------------
+// v3.3 `captions` walker phase — the Caption System v2 executable spec: the
+// vendored caption kit injected into compose/captions/, the hyperframes-inspect
+// layout/legibility QC fold-in (lint-report report_version 3 + inspect{} block,
+// the vob/caption_overflow warning), all three caption animations + emphasis +
+// exact/id binding + style_ref, and the word-level alignment fallback.
+//
+// Cost control: the in-session inspect render (a browser pass per captioned
+// save) is gated to VOB_WALKER_LAYOUT_QC=1; with it off the fold-in still stamps
+// the inspect{} block (skipped:disabled), proving the wiring. The overflow
+// FIRING is proven cheaply every run on a tiny synthetic composition (real
+// `hyperframes inspect`, no <video>).
+
+async function runCaptions() {
+  const CAP = `${PROJECT_ID}-captions`;
+  console.log(`=== v3.3 captions walker (caption kit + layout QC) — project: ${CAP}`);
+
+  const os = require("os");
+  const { runInspect } = require("../mcp/lib/hyperframes-runner.js");
+  const { parseInspectReport, mapInspectIssues, shouldRunLayoutQc, layoutQcMode } = require("../mcp/lib/layout-qc.js");
+
+  const HEAVY = process.env.VOB_WALKER_LAYOUT_QC === "1";
+  const prevLayoutQc = process.env.VOB_LAYOUT_QC;
+  process.env.VOB_LAYOUT_QC = HEAVY ? "always" : "off";
+
+  try {
+
+  const boot = await bootstrapToPlan({
+    projectId: CAP,
+    target: { format: "tiktok", duration: "8s" },
+    intentAnswers: {
+      target_platform: "tiktok",
+      target_duration: "8s",
+      tone: "energetic",
+      key_moments: "none in particular",
+      music_vo: "neither",
+    },
+    briefBody: `# Brief: ${CAP}\n\n## Target\n- 8s tiktok with a kinetic caption layer\n\n## Design language\n- Typography: headline Anton; captions Hanken Grotesk\n- Palette: bg #000, text #FFF, accent #FFD60A\n- Caption style: bold-pop\n- Motion: fast-snap\n`,
+  });
+  const D = boot.file0.duration_seconds;
+  const srcPath = boot.file0.path || SOURCE;
+  let transcript = null;
+  if (boot.inspect.speech_detected && boot.inspect.transcript_path && fs.existsSync(boot.inspect.transcript_path)) {
+    try { transcript = JSON.parse(fs.readFileSync(boot.inspect.transcript_path, "utf8")); } catch { transcript = null; }
+  }
+  const aligned = boot.inspect.transcript_aligned === true;
+  const windows = planWindows({ durationSeconds: D, transcript });
+  const bi = windows.beat.in; // beat clip window [bi, bi+3] (SOURCE-time)
+
+  const goodSb = {
+    schema_version: "1.0", // caption fields are NON-version-gated (valid on 1.0)
+    project_id: CAP,
+    generated_at: new Date().toISOString(),
+    source: { manifest_path: boot.summary.manifest.path, brief_path: boot.savedBrief.brief_path },
+    target: {
+      platform: "tiktok", duration_seconds: 8, tone: "energetic", fps: 30,
+      design: {
+        palette: { bg: "#000000", text: "#FFFFFF", accent: "#FFD60A" },
+        typography: { headline: "Anton", caption: "Hanken Grotesk" },
+        caption_style: "bold-pop", motion: "fast-snap", grade: "high-contrast",
+      },
+    },
+    scenes: [
+      {
+        scene_id: "c001", sequence: 1, purpose: "hook", target_duration_seconds: 2,
+        summary: "Cold open on the most kinetic frame.",
+        source_clips: [{ manifest_file_index: 0, source_path: srcPath, in_seconds: windows.hook.in, out_seconds: windows.hook.out }],
+        overlays: [], captions: null, pacing: "fast",
+      },
+      {
+        scene_id: "c002", sequence: 2, purpose: "beat", target_duration_seconds: 3,
+        summary: "Core beat carrying the kinetic captions.",
+        source_clips: [{ manifest_file_index: 0, source_path: srcPath, in_seconds: bi, out_seconds: round3(bi + 3) }],
+        overlays: [], captions: "kinetic caption pass", pacing: "medium",
+        // SOURCE-time, all inside [bi, bi+3]; non-overlapping. Exercises all 3
+        // animations + emphasis + an exact/id binding + style_ref.
+        caption_segments: [
+          {
+            id: "cx-1", exact: true, text: "watch this part",
+            start_seconds: round3(bi + 0.3), end_seconds: round3(bi + 1.0),
+            animation: "pop", style_ref: "bold-pop", emphasis: true, emphasis_words: ["watch"],
+            position: { anchor: "bottom-center", offset_px: [0, -120] },
+          },
+          {
+            text: "one word at a time",
+            start_seconds: round3(bi + 1.1), end_seconds: round3(bi + 1.9),
+            animation: "word-by-word", style_ref: "bold-pop", emphasis_words: ["word"],
+          },
+          {
+            text: "read along now",
+            start_seconds: round3(bi + 2.0), end_seconds: round3(bi + 2.8),
+            animation: "karaoke", style_ref: "bold-pop",
+          },
+        ],
+      },
+      {
+        scene_id: "c003", sequence: 3, purpose: "payoff", target_duration_seconds: 3,
+        summary: "Payoff hold on the resolving frame.",
+        source_clips: [{ manifest_file_index: 0, source_path: srcPath, in_seconds: windows.payoff.in, out_seconds: windows.payoff.out }],
+        overlays: [], captions: null, pacing: "slow",
+      },
+    ],
+    total_target_duration_seconds: 8,
+    notes: "Caption walker fixture — all three animations + exact/id binding + style_ref.",
+  };
+
+  // 1. Good save: plan-lint ERROR-clean (every caption code is a warning). The
+  // word-level alignment warnings ride along ONLY on a non-forced-aligned
+  // transcript — the keystone alignment guard (regression).
+  const saved = await step("save storyboard (caption layer, plan-lint clean)", () =>
+    call("vob_save_storyboard", { project_id: CAP, content: goodSb }),
+  );
+  {
+    assert(saved.plan_lint.error_count === 0, `caption storyboard reported plan errors: ${JSON.stringify(saved.plan_lint)}`);
+    const codes = (saved.plan_lint.warnings || []).map((w) => w.code);
+    if (aligned) {
+      for (const c of ["PLAN_CAPTION_KARAOKE_UNALIGNED", "PLAN_CAPTION_EXACT_UNALIGNED"]) {
+        assert(!codes.includes(c), `aligned transcript must not warn ${c}: ${JSON.stringify(codes)}`);
+      }
+    } else {
+      assert(codes.filter((c) => c === "PLAN_CAPTION_KARAOKE_UNALIGNED").length >= 2,
+        `expected 2x PLAN_CAPTION_KARAOKE_UNALIGNED (word-by-word + karaoke) on an unaligned transcript, got ${JSON.stringify(codes)}`);
+      assert(codes.includes("PLAN_CAPTION_EXACT_UNALIGNED"),
+        `expected PLAN_CAPTION_EXACT_UNALIGNED on the exact:true segment, got ${JSON.stringify(codes)}`);
+    }
+    console.log(`   transcript_aligned: ${aligned}   caption warnings: ${codes.filter((c) => /CAPTION/.test(c)).join(", ") || "(none)"}`);
+  }
+
+  // 1b. Alignment guard, BOTH branches, host-independent. The live branch above
+  // only exercises whichever alignment THIS host's ASR produces (here: false);
+  // drive the plan linter directly with a forced transcript_aligned flag so the
+  // aligned (no-warning) branch is provably covered on every machine.
+  await step("plan-lint alignment guard (both branches, synthetic)", async () => {
+    const { validateStoryboardContent } = require("../mcp/lib/storyboard-schema.js");
+    const onAligned = validateStoryboardContent(goodSb, { inspect: { transcript_aligned: true } });
+    assert(onAligned.ok, `forced-aligned plan must be content-valid: ${JSON.stringify(onAligned.errors)}`);
+    const codesT = (onAligned.warnings || []).map((w) => w.code);
+    for (const c of ["PLAN_CAPTION_KARAOKE_UNALIGNED", "PLAN_CAPTION_EXACT_UNALIGNED"]) {
+      assert(!codesT.includes(c), `forced-aligned plan must NOT warn ${c}: ${JSON.stringify(codesT)}`);
+    }
+    const onUnaligned = validateStoryboardContent(goodSb, { inspect: { transcript_aligned: false } });
+    const codesF = (onUnaligned.warnings || []).map((w) => w.code);
+    assert(codesF.filter((c) => c === "PLAN_CAPTION_KARAOKE_UNALIGNED").length >= 2 && codesF.includes("PLAN_CAPTION_EXACT_UNALIGNED"),
+      `forced-unaligned plan must warn the alignment guards (2x karaoke + 1x exact): ${JSON.stringify(codesF)}`);
+  });
+
+  // 2. Plan-lint warning negatives (regression): chunk-too-long + emphasis-not-in-text.
+  await step("save storyboard (caption warnings fixture)", async () => {
+    const warny = JSON.parse(JSON.stringify(goodSb));
+    warny.scenes[1].caption_segments[1].text = "this caption chunk is deliberately far too many words long";
+    warny.scenes[1].caption_segments[2].emphasis_words = ["absent"];
+    const s = await call("vob_save_storyboard", { project_id: CAP, content: warny });
+    const codes = (s.plan_lint.warnings || []).map((w) => w.code);
+    for (const c of ["PLAN_CAPTION_CHUNK_TOO_LONG", "PLAN_CAPTION_EMPHASIS_NOT_IN_TEXT"]) {
+      assert(codes.includes(c), `expected ${c}, got ${JSON.stringify(codes)}`);
+    }
+  });
+
+  await step("re-save good storyboard", () => call("vob_save_storyboard", { project_id: CAP, content: goodSb }));
+  await step("confirm storyboard", () => call("vob_confirm_storyboard", { project_id: CAP }));
+  await step("transition PLAN→COMPOSE", () => call("vob_transition_phase", { project_id: CAP, to_phase: "COMPOSE" }));
+
+  const goodComp = composition(goodSb);
+
+  // 3. Binding negative (regression): the EXACT caption with no element REJECTS.
+  await step("save composition (exact caption missing element rejected)", async () => {
+    const broken = { "index.html": goodComp["index.html"].replace(/^.*data-vob-caption-id="cx-1".*$\n/m, "") };
+    assert(!/data-vob-caption-id="cx-1"/.test(broken["index.html"]), "fixture surgery failed — cx-1 still present");
+    const err = await expectError("vob_save_composition", { project_id: CAP, files: broken }, /INVALID_ARGUMENTS/);
+    const rules = (err.details.qc_findings || []).map((f) => f.rule);
+    assert(rules.includes("vob/caption_missing_element"), `expected vob/caption_missing_element, got ${JSON.stringify(rules)}`);
+  });
+
+  // 4. Clean save: kit injected, layout-QC fold-in stamped, no errors.
+  const savedComp = await step("save composition (caption kit + layout QC)", () =>
+    call("vob_save_composition", { project_id: CAP, files: goodComp }),
+  );
+  {
+    assert(savedComp.captions_kit_linked === true, "caption kit not linked into compose/");
+    const manifestPath = path.join(savedComp.compose_dir, "captions", "manifest.json");
+    assert(fs.existsSync(manifestPath), `compose/captions/manifest.json missing (expected ${manifestPath})`);
+    const km = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+    assert(km.animations && km.animations.karaoke && km.animations.karaoke.default, "caption manifest missing animations map");
+    const reportPath = (savedComp.lint && savedComp.lint.report_path) || path.join(savedComp.compose_dir, "lint-report.json");
+    const report = JSON.parse(fs.readFileSync(reportPath, "utf8"));
+    assert(report.report_version === 3, `expected lint-report report_version 3, got ${report.report_version}`);
+    assert(report.inspect && typeof report.inspect === "object", "lint-report missing inspect{} block");
+    if (HEAVY) {
+      // Normally ran:true; tolerate a non-fatal DEGRADE (timeout/error) on a
+      // loaded/low-RAM host — the heavy path proves the fold-in EXECUTES, and a
+      // clean degrade IS the designed safe outcome (must never be an error).
+      assert(report.inspect.ran === true || /^(timeout|error|unparseable)$/.test(String(report.inspect.skipped_reason || "")),
+        `expected inspect to run or cleanly degrade under VOB_WALKER_LAYOUT_QC=1, got ${JSON.stringify(report.inspect)}`);
+    } else {
+      assert(report.inspect.ran === false && report.inspect.skipped_reason === "disabled",
+        `expected inspect skipped:disabled under VOB_LAYOUT_QC=off, got ${JSON.stringify(report.inspect)}`);
+    }
+    assert(savedComp.lint_status !== "errors", `caption composition lint failed: ${savedComp.lint_status}`);
+    console.log(`   captions_kit_linked: ${savedComp.captions_kit_linked}   report_version: ${report.report_version}   inspect: ${JSON.stringify(report.inspect)}   lint_status: ${savedComp.lint_status}`);
+
+    // 4b. END-TO-END (HEAVY only, when inspect actually ran): inject an
+    // ALWAYS-ON overflowing element into the REAL composition and prove the
+    // inspect finding flows through save → lint → the merged report as an
+    // ADVISORY warning that does NOT gate. Joins the two halves the cheap paths
+    // prove in isolation. (The element is always-visible, NOT a timed caption:
+    // the walker's stub timeline registers no real GSAP tweens, so inspect's
+    // --at-transitions can't sample a narrow caption window — in real usage the
+    // kit's gsap timelines DO create those tweens and timed captions get
+    // measured. An unbound element with no planned-text match → layout_overflow.)
+    if (HEAVY && report.inspect.ran === true) {
+      await step("layout QC end-to-end: overflowing element folds into the lint report (no gate)", async () => {
+        const overEl = `  <div id="lqc-overflow" class="clip" data-start="0" data-duration="${goodSb.total_target_duration_seconds}" data-track-index="5" style="position:absolute;top:80px;left:40px;width:200px;white-space:nowrap;font-family:Arial;font-size:300px;font-weight:900;color:#fff">OVERFLOWPROOF</div>`;
+        const overComp = { "index.html": goodComp["index.html"].replace("</div>\n<script>", `${overEl}\n</div>\n<script>`) };
+        assert(/lqc-overflow/.test(overComp["index.html"]), "fixture surgery failed — overflow element not injected");
+        const s = await call("vob_save_composition", { project_id: CAP, files: overComp });
+        const rp = (s.lint && s.lint.report_path) || path.join(s.compose_dir, "lint-report.json");
+        const rep = JSON.parse(fs.readFileSync(rp, "utf8"));
+        const rules = (rep.findings || []).map((f) => f.rule);
+        assert(rules.includes("vob/caption_overflow") || rules.includes("vob/layout_overflow"),
+          `expected an overflow finding folded into the lint report, got ${JSON.stringify(rules)} (inspect: ${JSON.stringify(rep.inspect)})`);
+        assert(rep.lint_status !== "errors", `an overflow advisory must NOT gate (errors), got ${rep.lint_status}`);
+        console.log(`   end-to-end overflow folded: ${rules.filter((r) => /overflow/.test(r)).join(", ")}   lint_status: ${rep.lint_status}`);
+      });
+    }
+  }
+
+  // 5. Layout-QC FIRING on tiny synthetic compositions (real `hyperframes
+  // inspect`, no <video> — cheap). Three cases prove runner + parser + mapper
+  // end-to-end without a session render: (a) an overflowing element whose text
+  // matches a planned BOUND caption → vob/caption_overflow; (b) an overflowing
+  // UNBOUND element (no caption id, no planned-text match) → vob/layout_overflow
+  // (the re-chunked/unattributed fallback); (c) a fitting caption → nothing.
+  // Each probe reaps its temp dir in a finally.
+  await step("layout QC: synthetic overflow → caption_overflow + layout_overflow", async () => {
+    assert(layoutQcMode() === (HEAVY ? "always" : "off"), "layoutQcMode did not honor VOB_LAYOUT_QC");
+    const head = `<!doctype html><html><head><meta charset="utf-8"/><style>
+html,body{margin:0;width:1080px;height:1920px;background:#111;overflow:hidden}
+#root{position:relative;width:1080px;height:1920px}
+.over{position:absolute;top:60px;left:40px;width:280px;white-space:nowrap;font-family:Arial;font-size:150px;font-weight:900;color:#fff}
+.fit{position:absolute;bottom:200px;left:50%;transform:translateX(-50%);width:900px;text-align:center;font-family:Arial;font-size:60px;color:#fff}
+</style></head><body>
+<div id="root" data-composition-id="c" data-width="1080" data-height="1920" data-fps="30" data-start="0" data-duration="2">`;
+    const wrap = (inner) => `${head}\n${inner}\n</div></body></html>`;
+    const probe = async (inner, storyboard) => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cap-lqc-"));
+      try {
+        fs.writeFileSync(path.join(dir, "index.html"), wrap(inner));
+        const ins = await runInspect({ composeRoot: dir });
+        const rep = parseInspectReport(ins.stdout);
+        assert(rep.ok, `inspect report did not parse: ${rep.parse_error}`);
+        return mapInspectIssues(rep, { storyboard });
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    };
+
+    // (a) bound element + matching planned text -> caption_overflow.
+    const BIG = "SUPERCALIFRAGILISTIC OVERFLOW HEADLINE";
+    const sbBound = { schema_version: "1.0", scenes: [{ scene_id: "s001", source_clips: [], overlays: [],
+      caption_segments: [{ text: BIG, start_seconds: 0, end_seconds: 2, id: "big" }] }] };
+    const fBound = await probe(`<div class="over" data-vob-caption-id="big" data-start="0" data-duration="2">${BIG}</div>`, sbBound);
+    assert(fBound.map((f) => f.rule).includes("vob/caption_overflow"), `expected vob/caption_overflow, got ${JSON.stringify(fBound)}`);
+    assert(fBound.every((f) => f.severity !== "error"), "layout QC findings must never be errors");
+
+    // (b) unbound element, no planned-text match -> layout_overflow (NOT caption).
+    const fUnbound = await probe(`<div class="over" data-start="0" data-duration="2">UNPLANNEDOVERFLOWINGLAYOUTHEADLINE</div>`, sbBound);
+    const rUnbound = fUnbound.map((f) => f.rule);
+    assert(rUnbound.includes("vob/layout_overflow"), `expected vob/layout_overflow, got ${JSON.stringify(fUnbound)}`);
+    assert(!rUnbound.includes("vob/caption_overflow"), `unattributed overflow must NOT be caption_overflow, got ${JSON.stringify(rUnbound)}`);
+
+    // (c) fitting caption -> no overflow.
+    const sbFit = { schema_version: "1.0", scenes: [{ scene_id: "s", source_clips: [], overlays: [],
+      caption_segments: [{ text: "reads fine", start_seconds: 0, end_seconds: 2, id: "ok" }] }] };
+    const fFit = await probe(`<div class="fit" data-vob-caption-id="ok" data-start="0" data-duration="2">reads fine</div>`, sbFit);
+    assert(!fFit.some((f) => /overflow/.test(f.rule)), `clean caption must not overflow, got ${JSON.stringify(fFit)}`);
+
+    // gating.
+    assert(shouldRunLayoutQc(sbBound, {}) === true, "shouldRunLayoutQc should be true with a caption_segment");
+    assert(shouldRunLayoutQc({ schema_version: "1.0", scenes: [{ scene_id: "s", source_clips: [], overlays: [] }] }, {}) === false,
+      "shouldRunLayoutQc should be false with no captions/overlays");
+  });
+
+  const final = await call("vob_read_state_summary", { project_id: CAP });
+  console.log(`\n=== captions final phase: ${final.phase}`);
+  } finally {
+    // Always restore the env knob (so a mid-phase throw can't leak it into a
+    // later in-process phase).
+    if (typeof prevLayoutQc === "string") process.env.VOB_LAYOUT_QC = prevLayoutQc;
+    else delete process.env.VOB_LAYOUT_QC;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// v3.3 `subject` walker phase — the subject-compositing executable spec:
+// render_mode:"subject" schema gating + plan lint (the backdrop ingested-only
+// guard + the host subject-seconds budget), the COMPOSE-entry matte
+// materialization (content-hash cached, degrade-don't-die), and path (b) the
+// ffmpeg composite (design-token backdrop + alpha matte + the SUBJECT's audio,
+// duration-exact). The real matte (hyperframes remove-background — downloads a
+// model + is RAM-heavy) is OPT-IN: set VOB_WALKER_MATTE=1 to run it. By default
+// matting is disabled (VOB_REMOVE_BG_DISABLE) so the schema/lint/wiring tests run
+// model-free and never surprise-download the model.
+
+async function runSubject() {
+  const SUB = `${PROJECT_ID}-subject`;
+  console.log(`=== v3.3 subject walker (matted subject over backdrop) — project: ${SUB}`);
+  const { transcodedClipPath, mattePath, matteSidecarPath } = require("../mcp/lib/paths.js");
+
+  const wantMatte = /^(1|on|true|yes)$/i.test(process.env.VOB_WALKER_MATTE || "");
+  const prevDisable = process.env.VOB_REMOVE_BG_DISABLE;
+  if (!wantMatte) process.env.VOB_REMOVE_BG_DISABLE = "1"; // model-free by default
+  else delete process.env.VOB_REMOVE_BG_DISABLE;
+
+  function ffprobeJson(file) {
+    const out = execFileSync("ffprobe",
+      ["-v", "error", "-show_entries", "format=duration:stream=width,height,codec_type", "-of", "json", file],
+      { encoding: "utf8" });
+    return JSON.parse(out);
+  }
+  function ffprobeDims(file) {
+    const j = ffprobeJson(file);
+    const v = (j.streams || []).find((s) => s.codec_type === "video") || {};
+    return { width: Number(v.width) || 1080, height: Number(v.height) || 1920, duration: Number(j.format && j.format.duration) || 0 };
+  }
+  function ffprobeHasAudio(file) {
+    return (ffprobeJson(file).streams || []).some((s) => s.codec_type === "audio");
+  }
+
+  try {
+    const boot = await bootstrapToPlan({
+      projectId: SUB,
+      target: { format: "tiktok", duration: "8s" },
+      intentAnswers: {
+        target_platform: "tiktok",
+        target_duration: "8s",
+        tone: "calm",
+        key_moments: "none in particular",
+        music_vo: "neither",
+      },
+      briefBody: `# Brief: ${SUB}\n\n## Target\n- 8s talking-head with a matted subject over a designed backdrop\n\n## Design language\n- Palette: bg #111111, text #F5F5F0, accent #8B5CF6\n`,
+    });
+    const D = boot.file0.duration_seconds;
+    const srcPath = boot.file0.path || SOURCE;
+    const windows = planWindows({ durationSeconds: D, transcript: null });
+
+    const mkScene = (id, seq, purpose, win, secs, pacing) => ({
+      scene_id: id, sequence: seq, purpose,
+      target_duration_seconds: secs,
+      summary: `${purpose} ${win.in}-${win.out}s`,
+      source_clips: [{ manifest_file_index: 0, source_path: srcPath, in_seconds: win.in, out_seconds: win.out }],
+      overlays: [], captions: null, pacing,
+    });
+
+    const hookWin = { ...windows.hook, out: round3(windows.hook.in + 4) };
+    const payoffWin = { ...windows.payoff, out: round3(windows.payoff.in + 4) };
+    // scene subj-1's clip is the SUBJECT footage matted off its background;
+    // scene subj-2's clip-0 doubles as the clip_ref backdrop option (an INGESTED
+    // clip, never a synthesized one).
+    const goodSb = {
+      schema_version: "1.2",
+      project_id: SUB,
+      generated_at: new Date().toISOString(),
+      source: { manifest_path: boot.summary.manifest.path, brief_path: boot.savedBrief.brief_path },
+      target: { platform: "tiktok", duration_seconds: 8, tone: "calm" },
+      scenes: [
+        mkScene("subj-1", 1, "hook", hookWin, 4, "medium"),
+        mkScene("subj-2", 2, "payoff", payoffWin, 4, "medium"),
+      ],
+      total_target_duration_seconds: 8,
+      broll_placements: [
+        {
+          render_mode: "subject",
+          clip: { scene_id: "subj-1", clip_index: 0 },
+          backdrop: { kind: "design_token", fill: "linear-gradient(180deg,#111111,#8B5CF6)" },
+          position: { anchor: "center", scale: 0.82 },
+          motion: { in: "fade", out: "fade" },
+        },
+      ],
+      notes: "Subject walker fixture — matted talking-head over a design-token backdrop.",
+    };
+
+    // 1. Schema negative: a subject placement under schema 1.1 is rejected
+    //    (render_mode rides the existing 1.2 gate).
+    await step("save storyboard (subject under 1.1 rejected)", async () => {
+      const old = JSON.parse(JSON.stringify(goodSb));
+      old.schema_version = "1.1";
+      const err = await expectError("vob_save_storyboard", { project_id: SUB, content: old }, /INVALID_ARGUMENTS/);
+      assert((err.details.schema_errors || []).some((m) => /render_mode requires schema_version "1\.2"/.test(String(m))),
+        `expected the render_mode 1.2 gate, got ${JSON.stringify(err.details.schema_errors)}`);
+    });
+
+    // 2. Schema negative: a subject on a gap placement is rejected (subject needs
+    //    real footage to matte).
+    await step("save storyboard (subject-on-gap rejected)", async () => {
+      const bad = JSON.parse(JSON.stringify(goodSb));
+      bad.broll_placements = [{ render_mode: "subject", source: "gap", description: "a shot we lack", desired_duration_seconds: 3, scene_ref: "subj-1" }];
+      const err = await expectError("vob_save_storyboard", { project_id: SUB, content: bad }, /INVALID_ARGUMENTS/);
+      assert((err.details.schema_errors || []).some((m) => /subject.*but is a gap/.test(String(m))),
+        `expected the subject-on-gap error, got ${JSON.stringify(err.details.schema_errors)}`);
+    });
+
+    // 3. Plan-lint WARNING (save PASSES): a synthesized backdrop kind warns
+    //    PLAN_SUBJECT_BACKDROP_NOT_INGESTED — the ingested-only guard at the gate.
+    await step("save storyboard (synthesized backdrop kind warns, save stands)", async () => {
+      const warny = JSON.parse(JSON.stringify(goodSb));
+      warny.broll_placements[0].backdrop = { kind: "ai_generated", fill: "#000000" };
+      const saved = await call("vob_save_storyboard", { project_id: SUB, content: warny });
+      const codes = (saved.plan_lint.warnings || []).map((w) => w.code);
+      assert(saved.plan_lint.error_count === 0, "a synthesized-backdrop kind must NOT reject the save");
+      assert(codes.includes("PLAN_SUBJECT_BACKDROP_NOT_INGESTED"),
+        `expected PLAN_SUBJECT_BACKDROP_NOT_INGESTED, got ${JSON.stringify(codes)}`);
+    });
+
+    // 4. Budget echo: a tiny budget warns PLAN_SUBJECT_BUDGET_EXCEEDED.
+    await step("save storyboard (subject budget exceeded warns)", async () => {
+      const prev = process.env.VOB_SUBJECT_SECONDS_MAX;
+      process.env.VOB_SUBJECT_SECONDS_MAX = "1";
+      require("../mcp/lib/host-profile.js")._reset();
+      try {
+        const saved = await call("vob_save_storyboard", { project_id: SUB, content: goodSb });
+        const codes = (saved.plan_lint.warnings || []).map((w) => w.code);
+        assert(codes.includes("PLAN_SUBJECT_BUDGET_EXCEEDED"),
+          `expected PLAN_SUBJECT_BUDGET_EXCEEDED, got ${JSON.stringify(codes)}`);
+      } finally {
+        if (typeof prev === "string") process.env.VOB_SUBJECT_SECONDS_MAX = prev;
+        else delete process.env.VOB_SUBJECT_SECONDS_MAX;
+        require("../mcp/lib/host-profile.js")._reset();
+      }
+    });
+
+    // 5. Good save: plan-lint clean of subject findings.
+    const savedGood = await step("save storyboard (subject placement, no subject findings)", () =>
+      call("vob_save_storyboard", { project_id: SUB, content: goodSb }));
+    {
+      assert(savedGood.plan_lint.error_count === 0, "good subject storyboard reported plan errors");
+      const codes = (savedGood.plan_lint.warnings || []).map((w) => w.code);
+      for (const code of ["PLAN_SUBJECT_BACKDROP_NOT_INGESTED", "PLAN_SUBJECT_BUDGET_EXCEEDED"]) {
+        assert(!codes.includes(code), `good subject doc must not warn ${code}: ${JSON.stringify(codes)}`);
+      }
+    }
+
+    await step("confirm storyboard", () => call("vob_confirm_storyboard", { project_id: SUB }));
+    await step("transition PLAN→COMPOSE (materializes subject mattes)", () =>
+      call("vob_transition_phase", { project_id: SUB, to_phase: "COMPOSE" }));
+
+    const subjClip = transcodedClipPath(SUB, "subj-1", 0);
+    assert(fs.existsSync(subjClip), `subject pre-cut clip missing at ${subjClip}`);
+
+    const sum = await call("vob_read_state_summary", { project_id: SUB });
+    assert(sum.subject_mattes && sum.subject_mattes.count === 1,
+      `expected subject_mattes.count===1, got ${JSON.stringify(sum.subject_mattes)}`);
+    console.log(`   subject_mattes: ${JSON.stringify(sum.subject_mattes)}`);
+
+    const matteAbs = mattePath(SUB, "subj-1", 0);
+    const sidecarAbs = matteSidecarPath(SUB, "subj-1", 0);
+
+    if (!wantMatte) {
+      // Model-free run: matting disabled -> the subject degrades to "skipped" but
+      // COMPOSE is still entered (degrade-don't-die). No real matte produced.
+      assert(sum.subject_mattes.skipped === 1,
+        `disabled run should skip the matte, got ${JSON.stringify(sum.subject_mattes)}`);
+      assert(sum.phase === "COMPOSE", `expected COMPOSE after transition, got ${sum.phase}`);
+      console.log("\n   [SKIP] real-matte assertions — set VOB_WALKER_MATTE=1 (downloads the remove-background model; RAM-heavy) to run the matte + composite.");
+      console.log(`\n=== subject final phase: ${sum.phase}`);
+      return;
+    }
+
+    // --- Opt-in real-matte path (VOB_WALKER_MATTE=1) -------------------------
+    await step("matte .webm + sidecar written at COMPOSE entry", () => {
+      assert(fs.existsSync(matteAbs), `matte .webm missing at ${matteAbs}`);
+      assert(fs.existsSync(sidecarAbs), `matte sidecar missing at ${sidecarAbs}`);
+      assert((sum.subject_mattes.matted + sum.subject_mattes.cached) === 1,
+        `expected a matted/cached subject, got ${JSON.stringify(sum.subject_mattes)}`);
+    });
+
+    await step("re-materialize reports cached (content-hash no-op)", async () => {
+      const { materializeSubjectMattes } = require("../mcp/lib/matte-materialize.js");
+      const again = await materializeSubjectMattes({ projectId: SUB });
+      assert(again.summary.total === 1 && again.summary.cached === 1 && again.summary.matted === 0,
+        `re-entry must be all-cached, got ${JSON.stringify(again.summary)}`);
+    });
+
+    await step("matte symlink resolves into compose/source", () => {
+      const { resolveMatteLinks } = require("../mcp/lib/source-symlink.js");
+      const links = resolveMatteLinks(SUB);
+      assert(links.length === 1 && links[0].link_rel === "source/subj-1-0.webm",
+        `expected one matte link source/subj-1-0.webm, got ${JSON.stringify(links)}`);
+    });
+
+    await step("path (b) ffmpeg composite — duration-exact + audio retained", async () => {
+      const { generateBackdrop, compositeOverlayOverBase } = require("../mcp/lib/overlay-compositor.js");
+      const dims = ffprobeDims(subjClip);
+      const backdrop = `/tmp/${SUB}-backdrop.mp4`;
+      await generateBackdrop({ fill: "#8B5CF6", width: dims.width, height: dims.height, durationSeconds: dims.duration, outPath: backdrop });
+      const outComposite = `/tmp/${SUB}-subject.mp4`;
+      await compositeOverlayOverBase({ basePath: backdrop, overlayPath: matteAbs, outPath: outComposite, audio: subjClip, scaleToBase: true });
+      const cd = ffprobeDims(outComposite);
+      const drift = Math.abs(cd.duration - dims.duration);
+      assert(drift <= 0.5, `composite duration drift ${drift.toFixed(2)}s vs subject clip (${dims.duration}s)`);
+      assert(ffprobeHasAudio(outComposite), "composite lost the subject audio (the subject's speech must win over the muted backdrop)");
+      console.log(`   composite: ${cd.duration.toFixed(2)}s (subject ${dims.duration.toFixed(2)}s), audio retained`);
+    });
+
+    const final = await call("vob_read_state_summary", { project_id: SUB });
+    console.log(`\n=== subject final phase: ${final.phase}`);
+  } finally {
+    if (typeof prevDisable === "string") process.env.VOB_REMOVE_BG_DISABLE = prevDisable;
+    else delete process.env.VOB_REMOVE_BG_DISABLE;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// v3.3 `transitions` walker phase — the PRD-02 executable spec: the typed
+// transition vocabulary (per-preset), the ruleset-gated PLAN_TRANSITION_*
+// warnings (all warnings, never errors), and render-plan GLUE boundary
+// avoidance (a non-cut/non-seam transition_in keeps adjacent scenes in one
+// render chunk; a seam-expressible transition_in at a chunk boundary becomes a
+// dip-to-black). No renders here — the real-render duration-exactness of an
+// intra-composition transition is structurally guaranteed (CSS paints over
+// existing frames; master data-duration is unchanged) and proven end-to-end by
+// the `longform` phase's assemble + ffprobe drift check.
+async function runTransitions() {
+  const TR = `${PROJECT_ID}-transitions`;
+  console.log(`=== v3.3 transitions walker (PRD-02) — project: ${TR}`);
+
+  const boot = await bootstrapToPlan({
+    projectId: TR,
+    target: { format: "tiktok", duration: "30 seconds" },
+    intentAnswers: {
+      target_platform: "tiktok",
+      target_duration: "30 seconds",
+      tone: "energetic",
+      key_moments: "none in particular",
+      music_vo: "neither",
+    },
+    briefBody: `# Brief: ${TR}\n\n## Target\n- tiktok, ~30s\n\n## Design language\n- Typography: headline Anton; captions Inter\n- Palette: bg #000 / text #FFF / accent #FF3B30\n- Motion: fast-snap\n`,
+  });
+  const D = boot.file0.duration_seconds;
+  const srcPath = boot.file0.path || SOURCE;
+
+  // tiktok ⇒ social-short; its transition_vocabulary is the CSS punchy family
+  // (crossfade/whip_pan/zoom_punch/push — NO shader types). Both ride into the
+  // composer spawn via the summary.
+  await step("transition_vocabulary + shader gate surface in the summary", async () => {
+    const s = await call("vob_read_state_summary", { project_id: TR });
+    const tv = s.video_type.transition_vocabulary;
+    assert(Array.isArray(tv) && tv.includes("crossfade") && tv.includes("whip_pan") && !tv.includes("glitch"),
+      `unexpected transition_vocabulary: ${JSON.stringify(tv)}`);
+    assert(typeof s.video_type.shader_transitions_allowed === "boolean",
+      `shader_transitions_allowed must be a boolean, got ${JSON.stringify(s.video_type.shader_transitions_allowed)}`);
+  });
+
+  const ws = Array.from({ length: 8 }, (_, i) =>
+    placeWindow({ keepSpans: null, len: 1.2, preferStart: D * (0.06 + i * 0.1), durationSeconds: D }));
+  // A scene with TWO clips (video_count 2) + an optional transition_in.
+  const trScene = (id, seq, purpose, pair, tin) => ({
+    scene_id: id,
+    sequence: seq,
+    purpose,
+    target_duration_seconds: 3,
+    summary: `${purpose} ${id}`,
+    source_clips: pair.map((w) => ({ manifest_file_index: 0, source_path: srcPath, in_seconds: w.in, out_seconds: w.out })),
+    overlays: [],
+    captions: null,
+    pacing: "fast",
+    ...(tin === undefined ? {} : { transition_in: tin }),
+  });
+  const sbEnvelope = (scenes) => ({
+    schema_version: "1.2",
+    project_id: TR,
+    generated_at: new Date().toISOString(),
+    source: { manifest_path: boot.summary.manifest.path, brief_path: boot.savedBrief.brief_path },
+    target: { platform: "tiktok", duration_seconds: 12, tone: "energetic" },
+    render_segmentation: "auto",
+    scenes,
+    total_target_duration_seconds: scenes.reduce((a, s) => a + s.target_duration_seconds, 0),
+  });
+
+  // CLEAN: A cut · B crossfade · C whip_pan (A-B-C glue) · D dip (a seam).
+  const cleanScenes = [
+    trScene("t001", 1, "hook", [ws[0], ws[1]], undefined),
+    trScene("t002", 2, "beat", [ws[2], ws[3]], "crossfade"),
+    trScene("t003", 3, "beat", [ws[4], ws[5]], "whip_pan"),
+    trScene("t004", 4, "payoff", [ws[6], ws[7]], "dip"),
+  ];
+  await step("clean transitions (in-vocabulary) raise NO PLAN_TRANSITION warnings", async () => {
+    const saved = await call("vob_save_storyboard", { project_id: TR, content: sbEnvelope(cleanScenes) });
+    assert(saved.plan_lint.error_count === 0, `clean transitions storyboard reported plan-lint errors: ${JSON.stringify(saved.plan_lint)}`);
+    const tcodes = (saved.plan_lint.warnings || []).map((w) => w.code).filter((c) => c.startsWith("PLAN_TRANSITION"));
+    assert(tcodes.length === 0, `clean fixture should raise no PLAN_TRANSITION warnings, got ${JSON.stringify(tcodes)}`);
+  });
+
+  // NOISY (shaders forced off): an over-long crossfade, a shader type, an
+  // off-vocabulary type. All three WARN; none is ever an error.
+  const noisyScenes = [
+    trScene("t001", 1, "hook", [ws[0], ws[1]], undefined),
+    trScene("t002", 2, "beat", [ws[2], ws[3]], { type: "crossfade", duration_seconds: 5 }), // TOO_LONG (>0.5×3s)
+    trScene("t003", 3, "beat", [ws[4], ws[5]], { type: "glitch" }),                          // BUDGET (shader, host off)
+    trScene("t004", 4, "payoff", [ws[6], ws[7]], "iris"),                                    // UNKNOWN (off social-short vocab, not a seam)
+  ];
+  await step("noisy transitions WARN (TOO_LONG + BUDGET + UNKNOWN_TYPE), never error", async () => {
+    const prev = process.env.VOB_SHADER_TRANSITIONS;
+    process.env.VOB_SHADER_TRANSITIONS = "off";
+    try {
+      const saved = await call("vob_save_storyboard", { project_id: TR, content: sbEnvelope(noisyScenes) });
+      assert(saved.plan_lint.error_count === 0, `transition warnings must NEVER be errors: ${JSON.stringify(saved.plan_lint)}`);
+      const codes = (saved.plan_lint.warnings || []).map((w) => w.code);
+      for (const c of ["PLAN_TRANSITION_TOO_LONG", "PLAN_TRANSITION_BUDGET", "PLAN_TRANSITION_UNKNOWN_TYPE"]) {
+        assert(codes.includes(c), `expected ${c}, got ${JSON.stringify(codes.filter((x) => x.startsWith("PLAN_TRANSITION")))}`);
+      }
+    } finally {
+      if (typeof prev === "string") process.env.VOB_SHADER_TRANSITIONS = prev;
+      else delete process.env.VOB_SHADER_TRANSITIONS;
+    }
+  });
+
+  // Re-save the CLEAN plan so the render plan derives from it, then sign off.
+  await step("re-save clean storyboard", () => call("vob_save_storyboard", { project_id: TR, content: sbEnvelope(cleanScenes) }));
+  await step("confirm storyboard", () => call("vob_confirm_storyboard", { project_id: TR }));
+
+  // Render-plan boundary avoidance: under a deliberately low <video> budget the
+  // GLUED run A-B-C must stay in ONE chunk (a plain budget pack of vc-2 scenes
+  // would split 2+2); D starts the next chunk and the seam is D's dip → fade.
+  await step("COMPOSE: glue keeps A-B-C in one chunk (3+1, not 2+2); D's dip ⇒ fade seam", async () => {
+    const prev = process.env.VOB_VIDEO_BUDGET;
+    process.env.VOB_VIDEO_BUDGET = "4";
+    try {
+      const toCompose = await call("vob_transition_phase", { project_id: TR, to_phase: "COMPOSE" });
+      const rp = toCompose.phase_summary.render_plan;
+      assert(rp && rp.mode === "segmented" && rp.segment_count === 2,
+        `expected a 2-segment render plan, got ${JSON.stringify(rp)}`);
+      assert(rp.segments[0].scene_count === 3 && rp.segments[1].scene_count === 1,
+        `glue boundary avoidance failed — expected chunks of 3 then 1 scene, got ${rp.segments.map((s) => s.scene_count).join("+")}`);
+      assert(rp.segments[0].transition_out === "fade",
+        `the A-B-C chunk's seam should be a dip-to-black "fade" (D's dip transition_in), got "${rp.segments[0].transition_out}"`);
+      console.log(`   plan: ${rp.segments.map((s) => `${s.segment_id}(${s.scene_count}sc)→${s.transition_out}`).join("  ")}`);
+    } finally {
+      if (typeof prev === "string") process.env.VOB_VIDEO_BUDGET = prev;
+      else delete process.env.VOB_VIDEO_BUDGET;
+    }
+  });
+
+  const final = await call("vob_read_state_summary", { project_id: TR });
+  console.log(`\n=== transitions final phase: ${final.phase} — CSS @keyframes recipes in lint-rules.md; real-render duration-exactness covered by 'longform'`);
+}
+
 async function main() {
   const phase = process.argv[2] || "all";
   if (phase === "stillsqc") {
@@ -2179,6 +2825,18 @@ async function main() {
   }
   if (phase === "gaps") {
     await runGaps();
+    return;
+  }
+  if (phase === "captions") {
+    await runCaptions();
+    return;
+  }
+  if (phase === "subject") {
+    await runSubject();
+    return;
+  }
+  if (phase === "transitions") {
+    await runTransitions();
     return;
   }
   console.log(`=== M5 walker v2 — phase: ${phase} — project: ${PROJECT_ID}`);

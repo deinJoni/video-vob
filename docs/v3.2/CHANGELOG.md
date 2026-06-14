@@ -1,3 +1,54 @@
+# video-vob v3.3 — hyperframes-leverage creative layer (on top of v3.2)
+
+**One line:** additive creative layers that lean on hyperframes capabilities the engine already
+drove but didn't call — shipping as **v3.3** on top of v3.2. PRDs in `docs/hyperframes/`. This
+section documents the **subject-compositing** pillar (PRD 03); its siblings — caption-system v2
+(PRD 01) and scene transitions (PRD 02) — land alongside it on the same line.
+
+## Subject compositing — `render_mode: "subject"` (PRD 03)
+
+A new `broll_placements[].render_mode: "subject"` (schema 1.2, additive) lifts a talking-head /
+foreground subject off its filmed background with hyperframes' **local** `remove-background` model
+and composites it over a designed or ingested **backdrop** — clean non-rectangular PiP,
+podcast→video, a cinematic talking-head spine. It only ever *transforms footage the user already
+shot*, so it stays inside the ingested-only contract.
+
+- **Schema + plan lint** (`storyboard-schema.js`): `BROLL_RENDER_MODES += "subject"` +
+  `BACKDROP_KINDS` (`design_token` | `clip_ref` | `scene_base` — NO synthesized/stock/AI
+  backdrops). A subject placement references a real clip (`clip:{scene_id,clip_index}`, never a
+  gap) plus a `backdrop` (+ optional `position{anchor,scale}`, `motion{in,out}`). Warnings only:
+  `PLAN_SUBJECT_BACKDROP_NOT_INGESTED` (the ingested-only guard, human-visible at the gate — a bad
+  kind / unresolved ref WARNS and the save STANDS) and `PLAN_SUBJECT_BUDGET_EXCEEDED` (per render
+  unit vs the host subject-seconds budget).
+- **The matte is a COMPOSE-entry side effect** mirroring `clip-materialize.js`:
+  `matte-materialize.js::materializeSubjectMattes` mattes each subject's already-pre-cut clip to an
+  alpha `.webm` under `transcoded/mattes/`, content-hash cached (back-edge re-entry is a no-op),
+  symlinked into `compose/source/<scene_id>-<clip_index>.webm`. It **DEGRADES, never throws** — a
+  missing/uncached model, a disabled host (`VOB_REMOVE_BG_DISABLE`), an over-budget set, or a
+  failed inference records the matte `skipped`/`unavailable`/`failed` and COMPOSE still proceeds
+  (the composer falls back to a rectangular `pip`; subject mode is ADVISORY at QC).
+- **One hyperframes runner**: every `remove-background` call flows through `resolveHyperframesCmd()`
+  / `hyperframesChildEnv()` like render/snapshot/transcribe — pinned engine, no npx, duration-aware
+  timeout, `retryTimedOut:false`. Knobs: `VOB_REMOVE_BG_DEVICE` (coreml-on-darwin / cpu),
+  `VOB_REMOVE_BG_TIMEOUT_MS`, `VOB_REMOVE_BG_DISABLE`.
+- **Two composer realizations** (recipes in `references/lint-rules.md`): (a) DEFAULT — the matte as
+  an alpha `<video>` over an HTML/CSS backdrop, subject audio from the sibling `.mp4`; (b) low-RAM
+  FALLBACK — `overlay-compositor.js::compositeOverlayOverBase` over a `buildBackdropArgv`/
+  `generateBackdrop` design-token backdrop (or a clip base), the subject's audio muxed, backdrop
+  laid muted.
+- **Preflight**: INGEST `state.dependencies.remove_background` + `vob_doctor` report the matte
+  backend (providers, model-cache state, device) — warn-only, NEVER flips `ok:false`. Host budget
+  via `host-profile.js::subjectBudget` (`VOB_SUBJECT_SECONDS_MAX`; default 60s low-RAM / 600s; in
+  `CAPACITY_TIERS`; surfaced in `vob_doctor` `report.tuning`).
+- **State**: `read_state_summary.subject_mattes{count,matted,cached,skipped,over_budget,
+  backend_available}` + a `subject_mattes_materialized` history event.
+- **Verified end-to-end** against real footage via `node scripts/m5-walker.js subject`:
+  schema/lint negatives + positives run model-free; the real matte (`VOB_WALKER_MATTE=1`) produced
+  the alpha `.webm` + sidecar, re-entry reported `cached` (content-hash no-op), and the path-(b)
+  ffmpeg composite was duration-exact (4.02s vs 4.00s) with the subject's audio retained.
+
+---
+
 # video-vob v3.2.0 — consolidated release notes (vs `main` @ v2.1.0)
 
 **One line:** the whole v3 line ships to `main` in one release — a **general agentic video

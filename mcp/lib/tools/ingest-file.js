@@ -16,7 +16,7 @@ const {
 } = require("../storage.js");
 const { readSessionStateStrict } = require("../session-state.js");
 const { probeFile, summarizeProbe } = require("../ffprobe.js");
-const { checkHyperframesAvailable } = require("../hyperframes-runner.js");
+const { checkHyperframesAvailable, checkRemoveBackgroundAvailable } = require("../hyperframes-runner.js");
 const { checkFfmpegAvailable } = require("../ffmpeg-runner.js");
 const { checkAsrAvailable } = require("../asr-backend.js");
 
@@ -24,6 +24,7 @@ const DEPENDENCY_HINTS = Object.freeze({
   ffmpeg: "install ffmpeg (macOS: brew install ffmpeg; Debian/Ubuntu: apt-get install ffmpeg)",
   hyperframes: "npm install -g hyperframes",
   asr: "pip install faster-whisper (or set VOB_ASR_BACKEND)",
+  remove_background: "only needed for render_mode:\"subject\" — hyperframes ships the matte model (coreml/cpu); first run downloads weights",
 });
 
 const VIDEO_EXTENSIONS = new Set([".mp4", ".mov", ".mkv", ".webm", ".m4v", ".avi"]);
@@ -231,6 +232,10 @@ function ingestFile(args) {
   // (the user can install one or pass skip_transcription) — recorded for the
   // orchestrator to relay.
   const asr = checkAsrAvailable();
+  // Subject-compositing matte backend (v3.3): non-fatal, only matters if a
+  // storyboard uses render_mode:"subject". Surfaced now so a missing/un-downloaded
+  // model is known before COMPOSE spends time per clip failing.
+  const removeBg = checkRemoveBackgroundAvailable();
 
   // Footage advisories the orchestrator should relay. A non-zero display
   // rotation (common DJI bogus tag) can make outputs come out sideways; flag it
@@ -262,6 +267,7 @@ function ingestFile(args) {
         hyperframes,
         ffmpeg,
         asr,
+        remove_background: removeBg,
       },
       last_updated: ts,
       history: [
@@ -285,6 +291,7 @@ function ingestFile(args) {
       ["ffmpeg", ffmpeg],
       ["hyperframes", hyperframes],
       ["asr", asr],
+      ["remove_background", removeBg],
     ]
       .filter(([, info]) => info && info.ok === false)
       .map(([name, info]) => ({

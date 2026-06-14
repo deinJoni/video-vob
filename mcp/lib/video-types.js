@@ -42,6 +42,36 @@ const OVERLAY_TYPES = Object.freeze([
   "pip",
 ]);
 
+// The full intra-composition transition vocabulary (v3.3). A preset's
+// `transition_vocabulary` is the CSS-family subset offered for that format
+// (punchy for retention/montage, restrained for chaptered/cinematic). cut/dip/
+// fade are the SEAM-EXPRESSIBLE primitives (also usable intra); the rest are
+// intra-only CSS treatments. The shader family is RECOGNIZED here (so a planned
+// shader type isn't an "unknown type") but is NOT offered by any built-in preset
+// and is NOT vendored — @hyperframes/shader-transitions is Proprietary (no
+// redistribution grant), so v3.3 ships CSS-only; the shader path stays
+// host-gated (shaderTransitionsAllowed) + lint-warned (PLAN_TRANSITION_BUDGET)
+// until a license-clear vendored lib lands.
+const TRANSITION_TYPES = Object.freeze([
+  "cut", "dip", "fade",                                        // hard cut + seam-expressible dips ("fade" = legacy synonym for dip-to-black)
+  "crossfade", "blur_dissolve", "focus_pull",                 // dissolve family (CSS, gentle)
+  "push", "slide", "zoom_punch", "whip_pan",                  // kinetic (CSS)
+  "iris", "clock_wipe", "shutter",                            // reveal (CSS, clip-path)
+  "glitch", "light_leak", "chromatic", "cross_warp", "swirl", // shader family (gated + un-vendored)
+]);
+// WebGL shader transitions — host-gated AND currently un-vendored; kept out of
+// every built-in transition_vocabulary (the deferral note in PRD-02 §7.5).
+const SHADER_TRANSITIONS = Object.freeze(["glitch", "light_leak", "chromatic", "cross_warp", "swirl"]);
+// Seam-expressible primitives: realizable as an ffmpeg join at a render-chunk
+// boundary (cut = stream copy, dip/fade = 0.25s dip-to-black). The ONLY legal
+// `transition_out` values, and the non-cut transitions that NEVER force an
+// intra glue group (they can land on a seam instead).
+const SEAM_TRANSITION_TYPES = Object.freeze(["cut", "dip", "fade"]);
+
+const TRANSITION_TYPE_SET = new Set(TRANSITION_TYPES);
+const SHADER_TRANSITION_SET = new Set(SHADER_TRANSITIONS);
+const SEAM_TRANSITION_SET = new Set(SEAM_TRANSITION_TYPES);
+
 // Plan-lint rulesets: per-rule disable sets + the chaptered extras flag.
 // `retention` is the v2.1 behavior (hook-first heuristics ON).
 // PLAN_RHYTHM_ARC_INVERTED is a retention heuristic too — front-loading the
@@ -56,7 +86,9 @@ const LINT_RULESETS = Object.freeze({
     chapter_rules: true,
   }),
   montage: Object.freeze({
-    disabled_rules: Object.freeze(["PLAN_HOOK_NOT_FIRST", "PLAN_HOOK_TOO_LONG", "PLAN_RHYTHM_ARC_INVERTED"]),
+    // PLAN_TRANSITION_INCONSISTENT off: a montage WANTS varied transitions, so
+    // ">3 distinct types" is a feature, not a smell (PRD-02 §7.6).
+    disabled_rules: Object.freeze(["PLAN_HOOK_NOT_FIRST", "PLAN_HOOK_TOO_LONG", "PLAN_RHYTHM_ARC_INVERTED", "PLAN_TRANSITION_INCONSISTENT"]),
     chapter_rules: false,
   }),
   general: Object.freeze({
@@ -77,6 +109,7 @@ const BUILT_IN_VIDEO_TYPES = Object.freeze({
     overlay_vocabulary: Object.freeze([
       "kinetic_caption", "caption_block", "title_card", "lower_third", "logo_bug", "cta", "end_card",
     ]),
+    transition_vocabulary: Object.freeze(["cut", "crossfade", "whip_pan", "zoom_punch", "push"]),
     render: Object.freeze({ segmentation: "single" }),
     design_default: Object.freeze({
       caption_style: "bold-pop", motion: "fast-snap", grade: "high-contrast",
@@ -92,6 +125,7 @@ const BUILT_IN_VIDEO_TYPES = Object.freeze({
       "chapter_marker", "section_title", "lower_third", "callout", "data_viz",
       "progress_bar", "caption_block", "logo_bug", "cta", "end_card", "pip",
     ]),
+    transition_vocabulary: Object.freeze(["cut", "dip", "crossfade"]),
     render: Object.freeze({ segmentation: "auto" }),
     design_default: Object.freeze({
       caption_style: "clean-pill", motion: "medium-soft", grade: "none",
@@ -105,6 +139,7 @@ const BUILT_IN_VIDEO_TYPES = Object.freeze({
     editorial: Object.freeze({ clean_cut: false, scene_detect: true }),
     lint_ruleset: "montage",
     overlay_vocabulary: Object.freeze(["title_card", "section_title", "caption_block", "end_card"]),
+    transition_vocabulary: Object.freeze(["cut", "dip", "crossfade", "focus_pull"]),
     render: Object.freeze({ segmentation: "auto" }),
     design_default: Object.freeze({
       caption_style: "minimal-lower-third", motion: "slow-cinematic", grade: "desaturated",
@@ -120,6 +155,7 @@ const BUILT_IN_VIDEO_TYPES = Object.freeze({
       "callout", "chapter_marker", "section_title", "title_card", "caption_block",
       "progress_bar", "pip", "data_viz", "cta", "end_card",
     ]),
+    transition_vocabulary: Object.freeze(["cut", "dip", "crossfade", "slide"]),
     render: Object.freeze({ segmentation: "auto" }),
     design_default: Object.freeze({
       caption_style: "clean-pill", motion: "medium-soft", grade: "none",
@@ -137,6 +173,7 @@ const BUILT_IN_VIDEO_TYPES = Object.freeze({
       "chapter_marker", "lower_third", "caption_block", "data_viz",
       "logo_bug", "progress_bar", "end_card", "pip",
     ]),
+    transition_vocabulary: Object.freeze(["cut", "dip", "crossfade"]),
     render: Object.freeze({ segmentation: "auto" }),
     design_default: Object.freeze({
       caption_style: "minimal-lower-third", motion: "medium-soft", grade: "none",
@@ -150,6 +187,7 @@ const BUILT_IN_VIDEO_TYPES = Object.freeze({
     editorial: Object.freeze({ clean_cut: true, scene_detect: true }),
     lint_ruleset: "general",
     overlay_vocabulary: OVERLAY_TYPES,
+    transition_vocabulary: Object.freeze(["cut", "crossfade", "dip"]),
     render: Object.freeze({ segmentation: "auto" }),
     design_default: Object.freeze({
       caption_style: "clean-pill", motion: "medium-soft", grade: "none",
@@ -179,6 +217,54 @@ function isPlainObject(value) {
 
 function escapeRegExp(text) {
   return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+// --- transition value helpers (v3.3) -----------------------------------------
+// scene.transition_in / transition_out may be a bare string OR an object
+// { type, duration_seconds?, direction?, intensity? }. Every consumer (plan
+// lint, render-plan packing, QC) reads the type through these — they NEVER
+// throw and treat absent/null/wrong-typed as a hard "cut" (fail-safe).
+function transitionTypeOf(value) {
+  if (typeof value === "string") {
+    const t = value.trim().toLowerCase();
+    return t || "cut";
+  }
+  if (isPlainObject(value) && typeof value.type === "string" && value.type.trim()) {
+    return value.type.trim().toLowerCase();
+  }
+  return "cut";
+}
+
+// The explicit transition duration (object form, finite & positive), else null.
+function transitionDurationOf(value) {
+  if (isPlainObject(value) && Number.isFinite(value.duration_seconds) && value.duration_seconds > 0) {
+    return value.duration_seconds;
+  }
+  return null;
+}
+
+function isNonCutTransition(value) {
+  return transitionTypeOf(value) !== "cut";
+}
+
+function isShaderTransition(value) {
+  return SHADER_TRANSITION_SET.has(transitionTypeOf(value));
+}
+
+// Recognized anywhere in the vocabulary (vs a typo'd / off-vocabulary type).
+function isKnownTransition(value) {
+  return TRANSITION_TYPE_SET.has(transitionTypeOf(value));
+}
+
+// The render-plan GLUE constraint: a transition that MUST render inside one
+// composition because it cannot be expressed as an ffmpeg seam — non-cut AND
+// not seam-expressible. (A dip/fade transition_in stays seam-friendly and does
+// NOT force its scene into the previous chunk; only crossfade/kinetic/reveal/
+// shader transitions glue.) This is intentionally narrower than
+// isNonCutTransition — see render-segments.js::glueGroups.
+function isGlueTransition(value) {
+  const t = transitionTypeOf(value);
+  return t !== "cut" && !SEAM_TRANSITION_SET.has(t);
 }
 
 // video-types.js sits at mcp/lib/, so two ".." reach the repo/install root
@@ -233,6 +319,10 @@ function mergePreset(base, override) {
   if (Array.isArray(override.overlay_vocabulary)) {
     const filtered = override.overlay_vocabulary.filter((t) => OVERLAY_TYPES.includes(t));
     if (filtered.length > 0) merged.overlay_vocabulary = Object.freeze(filtered);
+  }
+  if (Array.isArray(override.transition_vocabulary)) {
+    const filtered = override.transition_vocabulary.filter((t) => TRANSITION_TYPES.includes(t));
+    if (filtered.length > 0) merged.transition_vocabulary = Object.freeze(filtered);
   }
   // design_default: scalars (caption_style/motion/grade) replace; palette and
   // typography deep-merge one level so a user preset can tweak just the accent
@@ -441,6 +531,7 @@ function presetDigest(name, preset) {
     clean_cut: preset.editorial.clean_cut,
     scene_detect: preset.editorial.scene_detect,
     overlay_vocabulary: [...preset.overlay_vocabulary],
+    transition_vocabulary: [...preset.transition_vocabulary],
     design_default: designDigest(preset),
   };
 }
@@ -469,6 +560,9 @@ function summarizeActiveVideoType(state) {
     segmentation: vt.preset.render.segmentation,
     clean_cut: vt.preset.editorial.clean_cut,
     overlay_vocabulary: [...vt.preset.overlay_vocabulary],
+    // The intra-composition transition palette the storyboarder may plan from
+    // (CSS-family for this format) — passed through to the composer spawn.
+    transition_vocabulary: [...vt.preset.transition_vocabulary],
     // The format's design tokens — the orchestrator seeds the brief's Design
     // language from these (then adjusts by tone), and the storyboarder mirrors
     // the resolved look into storyboard target.design.
@@ -480,7 +574,10 @@ module.exports = {
   BUILT_IN_VIDEO_TYPES,
   LINT_RULESETS,
   OVERLAY_TYPES,
+  SEAM_TRANSITION_TYPES,
   SEGMENTATION_MODES,
+  SHADER_TRANSITIONS,
+  TRANSITION_TYPES,
   VIDEO_TYPE_ALIASES,
   _reloadForTests,
   activeLintRules,
@@ -488,6 +585,12 @@ module.exports = {
   deriveVideoType,
   describeVideoTypes,
   getVideoTypePreset,
+  isGlueTransition,
+  isKnownTransition,
+  isNonCutTransition,
+  isShaderTransition,
   resolveActiveVideoType,
   summarizeActiveVideoType,
+  transitionDurationOf,
+  transitionTypeOf,
 };

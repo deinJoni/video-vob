@@ -7,12 +7,19 @@ const { ERROR_CODES, ToolError } = require("../envelope.js");
 const { assertSafeProjectId, composeDir, statePath, storyboardPath } = require("../paths.js");
 const { withSessionLock, writeFileAtomic } = require("../storage.js");
 const { readSessionStateStrict } = require("../session-state.js");
-const { runHyperframesWithRetry, buildLintArgv, LINT_TIMEOUT_MS } = require("../hyperframes-runner.js");
+const { runHyperframesWithRetry, buildLintArgv, LINT_TIMEOUT_MS, runInspect } = require("../hyperframes-runner.js");
 const { stderrTail } = require("../spawn-with-shutdown.js");
 const { parseLintReport } = require("../lint-report.js");
 const { runCompositionQc } = require("../composition-qc.js");
 const { resolveSceneClipLinks, resolveSourceLinks } = require("../source-symlink.js");
 const { planSegmentById } = require("../render-segments.js");
+const {
+  layoutQcMode,
+  shouldRunLayoutQc,
+  parseInspectReport,
+  mapInspectIssues,
+  layoutAdvisory,
+} = require("../layout-qc.js");
 
 const SEVERITY_ORDER = { error: 0, warning: 1, info: 2 };
 const SOURCE_ORDER = { vob: 0, hyperframes: 1 };
@@ -212,6 +219,40 @@ async function lintComposition(args) {
     activeSegment,
   });
 
+  // Layout / legibility QC (v3.3): render a few sample frames via `hyperframes
+  // inspect` and fold text/container/canvas overflow into the findings as
+  // ADVISORY findings (warnings for box overflow, info for off-canvas) — never
+  // errors, so the COMPOSE->PREVIEW gate (errors only) is unchanged. Gated to
+  // scopes that actually carry captions/typed overlays (nothing geometric to
+  // measure otherwise) unless VOB_LAYOUT_QC forces it; fully non-fatal — a
+  // timeout/crash/unparse degrades to one advisory note and the lint stands.
+  let inspectFindings = [];
+  let inspectMeta = { ran: false, skipped_reason: "no_captions_or_overlays" };
+  const layoutMode = layoutQcMode();
+  if (layoutMode === "off") {
+    inspectMeta = { ran: false, skipped_reason: "disabled" };
+  } else if (layoutMode === "always" || shouldRunLayoutQc(storyboard, { activeShortId, activeSegment })) {
+    try {
+      const ins = await runInspect({ composeRoot });
+      if (ins.timed_out) {
+        inspectFindings = [layoutAdvisory("vob/layout_qc_skipped", "hyperframes inspect timed out — caption/overlay legibility not verified this run")];
+        inspectMeta = { ran: false, skipped_reason: "timeout" };
+      } else {
+        const inspectReport = parseInspectReport(ins.stdout);
+        if (!inspectReport.ok) {
+          inspectFindings = [layoutAdvisory("vob/layout_qc_skipped", `hyperframes inspect output not parseable — legibility not verified (${inspectReport.parse_error || "unknown"})`)];
+          inspectMeta = { ran: false, skipped_reason: "unparseable" };
+        } else {
+          inspectFindings = mapInspectIssues(inspectReport, { storyboard, activeShortId, activeSegment });
+          inspectMeta = { ran: true, samples: inspectReport.sample_count, issue_count: inspectReport.issue_count };
+        }
+      }
+    } catch (err) {
+      inspectFindings = [layoutAdvisory("vob/layout_qc_skipped", `layout QC did not run — ${err && err.message ? err.message : String(err)}`)];
+      inspectMeta = { ran: false, skipped_reason: "error" };
+    }
+  }
+
   // Dedupe: vob QC deliberately pre-empts a few hyperframes rules — drop the
   // hyperframes copy of any defect an equivalent vob finding already reports,
   // then recompute counts from the deduped list (subtracting the dropped
@@ -222,15 +263,23 @@ async function lintComposition(args) {
   for (const f of hfDropped) {
     if (f.severity in droppedBySeverity) droppedBySeverity[f.severity] += 1;
   }
-  const findings = [...qc.findings, ...hfFindings]; // vob findings first (more actionable)
+  // vob QC findings first (most actionable), then the advisory inspect overflow
+  // findings, then the (deduped) hyperframes findings.
+  const findings = [...qc.findings, ...inspectFindings, ...hfFindings];
+  let inspectWarnings = 0;
+  let inspectInfo = 0;
+  for (const f of inspectFindings) {
+    if (f.severity === "warning") inspectWarnings += 1;
+    else if (f.severity === "info") inspectInfo += 1;
+  }
   const errorCount = Math.max(0, report.error_count - droppedBySeverity.error) + qc.error_count;
-  const warningCount = Math.max(0, report.warning_count - droppedBySeverity.warning) + qc.warning_count;
-  const infoCount = Math.max(0, report.info_count - droppedBySeverity.info);
+  const warningCount = Math.max(0, report.warning_count - droppedBySeverity.warning) + qc.warning_count + inspectWarnings;
+  const infoCount = Math.max(0, report.info_count - droppedBySeverity.info) + inspectInfo;
   const lintStatus = errorCount > 0 ? "errors" : warningCount > 0 ? "warnings_only" : "clean";
 
   const reportPath = path.join(composeRoot, "lint-report.json");
   const reportBody = `${JSON.stringify({
-    report_version: 2, // absent = v1 (pre-QC-merge)
+    report_version: 3, // 3 = + layout/legibility inspect fold-in; 2 = QC-merge; absent = v1
     lint_status: lintStatus,
     error_count: errorCount,
     warning_count: warningCount,
@@ -238,6 +287,7 @@ async function lintComposition(args) {
     findings,
     qc: { error_count: qc.error_count, warning_count: qc.warning_count },
     hyperframes: { error_count: report.error_count, warning_count: report.warning_count, info_count: report.info_count },
+    inspect: inspectMeta, // { ran, samples?, issue_count? } | { ran:false, skipped_reason }
     deduped_hyperframes_findings: hfDropped.length,
     raw: report.raw,
     exit_code: result.exit_code,

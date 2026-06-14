@@ -8,7 +8,7 @@ const { assertSafeProjectId, composeDir, statePath, storyboardPath } = require("
 const { withSessionLock, writeFileAtomic } = require("../storage.js");
 const { readSessionStateStrict } = require("../session-state.js");
 const { validateCompositionFiles, htmlAndCssEntries } = require("../composition-files.js");
-const { recreateSourceSymlinks, resolveSceneClipLinks, resolveSourceLinks, injectFontKit } = require("../source-symlink.js");
+const { recreateSourceSymlinks, resolveSceneClipLinks, resolveSourceLinks, injectFontKit, injectCaptionKit } = require("../source-symlink.js");
 const { runCompositionQc } = require("../composition-qc.js");
 const { findTimeline, storyboardHasShorts, storyboardTimelines } = require("../storyboard-schema.js");
 const { planSegmentById, renderPlanOf } = require("../render-segments.js");
@@ -183,6 +183,13 @@ async function saveComposition(args) {
     // fonts.css wins — skipCss leaves its already-written file in place.
     const fontResult = injectFontKit(composeRoot, { skipCss: writtenRelPaths.includes("fonts.css") });
     symlinkResult.warnings.push(...fontResult.warnings);
+    // Caption kit (v3.3): symlink compose/captions -> mcp/assets/captions so the
+    // composer can read ./captions/manifest.json + the per-component reference
+    // HTML. A composer-supplied captions/ dir wins.
+    const captionKitResult = injectCaptionKit(composeRoot, {
+      skip: writtenRelPaths.some((p) => p === "captions" || p.startsWith("captions/")),
+    });
+    symlinkResult.warnings.push(...captionKitResult.warnings);
 
     const ts = nowIso();
     const prev = state.composition && typeof state.composition === "object" && !Array.isArray(state.composition)
@@ -212,6 +219,7 @@ async function saveComposition(args) {
         // errors never stored — they reject before the lock
         qc: { error_count: 0, warning_count: qc.warning_count, findings: qc.findings.slice(0, 10) },
         fonts: { linked: fontResult.linked, css_path: fontResult.linked ? "fonts.css" : null },
+        captions: { linked: captionKitResult.linked },
         ...(symlinkResult.warnings.length > 0
           ? { source_link_warnings: symlinkResult.warnings }
           : {}),
@@ -258,6 +266,7 @@ async function saveComposition(args) {
       ...(segmentIdArg ? { segment_id: segmentIdArg } : {}),
       qc: { error_count: 0, warning_count: qc.warning_count, findings: qc.findings.slice(0, 10) },
       fonts_linked: fontResult.linked,
+      captions_kit_linked: captionKitResult.linked,
     };
   });
 
@@ -287,7 +296,7 @@ async function saveComposition(args) {
 
 module.exports = Object.freeze({
   name: "vob_save_composition",
-  description: "Save the hyperframes composition: map of relative-path → content (index.html required; .html/.css/.js/.json/.svg; ≤64 files, ≤256KiB each, ≤1MiB total). Fully replacing. The engine recreates ./source/ symlinks and the ./fonts.css font kit, runs static QC (errors reject with details.qc_findings), resets preview/render confirmation, bumps revision_count — then runs the FULL merged lint (hyperframes lint + static QC, same engine as vob_lint_composition) on the committed files, stamps composition.lint_status, and returns the verdict: lint_status ('clean'|'warnings_only'|'errors') + lint.findings_summary (≤10) + lint.report_path. Fix errors and re-save until clean. If the lint binary itself fails, the save still succeeds with lint_status 'unknown' + lint_error. Fan-out: when the storyboard has shorts[], short_id is REQUIRED (the short this composition implements) — QC scopes scene coverage/master duration to that short and warns on refs into other shorts' clips. Segmented render: when state.render_plan is segmented (long-form chunking, stamped at COMPOSE entry), segment_id is REQUIRED — QC scopes to that render segment's scenes and warns on cross-segment clip refs. short_id and segment_id are mutually exclusive.",
+  description: "Save the hyperframes composition: map of relative-path → content (index.html required; .html/.css/.js/.json/.svg; ≤64 files, ≤256KiB each, ≤1MiB total). Fully replacing. The engine recreates ./source/ symlinks, the ./fonts.css font kit, and the ./captions/ caption-component kit (read ./captions/manifest.json to realize caption_segments[].animation), runs static QC (errors reject with details.qc_findings), resets preview/render confirmation, bumps revision_count — then runs the FULL merged lint (hyperframes lint + static QC, same engine as vob_lint_composition) on the committed files, stamps composition.lint_status, and returns the verdict: lint_status ('clean'|'warnings_only'|'errors') + lint.findings_summary (≤10) + lint.report_path. Fix errors and re-save until clean. If the lint binary itself fails, the save still succeeds with lint_status 'unknown' + lint_error. Fan-out: when the storyboard has shorts[], short_id is REQUIRED (the short this composition implements) — QC scopes scene coverage/master duration to that short and warns on refs into other shorts' clips. Segmented render: when state.render_plan is segmented (long-form chunking, stamped at COMPOSE entry), segment_id is REQUIRED — QC scopes to that render segment's scenes and warns on cross-segment clip refs. short_id and segment_id are mutually exclusive.",
   inputSchema: {
     type: "object",
     properties: {

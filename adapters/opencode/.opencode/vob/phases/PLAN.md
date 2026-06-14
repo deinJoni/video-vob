@@ -11,7 +11,7 @@ moment.
 ## Read sites
 | step | source | fields |
 |---|---|---|
-| 1 | `vob_read_state_summary` | `manifest{path,file_count,total_duration_seconds}`, `intent.answers`, `platform{...}`, `video_type{canonical,source,lint_ruleset,segmentation,clean_cut,overlay_vocabulary,design_default}`, `target_duration_seconds`, `inspect.classification` pool paths, `inspect.{clean_speech_path,digest_path,strips_legend_path,thumbs_dir,thumb_interval_seconds,thumb_count,transcript_path,transcript_aligned,audio,segments_path}`, `brief`, `storyboard{...,broll_gap_count,broll_gaps_path}`, `style.derived_from` |
+| 1 | `vob_read_state_summary` | `manifest{path,file_count,total_duration_seconds}`, `intent.answers`, `platform{...}`, `video_type{canonical,source,lint_ruleset,segmentation,clean_cut,overlay_vocabulary,transition_vocabulary,design_default}`, `target_duration_seconds`, `inspect.classification` pool paths, `inspect.{clean_speech_path,digest_path,strips_legend_path,thumbs_dir,thumb_interval_seconds,thumb_count,transcript_path,transcript_aligned,audio,segments_path}`, `brief`, `storyboard{...,broll_gap_count,broll_gaps_path}`, `style.derived_from` |
 | 2 | read of `.opencode/vob/references/brief-design.md` | brief skeleton + tone→design table |
 | 7 | `vob_save_storyboard` result (via subagent) or summary | `storyboard.markdown_path`, `scene_count`, `plan_lint` |
 
@@ -79,6 +79,7 @@ moment.
    intent.target_duration_seconds: <seconds>
    video_type: <summary.video_type.canonical>     (lint_ruleset=<lint_ruleset> clean_cut=<clean_cut> segmentation=<segmentation>)
    overlay_vocabulary: <summary.video_type.overlay_vocabulary, comma-joined>
+   transition_vocabulary: <summary.video_type.transition_vocabulary, comma-joined>
    design_default: <summary.video_type.design_default, compact: palette/typography/caption_style/motion/grade — the storyboarder mirrors the brief's Design language into target.design, falling back to these>
 
    fan_out: <N> shorts                            (omit the two fan_out lines entirely for a single video)
