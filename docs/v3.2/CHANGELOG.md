@@ -1,9 +1,40 @@
 # video-vob v3.3 — hyperframes-leverage creative layer (on top of v3.2)
 
 **One line:** additive creative layers that lean on hyperframes capabilities the engine already
-drove but didn't call — shipping as **v3.3** on top of v3.2. PRDs in `docs/hyperframes/`. This
-section documents the **subject-compositing** pillar (PRD 03); its siblings — caption-system v2
-(PRD 01) and scene transitions (PRD 02) — land alongside it on the same line.
+drove but didn't call — shipping as **v3.3** on top of v3.2. PRDs in `docs/hyperframes/`. Three
+hyperframes pillars — **caption-system v2** (PRD 01), **scene transitions** (PRD 02), and
+**subject compositing** (PRD 03) — land together, alongside the **PACKAGE / ITERATE** output-richness
+set (`docs/package-iterate/`). All are additive, fail-safe, and warnings-only at QC.
+
+## Caption system v2 — vendored kit + legibility QC (PRD 01)
+
+Realizes the v3.2 caption PLAN on the COMPOSE side. A vendored **caption-component kit**
+(`mcp/assets/captions/`, built by `scripts/build-captions.js` mirroring `build-fonts.js` — materialized
+at build time from the hyperframes registry, committed so RUN is offline) gives the composer vetted
+caption techniques to adapt; `source-symlink.js` injects it into `compose/` like the font kit.
+
+- **Legibility QC via `hyperframes inspect`** (`layout-qc.js`): the pure-function half of the inspect
+  fold-in — it decides WHEN to spend the browser render, parses the overflow / safe-area report, and
+  folds issues into the merged-lint findings as **ADVISORY** (overflow → warning, off-canvas → info).
+  NEVER an error: the COMPOSE→PREVIEW errors-only gate is unchanged. Closes the deferred
+  `steps67-autoqc` safe-area/legibility gap. Runs through the one-runner (`resolveHyperframesCmd`).
+- **Leverages the existing binding**: the `data-vob-caption-id` contract (`exact:true`→error) and the
+  `PLAN_CAPTION_*` plan-lint layer already live in `composition-qc.js` + `storyboard-schema.js`; this
+  pillar realizes them on the COMPOSE side rather than re-inventing them.
+
+## Scene transitions — intra-composition vocabulary + glue packing (PRD 02)
+
+Widens `scene.transition_in` from cut-only to hyperframes' CSS/shader transition vocabulary, realized
+**inside** the composition (the browser hyperframes drives).
+
+- **Glue packing** (`transition-glue.js`): a non-cut, non-seam `transition_in` means "render this scene
+  in the SAME composition as the previous one" — the transition is intra-composition and can't be an
+  ffmpeg seam. `deriveRenderPlan` packs **glue groups** (not bare scenes) to the host `<video>` budget;
+  a glue group still over the hard cap is split at the cheapest internal boundary with the broken
+  transition **downgraded** (dissolve family → `fade`/dip-to-black, else → `cut`), surfaced as
+  `PLAN_TRANSITION_DOWNGRADED`.
+- **Seams stay cut / dip-to-black**: cross-composition boundaries (the assembly join) keep the existing
+  lossless-concat / 0.25s dip-to-black behavior — transitions never poison drift verification.
 
 ## Subject compositing — `render_mode: "subject"` (PRD 03)
 
@@ -46,6 +77,30 @@ shot*, so it stays inside the ingested-only contract.
   schema/lint negatives + positives run model-free; the real matte (`VOB_WALKER_MATTE=1`) produced
   the alpha `.webm` + sidecar, re-entry reported `cached` (content-hash no-op), and the path-(b)
   ffmpeg composite was duration-exact (4.02s vs 4.00s) with the subject's audio retained.
+
+## PACKAGE / ITERATE — Wave A output richness (`docs/package-iterate/`)
+
+Five additive PRDs that enrich PACKAGE output and make ITERATE legible (merged from
+`v3/package-iterate-wave-a`). No FSM edge/gate changes; the four package PRDs extend
+`vob_package_output` + the fan-out `import-deliverable` mirror, and PRD-04 adds one read-only tool.
+The package manifest stays **v1.2** (canonical key order chapters, captions, distribution, posters,
+video, aspect_variants).
+
+- **01 caption sidecars** — chunk-level `.srt`/`.vtt` from `scene.caption_segments[]`, re-timed
+  SOURCE→OUTPUT exactly as the composer cuts (`cursor + (start − clip.in_seconds)`), clamped to the
+  probed duration. Shared `mcp/lib/caption-sidecar.js`; mirrored per-short into `deliverables/`.
+- **02 poster set** — the single thumbnail generalized to N output-time frames (`VOB_POSTER_COUNT`,
+  else chapters-derived); `poster_0` IS the thumbnail (fatal), the rest strictly non-fatal (warnings).
+- **03 distribution metadata** — `target.distribution{title,description,hashtags,cta}` validated like
+  `target.design` (never lints); fenced copy-paste blocks + a chapter-stamp paste block in the README,
+  mirrored into the fan-out manifest.
+- **05 multi-aspect dumb-crop** — opt-in `aspect_variants`, pure-ffmpeg cover+center-crop labeled
+  `quality:"naive_crop"` (`-c:a copy`); single-timeline only, unknown aspects rejected.
+- **04 `vob_compare_iterations`** — read-only cross-version diff over `archive/v<N>` snapshots;
+  null-not-zero deltas, mode-agnostic scene set.
+
+Wave B (06 structured revision capture + version labels, 07 promote-an-archived-cut) is specced but
+**held** — it touches `transitionPhase`/`archival.js` and lands in a later pass.
 
 ---
 
