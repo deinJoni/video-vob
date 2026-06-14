@@ -50,8 +50,28 @@ const WORD_LEVEL_CAPTION_ANIMATIONS = new Set(["word-by-word", "karaoke"]);
 // fast=2 / medium=1 / slow=0 — the rhythm-arc lint ranks scenes by pace.
 const PACING_RANK = Object.freeze({ slow: 0, medium: 1, fast: 2 });
 
+// Per-clip playback speed bounds (source_clips[i].speed). Beyond this range atempo
+// chains get long and the footage reads as unusable; default is 1 (no change).
+const SPEED_MIN = 0.25;
+const SPEED_MAX = 4.0;
+
 function clipRoleOf(clip) {
   return clip && typeof clip.role === "string" && clip.role.trim() ? clip.role : "a_roll";
+}
+
+// A clip's normalized speed (default 1 for absent/invalid) — kept in lockstep with
+// ffmpeg-runner.js::normalizeClipSpeed so the lint's computed output duration equals
+// the materialized FILE length.
+function clipSpeedOf(clip) {
+  return clip && isFiniteNumber(clip.speed) && clip.speed > 0 ? clip.speed : 1;
+}
+
+// A clip's OUTPUT (on-screen) duration: raw source span / speed. THE single helper
+// every "raw span vs authored output target" lint must use, or a sped clip
+// false-rejects (its raw span no longer equals its on-timeline footprint).
+function effectiveClipDuration(clip) {
+  if (!isPlainObject(clip) || !isFiniteNumber(clip.in_seconds) || !isFiniteNumber(clip.out_seconds)) return 0;
+  return (clip.out_seconds - clip.in_seconds) / clipSpeedOf(clip);
 }
 
 // <video> elements a scene costs the composition: one per source clip plus one
@@ -107,6 +127,14 @@ function validateClip(clip, sceneIx, clipIx, errors, wherePrefix = "") {
   }
   if (clip.role !== undefined && clip.role !== null && !CLIP_ROLE_SET.has(clip.role)) {
     errors.push(`${where}.role must be one of: ${CLIP_ROLES.join(", ")} (omit for default a_roll)`);
+  }
+  // Optional per-clip playback speed (default 1; >1 faster, <1 slow-mo). Baked into
+  // the materialized clip via setpts/atempo, so the clip's OUTPUT (on-screen) length
+  // is (out-in)/speed. Bounded to a sane editorial range — beyond it atempo chains
+  // get long and the footage is unusable.
+  if (clip.speed !== undefined && clip.speed !== null
+    && (!isFiniteNumber(clip.speed) || clip.speed < SPEED_MIN || clip.speed > SPEED_MAX)) {
+    errors.push(`${where}.speed must be a number in [${SPEED_MIN}, ${SPEED_MAX}] when present (1 = normal; 0.5 = half-speed slow-mo; 2 = double-speed)`);
   }
 }
 
@@ -189,6 +217,13 @@ function typedOverlaysOf(scene) {
   return scene.overlays.filter((o) => isPlainObject(o));
 }
 
+// Object-form caption_segments from a scene (non-objects filtered out) — the
+// mode-agnostic accessor COMPOSE QC + consumers read (mirror typedOverlaysOf).
+function captionSegmentsOf(scene) {
+  if (!isPlainObject(scene) || !Array.isArray(scene.caption_segments)) return [];
+  return scene.caption_segments.filter((s) => isPlainObject(s));
+}
+
 // Optional per-scene caption_segments (SOURCE-time): the storyboarder's timed
 // caption plan — now a first-class, lint-bound layer. No cross-check against
 // `captions` — that string stays the human-readable summary. All the v3 fields
@@ -240,6 +275,22 @@ function validateCaptionSegment(seg, sceneIx, segIx, errors, wherePrefix = "") {
         errors.push(`${where}.position.offset_px must be a [x, y] pair of finite numbers when present`);
       }
     }
+  }
+  // Optional binding id + `exact` opt-in (caption binding). An authored `id`
+  // lands in data-vob-caption-id and makes the caption checkable in COMPOSE QC;
+  // `exact:true` upgrades a missing binding from a warning to an error and so
+  // REQUIRES an id (a hard contract needs a stable handle). Both optional and
+  // additive — plain {text,start,end} stays valid forever. id reuses the
+  // overlay attribute-safe shape; ids are document-globally unique (validated in
+  // validateStoryboard, a namespace separate from overlay ids).
+  if (seg.id !== undefined && seg.id !== null && !OVERLAY_ID_RE.test(String(seg.id))) {
+    errors.push(`${where}.id must be a short attribute-safe string (letters/digits/._:-, e.g. "cap-1")`);
+  }
+  if (seg.exact !== undefined && seg.exact !== null && typeof seg.exact !== "boolean") {
+    errors.push(`${where}.exact must be a boolean when present`);
+  }
+  if (seg.exact === true && !isNonEmptyString(seg.id)) {
+    errors.push(`${where}.exact:true is a binding contract — it must carry an attribute-safe \`id\` (the composer stamps it as data-vob-caption-id)`);
   }
 }
 
@@ -848,6 +899,29 @@ function validateStoryboard(input) {
       });
     }
   }
+  // Authored caption_segment ids are DOCUMENT-global too (they become
+  // data-vob-caption-id element bindings; COMPOSE QC matches by id across the
+  // composition). Separate namespace from overlay ids. Only AUTHORED ids are
+  // checked — id-less captions stay freeform.
+  {
+    const seenCaptionIds = new Map();
+    for (const timeline of storyboardTimelines(input)) {
+      timeline.scenes.forEach((scene, ix) => {
+        for (const seg of captionSegmentsOf(scene)) {
+          if (!isNonEmptyString(seg.id)) continue;
+          const at = timeline.short_id !== null
+            ? `shorts["${timeline.short_id}"].scenes[${ix}]`
+            : `scenes[${ix}]`;
+          const prior = seenCaptionIds.get(seg.id);
+          if (prior) {
+            errors.push(`caption id "${seg.id}" at ${at} duplicates ${prior} — caption ids must be unique across the document`);
+          } else {
+            seenCaptionIds.set(seg.id, at);
+          }
+        }
+      });
+    }
+  }
   if (input.notes !== undefined && input.notes !== null && typeof input.notes !== "string") {
     errors.push("notes must be a string when present");
   }
@@ -1057,7 +1131,9 @@ function lintBrollPlacements(parsed, scenes, sceneById, errors) {
     }
     const refClip = resolvePlacementClip(p, sceneById);
     if (refClip && clipHasWindow(refClip)) {
-      const clipDur = refClip.out_seconds - refClip.in_seconds;
+      // OUTPUT play length (raw span / speed): a 4s clip at 2x plays 2s on screen
+      // and correctly fits a 2.5s narration span.
+      const clipDur = effectiveClipDuration(refClip);
       const spanDur = ns.end_seconds - ns.start_seconds;
       if (clipDur > spanDur + PLAN_LINT_THRESHOLDS.broll_span_tolerance_s) {
         errors.push({
@@ -1168,7 +1244,9 @@ function warnDurations(parsed, scenes, targetSeconds, warnings) {
     if (!isFiniteNumber(scene.target_duration_seconds) || scene.target_duration_seconds <= 0) return;
     const aroll = scene.source_clips.filter((c) => isPlainObject(c) && clipRoleOf(c) === "a_roll" && clipHasWindow(c));
     if (aroll.length === 0) return;
-    const sum = aroll.reduce((acc, c) => acc + (c.out_seconds - c.in_seconds), 0);
+    // OUTPUT sum: each clip's on-screen length is (out-in)/speed, so a 10s raw clip
+    // at 2x correctly fills a 5s scene target instead of false-rejecting at 10s.
+    const sum = aroll.reduce((acc, c) => acc + effectiveClipDuration(c), 0);
     const ratio = Math.abs(sum - scene.target_duration_seconds) / scene.target_duration_seconds;
     if (ratio > PLAN_LINT_THRESHOLDS.scene_clip_sum_ratio) {
       warnings.push({
@@ -1185,7 +1263,9 @@ function warnDurations(parsed, scenes, targetSeconds, warnings) {
 function warnBrollHolds(scenes, warnings) {
   eachClip(scenes, (scene, i, clip, j) => {
     if (clipRoleOf(clip) !== "b_roll" || !clipHasWindow(clip)) return;
-    const duration = clip.out_seconds - clip.in_seconds;
+    // The viewer sees the OUTPUT hold = raw span / speed: a 3s clip at 3x flashes by
+    // in 1s (warns); a 1s clip at 0.5x holds 2s (clean).
+    const duration = effectiveClipDuration(clip);
     if (duration < PLAN_LINT_THRESHOLDS.broll_min_hold_s) {
       warnings.push({
         code: "PLAN_BROLL_TOO_SHORT",
@@ -1411,6 +1491,10 @@ function lintOverlays(scenes, ctx, errors, warnings) {
 //                                    outside every clip in its scene, so the
 //                                    composer's re-timing math lands it at the
 //                                    wrong place (it can't be cut to the cut).
+//   PLAN_CAPTION_EXACT_UNALIGNED   — a caption marked exact:true (a binding
+//                                    text/timing contract — COMPOSE QC errors if
+//                                    its element is missing) sits on an unaligned
+//                                    transcript, so its window is approximate.
 function captionContainedInScene(seg, scene) {
   const tol = PLAN_LINT_THRESHOLDS.caption_window_tolerance_s;
   const clips = Array.isArray(scene.source_clips) ? scene.source_clips : [];
@@ -1478,6 +1562,21 @@ function lintCaptionSegments(scenes, warnings, transcriptAligned) {
           scene_index: ix,
           scene_id: sceneIdOf(scene),
           data: { animation: seg.animation, transcript_aligned: false },
+        });
+      }
+      // An exact caption is a binding contract (COMPOSE QC errors if its element
+      // is missing), but a hard text/timing contract built on approximate
+      // (unaligned) word timings can land off the cut. Warn — same alignment
+      // signal as the karaoke lint. The ERROR severity for an unbound exact
+      // caption lives ONLY in COMPOSE-phase QC; caption plan-lint stays
+      // all-warnings.
+      if (seg.exact === true && transcriptAligned !== true) {
+        warnings.push({
+          code: "PLAN_CAPTION_EXACT_UNALIGNED",
+          message: `scenes[${ix}].caption_segments[${segIx}] is marked exact:true (a binding text/timing contract) but the transcript is not forced-aligned (transcript_aligned=false) — its window is approximate. Drop exact for a flexible caption, or re-run INSPECT with an alignment backend (pip install whisperx)`,
+          scene_index: ix,
+          scene_id: sceneIdOf(scene),
+          data: { exact: true, transcript_aligned: false },
         });
       }
     });
@@ -1867,8 +1966,11 @@ module.exports = {
   PLAN_LINT_THRESHOLDS,
   BROLL_RENDER_MODES,
   allStoryboardScenes,
+  captionSegmentsOf,
   clipRoleOf,
+  clipSpeedOf,
   collectBrollGaps,
+  effectiveClipDuration,
   expectedTimelineDurationSeconds,
   findTimeline,
   isGapPlacement,

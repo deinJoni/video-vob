@@ -225,6 +225,26 @@ planned track ≥1) / lacks `data-start` (it renders static; re-time scene-relat
 carries a `data-vob-overlay-id` the plan never declared (typo'd id, or an overlay the storyboard
 didn't ask for — remove it or fix the id).
 
+### `vob/caption_missing_element` (error) / `vob/caption_unbound` (warning)
+A planned `caption_segment` carrying an authored `id` has no implementing element. Stamp the
+chunk div with `data-vob-caption-id="<id>"` plus `class="clip"` and its timing. If the caption is
+`exact:true` (a binding text/timing contract) the miss is an **error**; an id-bearing but
+non-exact caption is a **warning** — drop the `id` if the composer is free to re-chunk that
+caption. Only id-bearing captions are checked; **id-less `caption_segments` are freeform** (no
+binding, no finding).
+
+### `vob/caption_element_untimed` / `vob/unplanned_caption_element` (warnings)
+A bound caption element lacks `data-start` (it renders static — re-time scene-relative → master) /
+an element carries a `data-vob-caption-id` the plan's active scope never declared (typo'd id, or a
+caption the storyboard didn't ask to bind — remove it or fix the id).
+
+### `vob/design_font_mismatch` (warning)
+The storyboard's `target.design.typography` declares a font kit (headline/caption/body) but the
+composition's `font-family` declarations reference NONE of them — the composer went off-brief. Use
+the declared kit families (loaded via `./fonts.css`); referencing at least one counts as
+adherence. (Accent/grade/motion conformance is NOT checked — implement those from the brief's
+Design language.)
+
 ---
 
 ## Overlay vocabulary — implementation patterns (schema 1.2)
@@ -267,6 +287,24 @@ Each planned overlay type maps to a known HTML/CSS shape. Shared skeleton — a 
 - **`pip`** — a real `<video muted>` (inset 25–35% width, rounded corners, subtle shadow) on its
   planned track; src is a normal `./source/<scene_id>-<k>.mp4` clip; COUNTS against the video
   budget; `data-media-start="0"` like every scene clip.
+
+### Caption binding (`caption_segments`)
+
+A `caption_segment` carrying an `id` (or `exact:true`) is a **bound** caption — stamp the
+implementing chunk div with `data-vob-caption-id="<id>"` plus `class="clip"` and its timing
+(re-timed source→master):
+
+```html
+<div class="clip caption" data-vob-caption-id="cap-3"
+     data-start="11.8" data-duration="1.0" data-track-index="3">and that's the secret</div>
+```
+
+- `exact:true` ⇒ the caption MUST be bound (QC errors `vob/caption_missing_element`); use exact
+  text/timing verbatim.
+- id-bearing, non-exact ⇒ bind it or QC warns `vob/caption_unbound` (it's advisory — drop the id
+  if you legitimately re-chunk).
+- **id-less `caption_segments` are freeform** — chunk and time them however reads best; no binding.
+- One element per id; never stamp an id the plan didn't declare (`vob/unplanned_caption_element`).
 
 ---
 If your code isn't here, `lint_report_path` is ground truth — fix what the report's

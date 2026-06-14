@@ -188,6 +188,70 @@ function probeKeyframeInterval(filePath, { durationSeconds, timeoutMs = KEYFRAME
   };
 }
 
+// --- Per-still luma stats (auto-QC of snapshot frames) -----------------------
+
+const SIGNALSTATS_TIMEOUT_MS = 15 * 1000;
+
+// Escape a filename for use inside a `-f lavfi -i "movie=<path>,signalstats"`
+// filtergraph. `movie=` takes the path as its first arg, so the filtergraph
+// metacharacters (`\` `:` `'` `,` `[` `]`) must be backslash-escaped or a path
+// containing one would split the graph. Plain paths pass through unchanged.
+function escapeLavfiSource(p) {
+  return String(p)
+    .replace(/\\/g, "\\\\")
+    .replace(/:/g, "\\:")
+    .replace(/'/g, "\\'")
+    .replace(/,/g, "\\,")
+    .replace(/\[/g, "\\[")
+    .replace(/\]/g, "\\]");
+}
+
+// Full-range (0-255) luma min/avg/max for a single still image, via ffprobe's
+// lavfi `signalstats` filter. Returns { probed:true, ymin, yavg, ymax } or
+// { probed:false, error } — DEGRADES, never throws: auto-QC is advisory and an
+// unprobeable frame must not abort the pass. `ymax` is the discriminator for a
+// blank/dropped-clip frame (nothing bright rendered → low ymax) vs an
+// intentionally dark frame with a bright subject (high ymax).
+function signalstatsLuma(filePath, { timeoutMs = SIGNALSTATS_TIMEOUT_MS } = {}) {
+  if (typeof filePath !== "string" || !filePath) {
+    return { probed: false, error: "no path" };
+  }
+  let result;
+  try {
+    result = spawnSync(
+      "ffprobe",
+      [
+        "-v", "error",
+        "-f", "lavfi",
+        "-i", `movie=${escapeLavfiSource(filePath)},signalstats`,
+        "-show_entries", "frame_tags=lavfi.signalstats.YMIN,lavfi.signalstats.YAVG,lavfi.signalstats.YMAX",
+        "-of", "default=noprint_wrappers=1",
+      ],
+      { encoding: "utf8", timeout: timeoutMs, maxBuffer: 4 * 1024 * 1024 },
+    );
+  } catch (error) {
+    return { probed: false, error: error.message || String(error) };
+  }
+  if (result.error) {
+    return { probed: false, error: result.error.message || String(result.error) };
+  }
+  if (result.status !== 0 || typeof result.stdout !== "string") {
+    return { probed: false, error: `ffprobe exited with status ${result.status}` };
+  }
+  // Single still → one frame; .match grabs the first (only) occurrence.
+  const read = (re) => {
+    const m = result.stdout.match(re);
+    return m ? Number(m[1]) : NaN;
+  };
+  const ymin = read(/lavfi\.signalstats\.YMIN=([\d.]+)/);
+  const yavg = read(/lavfi\.signalstats\.YAVG=([\d.]+)/);
+  const ymax = read(/lavfi\.signalstats\.YMAX=([\d.]+)/);
+  if (![ymin, yavg, ymax].every(Number.isFinite)) {
+    return { probed: false, error: "could not parse signalstats luma from ffprobe output" };
+  }
+  return { probed: true, ymin, yavg, ymax };
+}
+
 // Per-audio-stream detail for the v3.1 audio-analysis pass (channels/layout/
 // sample rate/bit depth/language). Additive: the scalar `audio_streams` count
 // stays for back-compat. bit_depth prefers bits_per_raw_sample (the true source
@@ -259,5 +323,6 @@ module.exports = {
   FFPROBE_INSTALL_HINT,
   probeFile,
   probeKeyframeInterval,
+  signalstatsLuma,
   summarizeProbe,
 };

@@ -1,6 +1,6 @@
 "use strict";
 
-const { clipRoleOf, storyboardHasShorts, storyboardTimelines } = require("./storyboard-schema.js");
+const { clipRoleOf, clipSpeedOf, effectiveClipDuration, storyboardHasShorts, storyboardTimelines } = require("./storyboard-schema.js");
 
 function formatSeconds(value) {
   if (typeof value !== "number" || !Number.isFinite(value)) {
@@ -49,7 +49,11 @@ function renderDesign(design) {
 
 function renderClip(clip) {
   const note = typeof clip.note === "string" && clip.note.trim() !== "" ? ` — ${clip.note.trim()}` : "";
-  const duration = formatSeconds(clip.out_seconds - clip.in_seconds);
+  const speed = clipSpeedOf(clip);
+  // Show raw span and, when sped, the on-screen (output) length it becomes.
+  const duration = speed !== 1
+    ? `${formatSeconds(clip.out_seconds - clip.in_seconds)} @${speed}x → ${formatSeconds(effectiveClipDuration(clip))}`
+    : formatSeconds(clip.out_seconds - clip.in_seconds);
   const role = clipRoleOf(clip);
   const roleTag = role === "a_roll" ? "" : ` **[${role.replace("_", "-").toUpperCase()}]**`;
   return `  - [file ${clip.manifest_file_index}]${roleTag} ${formatTimecode(clip.in_seconds)} → ${formatTimecode(clip.out_seconds)} (${duration}) \`${clip.source_path}\`${note}`;

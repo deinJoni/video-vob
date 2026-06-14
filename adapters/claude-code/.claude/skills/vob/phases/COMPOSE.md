@@ -121,26 +121,36 @@ resume self-QC at the SAME round count.
    - boundaries: every scene start + 0.2s (cap to fill);
    - dedupe within 0.5s; hard cap 8 (priority: hook > captions > boundaries).
 2. `mcp__vob__vob_snapshot_keyframes { project_id, timecodes }` (works in COMPOSE — needs only
-   a saved composition). Read `contact_sheet_path` for the black-frame/letterbox/layout sweep
-   (QC-C, QC-F), then ALWAYS Read two stills at FULL resolution: the hook frame and the first
+   a saved composition). ALWAYS Read two stills at FULL resolution: the hook frame and the first
    caption-dense still (each ≈1.1–1.6k image tokens — cheap insurance against a wasted preview
    render; contact-sheet cells are too small after the vision downscale to judge caption
-   legibility, safe-band margins, or collisions). Read up to 2 MORE stills to confirm suspected
-   failures — singles budget 4 per round.
-3. Judge QC-A/QC-B/QC-D/QC-E on the full-res stills; judge QC-C/QC-F on every contact-sheet
-   cell. The checklist:
+   legibility, safe-band margins, or collisions). Read `contact_sheet_path` for the
+   letterbox/layout sweep (QC-F). Read up to 2 MORE stills to confirm suspected failures —
+   singles budget 4 per round.
+2b. `mcp__vob__vob_qc_stills { project_id, timecodes }` — pass the SAME `timecodes`. This is
+   automated **QC-C**: it luma-scans every still and returns `glaring` findings `qc/still_black`
+   / `qc/still_blown_out` (a frame that rendered with NO visible content — a dropped clip, a
+   timed-out seek, a blank/blown scene) plus a `taste` `qc/still_flat`. Pure ffprobe, ~1–3s,
+   advisory (gates nothing). Read its `findings` instead of eyeballing every contact-sheet cell
+   for black frames: a `glaring` finding is a step-4 GLARING item — re-spawn the composer citing
+   the finding's `code` + `timecode_seconds`. Carry `qc/still_flat` into the taste notes only if
+   it lands mid-scene (a solid title card is legitimately flat).
+3. Judge QC-A/QC-B/QC-D/QC-E on the full-res stills; judge QC-F on every contact-sheet cell
+   (QC-C is automated in step 2b — read `vob_qc_stills` findings). The checklist:
    - QC-A captions inside the safe band (not in the top safe_top_px / bottom safe_bottom_px of
      the frame; nothing clipped at frame edges)
    - QC-B caption legibility: readable contrast against what's behind it, ≤2 lines, not
      overlapping other text
-   - QC-C no black/empty/half-loaded frames at any sampled timecode
+   - QC-C no black/empty/half-loaded frames at any sampled timecode — **automated by step 2b**
+     (`vob_qc_stills`); trust its findings rather than re-judging every cell by eye
    - QC-D no overlay collisions (overlay text over captions or over the speaker's face)
    - QC-E the hook frame is actually striking: subject visible, not motion-smeared, text hook
      legible at thumbnail size
    - QC-F aspect/framing accidents: unintended letterboxing, wrong dimensions, subject cropped
      out by object-fit
-4. GLARING (auto-fix without asking): any QC-A/QC-C/QC-F failure; QC-B unreadable (not merely
-   suboptimal); QC-D hard overlap. → `vob_log_composer_invocation` with `revision_notes` =
+4. GLARING (auto-fix without asking): any QC-A/QC-C/QC-F failure (QC-C = a `vob_qc_stills`
+   `glaring` finding); QC-B unreadable (not merely suboptimal); QC-D hard overlap. →
+   `vob_log_composer_invocation` with `revision_notes` =
    `"self-QC round <n>: <QC-code> at t=<s>s — <what is wrong, one line each>"`, re-spawn the
    composer, re-lint, then re-snapshot ONLY the timecodes that failed (plus the hook frame).
    Safe bands and the 56px caption floor are hard constraints even against an explicit user

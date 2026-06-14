@@ -80,7 +80,7 @@ const BUILT_IN_VIDEO_TYPES = Object.freeze({
     render: Object.freeze({ segmentation: "single" }),
     design_default: Object.freeze({
       caption_style: "bold-pop", motion: "fast-snap", grade: "high-contrast",
-      typography: Object.freeze({ headline: "Anton", caption: "Inter" }),
+      typography: Object.freeze({ headline: "Anton", caption: "Inter", body: "Inter" }),
       palette: Object.freeze({ bg: "#000000", text: "#FFFFFF", accent: "#FF3B30" }),
     }),
   }),
@@ -95,7 +95,7 @@ const BUILT_IN_VIDEO_TYPES = Object.freeze({
     render: Object.freeze({ segmentation: "auto" }),
     design_default: Object.freeze({
       caption_style: "clean-pill", motion: "medium-soft", grade: "none",
-      typography: Object.freeze({ headline: "Hanken Grotesk", caption: "Inter" }),
+      typography: Object.freeze({ headline: "Hanken Grotesk", caption: "Inter", body: "Inter" }),
       palette: Object.freeze({ bg: "#0A0A0A", text: "#F5F5F0", accent: "#3B82F6" }),
     }),
   }),
@@ -108,7 +108,7 @@ const BUILT_IN_VIDEO_TYPES = Object.freeze({
     render: Object.freeze({ segmentation: "auto" }),
     design_default: Object.freeze({
       caption_style: "minimal-lower-third", motion: "slow-cinematic", grade: "desaturated",
-      typography: Object.freeze({ headline: "Playfair Display", caption: "Inter" }),
+      typography: Object.freeze({ headline: "Playfair Display", caption: "Inter", body: "EB Garamond" }),
       palette: Object.freeze({ bg: "#000000", text: "#F2EFE8", accent: "#C9A227" }),
     }),
   }),
@@ -123,7 +123,7 @@ const BUILT_IN_VIDEO_TYPES = Object.freeze({
     render: Object.freeze({ segmentation: "auto" }),
     design_default: Object.freeze({
       caption_style: "clean-pill", motion: "medium-soft", grade: "none",
-      typography: Object.freeze({ headline: "Inter", caption: "Inter" }),
+      typography: Object.freeze({ headline: "Inter", caption: "Inter", body: "Inter" }),
       palette: Object.freeze({ bg: "#0B0B0C", text: "#F5F5F0", accent: "#22C55E" }),
     }),
   }),
@@ -140,7 +140,7 @@ const BUILT_IN_VIDEO_TYPES = Object.freeze({
     render: Object.freeze({ segmentation: "auto" }),
     design_default: Object.freeze({
       caption_style: "minimal-lower-third", motion: "medium-soft", grade: "none",
-      typography: Object.freeze({ headline: "Hanken Grotesk", caption: "Inter" }),
+      typography: Object.freeze({ headline: "Hanken Grotesk", caption: "Inter", body: "Inter" }),
       palette: Object.freeze({ bg: "#111111", text: "#F5F5F0", accent: "#8B5CF6" }),
     }),
   }),
@@ -153,7 +153,7 @@ const BUILT_IN_VIDEO_TYPES = Object.freeze({
     render: Object.freeze({ segmentation: "auto" }),
     design_default: Object.freeze({
       caption_style: "clean-pill", motion: "medium-soft", grade: "none",
-      typography: Object.freeze({ headline: "Inter", caption: "Inter" }),
+      typography: Object.freeze({ headline: "Inter", caption: "Inter", body: "Inter" }),
       palette: Object.freeze({ bg: "#000000", text: "#FFFFFF", accent: "#3B82F6" }),
     }),
   }),

@@ -12,7 +12,7 @@ This repo is a *template* you install into a target project. `mcp/` is the engin
 
 ```bash
 npm run mcp                          # start the MCP server (stdio) — node mcp/server.js
-node scripts/m5-walker.js [phase]    # end-to-end FSM walker; phase ∈ setup|preview|render|package|all|fanout|general|longform|overlays|gaps
+node scripts/m5-walker.js [phase]    # end-to-end FSM walker; phase ∈ setup|preview|render|package|all|fanout|general|longform|overlays|gaps|stillsqc
 ./install.sh <target_dir> [adapter]  # copy mcp/ + adapter config + .vob/ into a project (adapter defaults to claude-code)
 node scripts/port-adapter-docs.js    # regenerate the OpenCode phase/reference/agent docs from the claude-code sources (run after editing them)
 ```

@@ -21,6 +21,7 @@
       "mcp__vob__vob_lint_composition",
       "mcp__vob__vob_render_preview",
       "mcp__vob__vob_snapshot_keyframes",
+      "mcp__vob__vob_qc_stills",
       "mcp__vob__vob_confirm_preview",
       "mcp__vob__vob_render_full",
       "mcp__vob__vob_confirm_render",

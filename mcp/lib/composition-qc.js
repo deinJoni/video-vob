@@ -11,7 +11,7 @@
 const fs = require("fs");
 const path = require("path");
 
-const { findTimeline, storyboardHasShorts, typedOverlaysOf } = require("./storyboard-schema.js");
+const { findTimeline, storyboardHasShorts, typedOverlaysOf, captionSegmentsOf } = require("./storyboard-schema.js");
 const hostProfile = require("./host-profile.js");
 
 // The <video>-element warn budget / hard cap are host-tunable (a big server
@@ -39,6 +39,7 @@ const OPEN_TAG_RE = /<([a-zA-Z][a-zA-Z0-9-]*)((?:"[^"]*"|'[^']*'|[^'">])*)>/g;
 const ATTR_RE = /([a-zA-Z_:][a-zA-Z0-9_:.-]*)\s*(?:=\s*("([^"]*)"|'([^']*)'|[^\s"'>]+))?/g;
 const SOURCE_REF_RE = /^\.\/source\/(.+)$/;
 const FONT_SIZE_PX_RE = /font-size\s*:\s*([0-9]+(?:\.[0-9]+)?)px/i;
+const FONT_FAMILY_RE = /font-family\s*:\s*([^;}{]+)/gi;
 
 function escapeRegExp(s) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -501,6 +502,75 @@ function runCompositionQc({ files, storyboard, sourceLinks, sceneClipLinks, chec
     }
   }
 
+  // --- Typed caption binding (P5) ---------------------------------------------
+  // Captions are advisory by default — the composer legitimately re-chunks and
+  // re-times them — so binding is OPT-IN: only a caption_segment carrying an
+  // AUTHORED `id` (the storyboarder's signal "bind this one") is checked. A
+  // missing element WARNS (vob/caption_unbound) unless the caption is exact:true
+  // (a binding text/timing contract), which ERRORS (vob/caption_missing_element,
+  // same severity as a missing overlay/scene clip). id-less captions are silent
+  // — no derived ids, so a re-chunked caption set never floods the report.
+  if (sb !== null) {
+    const plannedCaptions = [];
+    for (const scene of scenes) {
+      if (!scene || typeof scene.scene_id !== "string") continue;
+      for (const seg of captionSegmentsOf(scene)) {
+        if (seg && typeof seg.id === "string" && seg.id) plannedCaptions.push({ scene, seg });
+      }
+    }
+    if (plannedCaptions.length > 0) {
+      const elementsByCaptionId = new Map();
+      for (const f of parsedFiles) {
+        for (const tag of f.tags) {
+          const cid = tag.attrs["data-vob-caption-id"];
+          if (typeof cid === "string" && cid !== "" && !elementsByCaptionId.has(cid)) {
+            elementsByCaptionId.set(cid, { file: f.relPath, tag });
+          }
+        }
+      }
+      for (const { scene, seg } of plannedCaptions) {
+        const el = elementsByCaptionId.get(seg.id);
+        if (!el) {
+          if (seg.exact === true) {
+            findings.push(makeFinding(
+              "error",
+              "vob/caption_missing_element",
+              `exact caption "${seg.id}" (scene "${scene.scene_id}": "${String(seg.text || "").slice(0, 40)}") has no implementing element — render it and stamp the element with data-vob-caption-id="${seg.id}" (exact:true makes it a binding contract)`,
+            ));
+          } else {
+            findings.push(makeFinding(
+              "warning",
+              "vob/caption_unbound",
+              `caption "${seg.id}" (scene "${scene.scene_id}") declares an id but no element carries data-vob-caption-id="${seg.id}" — stamp the implementing chunk, or drop the id if the composer is free to re-chunk it`,
+            ));
+          }
+          continue;
+        }
+        if (!("data-start" in el.tag.attrs)) {
+          findings.push(makeFinding(
+            "warning",
+            "vob/caption_element_untimed",
+            `caption element for "${seg.id}" (${el.file}:${el.tag.line}) has no data-start — it renders static for the whole composition instead of its planned ${seg.start_seconds}–${seg.end_seconds}s window`,
+            el.file,
+            el.tag.line,
+          ));
+        }
+      }
+      const plannedCaptionIds = new Set(plannedCaptions.map((p) => p.seg.id));
+      for (const [cid, el] of elementsByCaptionId) {
+        if (!plannedCaptionIds.has(cid)) {
+          findings.push(makeFinding(
+            "warning",
+            "vob/unplanned_caption_element",
+            `element carries data-vob-caption-id="${cid}" (${el.file}:${el.tag.line}) but the plan's active scope declares no caption with that id — a typo'd id, or a caption the storyboard didn't ask to bind`,
+            el.file,
+            el.tag.line,
+          ));
+        }
+      }
+    }
+  }
+
   // --- E6/W1: <video> element count -------------------------------------------
   const videoHardCap = hostProfile.videoHardCap();
   const videoBudget = hostProfile.videoBudget();
@@ -549,6 +619,15 @@ function runCompositionQc({ files, storyboard, sourceLinks, sceneClipLinks, chec
   // positives). A later cascade rule overriding upward can false-positive — fine
   // at warn level; it can never block.
   captionFontSizeFindings({ parsedFiles, cssFiles, effectiveMaster, findings });
+
+  // Design-language conformance (font kit). Document-global (no per-short /
+  // per-segment design override), reads sb.target.design regardless of scope.
+  {
+    const design = sb && sb.target && typeof sb.target.design === "object"
+      && sb.target.design !== null && !Array.isArray(sb.target.design)
+      ? sb.target.design : null;
+    designConformanceFindings({ parsedFiles, cssFiles, design, findings });
+  }
 
   // Errors first (stable) so capped slices surface blockers before advice.
   findings.sort((a, b) => (a.severity === b.severity ? 0 : (a.severity === "error" ? -1 : 1)));
@@ -649,6 +728,55 @@ function captionFontSizeFindings({ parsedFiles, cssFiles, effectiveMaster, findi
       }
     }
   }
+}
+
+// Document-global font-kit conformance (WARNING-only). design.typography
+// declares the kit families the composition should use (headline/caption/
+// body/…). If the composition uses font-family AT ALL but references NONE of the
+// declared families, the composer went off-brief — warn once. Referencing at
+// least one declared family counts as adherence (a montage that only renders the
+// headline face is fine). No-ops when target.design.typography is absent or the
+// composition declares no font-family (nothing to judge). Accent/grade/motion
+// conformance is deliberately NOT checked — too fuzzy to surface without noise.
+function designConformanceFindings({ parsedFiles, cssFiles, design, findings }) {
+  if (!design || typeof design.typography !== "object"
+    || design.typography === null || Array.isArray(design.typography)) return;
+  const declared = new Map(); // normalized family -> original spelling
+  for (const v of Object.values(design.typography)) {
+    if (typeof v === "string" && v.trim()) declared.set(v.trim().toLowerCase(), v.trim());
+  }
+  if (declared.size === 0) return;
+
+  const used = new Set();
+  const collect = (cssText) => {
+    if (typeof cssText !== "string" || cssText === "") return;
+    FONT_FAMILY_RE.lastIndex = 0;
+    let m;
+    while ((m = FONT_FAMILY_RE.exec(cssText)) !== null) {
+      for (const fam of m[1].split(",")) {
+        const norm = fam.trim().replace(/^['"]+|['"]+$/g, "").trim().toLowerCase();
+        if (norm) used.add(norm);
+      }
+    }
+  };
+  for (const f of cssFiles) collect(f.content);
+  const STYLE_BLOCK_RE = /<style\b[^>]*>([\s\S]*?)<\/style>/gi;
+  for (const f of parsedFiles) {
+    STYLE_BLOCK_RE.lastIndex = 0;
+    let m;
+    while ((m = STYLE_BLOCK_RE.exec(f.content)) !== null) collect(m[1]);
+    for (const tag of f.tags) collect(tag.attrs.style);
+  }
+  if (used.size === 0) return; // composition declares no fonts — nothing to judge
+
+  for (const lower of declared.keys()) {
+    if (used.has(lower)) return; // adheres to at least one declared family
+  }
+  findings.push(makeFinding(
+    "warning",
+    "vob/design_font_mismatch",
+    `the storyboard's design language declares the font kit ${JSON.stringify([...declared.values()])} (target.design.typography) but the composition's font-family declarations reference none of them — the composer used off-brief type. Use the declared kit families (loaded via ./fonts.css)`,
+  ));
 }
 
 module.exports = {

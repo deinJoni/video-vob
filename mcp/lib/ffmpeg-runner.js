@@ -95,6 +95,27 @@ function runFfmpegBlocking(argv, { cwd, timeoutMs = FFMPEG_TIMEOUT_MS, stderrLog
   );
 }
 
+// A per-clip speed multiplier (>1 faster, <1 slow-mo). A positive finite number;
+// anything else (absent/0/negative/NaN) means 1 = no change. Kept in lockstep
+// with storyboard-schema.js::effectiveClipDuration so the materialized FILE length
+// equals the lint's computed output duration: (out-in)/speed.
+function normalizeClipSpeed(speed) {
+  return Number.isFinite(speed) && speed > 0 ? speed : 1;
+}
+
+// ffmpeg's atempo accepts only 0.5–2.0 per instance, so decompose any positive
+// factor into a chain whose product = speed (e.g. 4 → atempo=2,atempo=2 ;
+// 0.25 → atempo=0.5,atempo=0.5). atempo preserves pitch — sped-up dialogue stays
+// natural, no chipmunk effect.
+function atempoChain(speed) {
+  const factors = [];
+  let remaining = speed;
+  while (remaining > 2.0 + 1e-9) { factors.push(2.0); remaining /= 2.0; }
+  while (remaining < 0.5 - 1e-9) { factors.push(0.5); remaining /= 0.5; }
+  factors.push(Math.round(remaining * 1e6) / 1e6);
+  return factors.map((f) => `atempo=${f}`).join(",");
+}
+
 // Input-side -ss (fast seek): ffmpeg seeks to the nearest preceding keyframe,
 // then decodes-and-DISCARDS up to the exact timestamp — frame-accurate under
 // re-encode (the "lands on the previous keyframe" corruption applies only to
@@ -102,13 +123,25 @@ function runFfmpegBlocking(argv, { cwd, timeoutMs = FFMPEG_TIMEOUT_MS, stderrLog
 // source from O(sum of clip end-times) decode into O(sum of clip durations).
 // -t (duration) is used instead of -to because input-side -ss resets the
 // timeline to 0 at the seek point.
-function buildClipCutArgv({ src, out, inSeconds, outSeconds, dropAudio }) {
+//
+// `speed` (default 1) bakes a constant playback-rate change into the pre-cut clip
+// via setpts (video) + atempo (audio): the materialized file's real duration
+// becomes (out-in)/speed, so the composer references it unchanged (data-media-start=0,
+// data-duration = the shorter file length) and drift verification stays honest.
+// CRITICAL: -t must be the POST-speed length — setpts compresses output PTS, and a
+// slow-mo (speed<1) clip is LONGER than its raw span, so a raw -t would truncate it.
+// speed=1 takes the byte-identical no-filter path, so existing clip caches never churn.
+function buildClipCutArgv({ src, out, inSeconds, outSeconds, dropAudio, speed }) {
+  const spd = normalizeClipSpeed(speed);
+  const applySpeed = Math.abs(spd - 1) > 1e-9;
+  const outDuration = (outSeconds - inSeconds) / spd;
   const argv = [
     "-y",
     ...inputAutorotateArgs(),
     "-ss", String(inSeconds),
     "-i", src,
-    "-t", (outSeconds - inSeconds).toFixed(3),
+    "-t", outDuration.toFixed(3),
+    ...(applySpeed ? ["-filter:v", `setpts=PTS/${spd}`] : []),
     "-c:v", "libx264",
     "-preset", "medium", // was fast — clips are short + sidecar-cached; spend the
     "-crf", "18",        // encode time once. crf 20->18 + medium cuts the double-
@@ -129,6 +162,7 @@ function buildClipCutArgv({ src, out, inSeconds, outSeconds, dropAudio }) {
   if (dropAudio) {
     argv.push("-an");
   } else {
+    if (applySpeed) argv.push("-filter:a", atempoChain(spd));
     argv.push("-c:a", "aac", "-b:a", "192k"); // was 128k — voice intermediate headroom
   }
   argv.push(out);
@@ -195,14 +229,14 @@ function parseLoudnormStats(stderr) {
   return out;
 }
 
-async function cutClip({ src, out, inSeconds, outSeconds, dropAudio = false, timeoutMs = CLIP_CUT_TIMEOUT_MS } = {}) {
+async function cutClip({ src, out, inSeconds, outSeconds, dropAudio = false, speed = 1, timeoutMs = CLIP_CUT_TIMEOUT_MS } = {}) {
   if (typeof src !== "string" || !src) throw new Error("cutClip: src is required");
   if (typeof out !== "string" || !out) throw new Error("cutClip: out is required");
   if (!Number.isFinite(inSeconds) || inSeconds < 0) throw new Error("cutClip: inSeconds must be >= 0");
   if (!Number.isFinite(outSeconds) || outSeconds <= inSeconds) {
     throw new Error("cutClip: outSeconds must be > inSeconds");
   }
-  const argv = buildClipCutArgv({ src, out, inSeconds, outSeconds, dropAudio });
+  const argv = buildClipCutArgv({ src, out, inSeconds, outSeconds, dropAudio, speed });
   const result = await runFfmpegBlocking(argv, { timeoutMs });
   return { ...result, argv };
 }
@@ -251,6 +285,7 @@ module.exports = {
   checkFfmpegAvailable,
   cutClip,
   inputAutorotateArgs,
+  normalizeClipSpeed,
   parseLoudnormStats,
   runFfmpegBlocking,
   runFfmpegSync,

@@ -11,8 +11,11 @@
 // spec.
 //
 // Phases: setup | preview | render | package | all | fanout | general |
-// longform | overlays | gaps. Heavy steps beyond setup are env-gated by
-// invocation; the in-COMPOSE snapshot QC step is gated by VOB_WALKER_SNAPSHOT=1.
+// longform | overlays | gaps | stillsqc. Heavy steps beyond setup are env-gated
+// by invocation; the in-COMPOSE snapshot QC step is gated by VOB_WALKER_SNAPSHOT=1.
+// `stillsqc` is fully synthetic (ffmpeg-generated stills, no source/render): it
+// covers the auto-QC-of-stills pass — the pure luma classifier (still-qc.js), the
+// ffprobe signalstats path (ffprobe.js::signalstatsLuma), and vob_qc_stills.
 // `fanout` is standalone (own project <id>-fanout): the multi-short storyboard
 // (schema 1.1 shorts[]), per-short plan lint, union clip materialization,
 // short_id-scoped composition QC, the import-with-normalize deliverable loop,
@@ -24,15 +27,21 @@
 
 const fs = require("fs");
 const path = require("path");
+const { execFileSync } = require("child_process");
 
 const { executeTool } = require("../mcp/lib/dispatch.js");
+const { snapshotsDir } = require("../mcp/lib/paths.js");
+const { classifyStillLuma } = require("../mcp/lib/still-qc.js");
+const { signalstatsLuma } = require("../mcp/lib/ffprobe.js");
 
 const PROJECT_ID = process.env.VOB_WALKER_PROJECT || "dji-aerial";
 // No bundled fixture (this is a template repo). Point the walker at any local
 // video file ≥15s via VOB_WALKER_SOURCE:
 //   VOB_WALKER_SOURCE=/path/to/clip.mp4 node scripts/m5-walker.js [phase]
 const SOURCE = process.env.VOB_WALKER_SOURCE || "";
-if (!SOURCE) {
+// `stillsqc` is fully synthetic (ffmpeg-generated test stills) and needs no
+// source video — every other phase lays out a fixture against a real clip.
+if (!SOURCE && process.argv[2] !== "stillsqc") {
   console.error(
     "m5-walker: set VOB_WALKER_SOURCE to a video file or directory, e.g.\n" +
     "  VOB_WALKER_SOURCE=/path/to/clip.mp4 node scripts/m5-walker.js [phase]",
@@ -299,8 +308,11 @@ function composition(sb, opts = {}) {
         const start = round3(cursor + (seg.start_seconds - clip.in_seconds));
         const dur = round3(seg.end_seconds - seg.start_seconds);
         captionIx += 1;
+        // An authored caption id binds in COMPOSE QC — stamp data-vob-caption-id
+        // (the composer's job); id-less captions stay freeform/unbound.
+        const cidAttr = seg.id ? ` data-vob-caption-id="${seg.id}"` : "";
         captionDivs.push(
-          `  <div id="caption-${captionIx}" class="clip caption" data-start="${start}" data-duration="${dur}" data-track-index="3"><span>${seg.text}</span></div>`,
+          `  <div id="caption-${captionIx}" class="clip caption"${cidAttr} data-start="${start}" data-duration="${dur}" data-track-index="3"><span>${seg.text}</span></div>`,
         );
       }
     }
@@ -1322,6 +1334,56 @@ async function runGeneral() {
     console.log(`\n   transcript_aligned=${aligned} → karaoke ${aligned ? "clean" : "WARNS"}; pop clean`);
   });
 
+  // 6b. Per-clip speed (constant): effectiveClipDuration routes the raw-span lints
+  //     to OUTPUT time, and the materializer bakes setpts/atempo so the FILE length
+  //     becomes (out-in)/speed. target_duration_seconds is authored as OUTPUT time.
+  await step("speed: 2x authored at output time is plan-clean; @1x mismatches", async () => {
+    const win = dw[0];
+    const eff = round3((win.out - win.in) / 2);
+    const mk = (speed) => {
+      const sc = generalScene({ sceneId: "spd1", sequence: 1, purpose: "beat", win, targetSeconds: eff, sourcePath: srcPath, pacing: "fast" });
+      sc.source_clips[0].speed = speed;
+      return genSb({ target: { platform: "tiktok", duration_seconds: eff, tone: "energetic" }, total_target_duration_seconds: eff, scenes: [sc] });
+    };
+    const clean = ((await call("vob_save_storyboard", { project_id: GEN, content: mk(2) })).plan_lint.warnings || []).map((w) => w.code);
+    assert(!clean.includes("PLAN_SCENE_CLIP_SUM_MISMATCH"),
+      `2x clip authored at output time must be clean, got ${JSON.stringify(clean)}`);
+    const mism = ((await call("vob_save_storyboard", { project_id: GEN, content: mk(1) })).plan_lint.warnings || []).map((w) => w.code);
+    assert(mism.includes("PLAN_SCENE_CLIP_SUM_MISMATCH"),
+      `same raw clip @1x vs the halved target must warn PLAN_SCENE_CLIP_SUM_MISMATCH, got ${JSON.stringify(mism)}`);
+  });
+  await step("speed: out-of-range rejected; real 2x materialize → file ≈ (out-in)/speed", async () => {
+    const badWin = dw[1];
+    const bad = generalScene({ sceneId: "spdbad", sequence: 1, purpose: "beat", win: badWin, targetSeconds: round3(badWin.out - badWin.in), sourcePath: srcPath });
+    bad.source_clips[0].speed = 9; // outside [0.25, 4]
+    await expectError("vob_save_storyboard",
+      { project_id: GEN, content: genSb({ target: { platform: "tiktok", duration_seconds: 2, tone: "energetic" }, total_target_duration_seconds: round3(badWin.out - badWin.in), scenes: [bad] }) },
+      /INVALID_ARGUMENTS/);
+    const { materializeSceneClips } = require("../mcp/lib/clip-materialize.js");
+    const { spawnSync } = require("child_process");
+    const w = dw[2];
+    const raw = round3(w.out - w.in);
+    const eff = round3(raw / 2);
+    const sb = {
+      schema_version: "1.0", project_id: GEN, generated_at: new Date().toISOString(),
+      source: { manifest_path: boot.summary.manifest.path, brief_path: boot.savedBrief.brief_path },
+      target: { platform: "tiktok", duration_seconds: eff, tone: "energetic" },
+      scenes: [{
+        scene_id: "spdmat", sequence: 1, purpose: "beat", target_duration_seconds: eff, summary: "speed materialize check",
+        source_clips: [{ manifest_file_index: 0, source_path: srcPath, in_seconds: w.in, out_seconds: w.out, role: "a_roll", speed: 2 }],
+        overlays: [], captions: null, pacing: "fast",
+      }],
+      total_target_duration_seconds: eff,
+    };
+    const res = await materializeSceneClips({ projectId: GEN, storyboard: sb });
+    const clipPath = res.scenes[0].clips[0].clip_path;
+    const probe = spawnSync("ffprobe", ["-v", "error", "-show_entries", "format=duration", "-of", "default=nk=1:nw=1", clipPath], { encoding: "utf8" });
+    const dur = parseFloat((probe.stdout || "").trim());
+    assert(Number.isFinite(dur) && Math.abs(dur - eff) < 0.3,
+      `2x materialized clip should be ~${eff}s, got ${dur}`);
+    console.log(`\n   speed: ${raw}s @2x materialized to ${dur.toFixed(2)}s (target ${eff}s)`);
+  });
+
   // 7. fps path: cinematic 24fps plan → composition without data-fps warns
   //    vob/fps_mismatch; with data-fps="24" it is silent.
   await step("record video_type cinematic", () =>
@@ -1673,6 +1735,23 @@ async function runOverlays() {
     notes: "Overlay walker fixture — typed overlay layer, plan-lint-clean.",
   };
 
+  // Caption binding (P5): two id-bearing captions on the beat scene — cap-1
+  // (advisory) + cap-2 (exact: a binding contract). composition() stamps
+  // data-vob-caption-id for each; QC binds them. SOURCE-time, inside the scene's
+  // clip window so no PLAN_CAPTION_TIMING_DRIFT. Captions render on track 3 (like
+  // the scene's kinetic_caption kc-1, master 4.2–6.7s) — keep both BEFORE 4.2s
+  // master (scene-relative < 2.2s) so they don't overlap kc-1 on the same track
+  // (hyperframes errors overlapping_clips_same_track). (cap-2 may warn
+  // PLAN_CAPTION_EXACT_UNALIGNED on a non-aligned transcript — a warning, never
+  // an error, so the plan-lint-clean assertions below still hold.)
+  {
+    const cw = goodSb.scenes[1].source_clips[0]; // in_seconds..out_seconds (SOURCE)
+    goodSb.scenes[1].caption_segments = [
+      { text: "bound caption", start_seconds: round3(cw.in_seconds + 0.3), end_seconds: round3(cw.in_seconds + 1.0), id: "cap-1" },
+      { text: "exact caption", start_seconds: round3(cw.in_seconds + 1.1), end_seconds: round3(cw.in_seconds + 1.9), id: "cap-2", exact: true },
+    ];
+  }
+
   // 1. Schema negatives.
   await step("save storyboard (typed overlay under 1.0 rejected)", async () => {
     const old = JSON.parse(JSON.stringify(goodSb));
@@ -1779,13 +1858,33 @@ async function runOverlays() {
     assert(rules.includes("vob/unplanned_overlay_element"), `expected vob/unplanned_overlay_element, got ${JSON.stringify(rules)}`);
   });
 
-  // 7. Clean save: every planned overlay bound, no overlay findings, lint runs.
-  const savedComp = await step("save composition (overlay layer, QC-clean)", () =>
+  // 6b. Caption binding (P5): an EXACT caption with no element REJECTS; an
+  // advisory (non-exact) id-bearing caption with no element WARNS (save stands).
+  await step("save composition (exact caption missing element rejected)", async () => {
+    const broken = { "index.html": goodComp["index.html"].replace(/^.*data-vob-caption-id="cap-2".*$\n/m, "") };
+    assert(!/data-vob-caption-id="cap-2"/.test(broken["index.html"]), "fixture surgery failed — cap-2 still present");
+    const err = await expectError("vob_save_composition", { project_id: OV, files: broken }, /INVALID_ARGUMENTS/);
+    const rules = (err.details.qc_findings || []).map((f) => f.rule);
+    assert(rules.includes("vob/caption_missing_element"), `expected vob/caption_missing_element, got ${JSON.stringify(rules)}`);
+  });
+  await step("save composition (advisory caption unbound warns, save stands)", async () => {
+    const warny = { "index.html": goodComp["index.html"].replace(/^.*data-vob-caption-id="cap-1".*$\n/m, "") };
+    assert(!/data-vob-caption-id="cap-1"/.test(warny["index.html"]), "fixture surgery failed — cap-1 still present");
+    const saved = await call("vob_save_composition", { project_id: OV, files: warny });
+    const rules = saved.qc.findings.map((f) => f.rule);
+    assert(rules.includes("vob/caption_unbound"), `expected vob/caption_unbound, got ${JSON.stringify(rules)}`);
+    assert(!rules.includes("vob/caption_missing_element"), `advisory caption must NOT error, got ${JSON.stringify(rules)}`);
+  });
+
+  // 7. Clean save: every planned overlay AND caption bound, no binding findings.
+  const savedComp = await step("save composition (overlay + caption layer, QC-clean)", () =>
     call("vob_save_composition", { project_id: OV, files: goodComp }),
   );
   {
     const rules = savedComp.qc.findings.map((f) => f.rule);
     assert(!rules.some((r) => /overlay/.test(r)), `clean save must carry no overlay findings, got ${JSON.stringify(rules)}`);
+    assert(!rules.some((r) => /^vob\/caption_(missing_element|unbound|element_untimed)$/.test(r) || r === "vob/unplanned_caption_element"),
+      `clean save must carry no caption-binding findings, got ${JSON.stringify(rules)}`);
     console.log(`   lint_status: ${savedComp.lint_status || "(infra fallback)"}   qc warnings: ${savedComp.qc.warning_count}`);
     if (savedComp.lint_status === "errors") throw new Error("overlay composition lint failed");
   }
@@ -1973,8 +2072,95 @@ async function runGaps() {
   console.log(`\n=== gaps final phase: ${final.phase}   broll_gap_count: ${final.storyboard.broll_gap_count}`);
 }
 
+// Synthesize a single deterministic still via ffmpeg lavfi (no source video).
+function synthStill(filterSrc, outPath) {
+  execFileSync(
+    "ffmpeg",
+    ["-v", "error", "-f", "lavfi", "-i", filterSrc, "-frames:v", "1", "-y", outPath],
+    { stdio: "ignore" },
+  );
+}
+
+// Auto-QC of stills (PREVIEW QC-C) — exercises the pure classifier, the real
+// ffprobe signalstats path, and vob_qc_stills end-to-end over three synthetic
+// stills (black / blown / clean gradient). Fully deterministic; no render, no
+// source video, no hyperframes — just ffmpeg + ffprobe.
+async function runStillsQc() {
+  const SQ = `${PROJECT_ID}-stillsqc`;
+  console.log(`=== auto-QC of stills walker (QC-C luma) — project: ${SQ}`);
+
+  // 1. Pure classifier regression (no I/O).
+  await step("classifier: black/blown/flat/clean/unprobed", async () => {
+    const cases = [
+      [{ probed: true, ymin: 0, yavg: 0, ymax: 0 }, "qc/still_black"],
+      [{ probed: true, ymin: 255, yavg: 255, ymax: 255 }, "qc/still_blown_out"],
+      [{ probed: true, ymin: 40, yavg: 48, ymax: 55 }, "qc/still_flat"],
+      [{ probed: true, ymin: 32, yavg: 150, ymax: 224 }, null],
+      [{ probed: false, error: "x" }, null],
+    ];
+    for (const [luma, want] of cases) {
+      const got = classifyStillLuma(luma);
+      const code = got ? got.code : null;
+      assert(code === want, `classify ${JSON.stringify(luma)} -> ${code}, expected ${want}`);
+    }
+  });
+
+  // 2. Bare project + three synthetic stills in its snapshots dir.
+  try {
+    await call("vob_init_project", { project_id: SQ, target: { format: "tiktok", duration: "8s" } });
+  } catch (e) { /* idempotent: already created on a prior run */ }
+  const dir = snapshotsDir(SQ);
+  fs.rmSync(dir, { recursive: true, force: true });
+  fs.mkdirSync(dir, { recursive: true });
+  synthStill("color=c=black:s=320x180", path.join(dir, "00-black.png"));
+  synthStill("color=c=white:s=320x180", path.join(dir, "01-white.png"));
+  synthStill("gradients=s=320x180:c0=0x202020:c1=0xE0E0E0", path.join(dir, "02-grad.png"));
+
+  // 3. Real ffprobe signalstats path (locks the parser to ffprobe output).
+  await step("signalstatsLuma: black ymax=0, white ymin=255", async () => {
+    const black = signalstatsLuma(path.join(dir, "00-black.png"));
+    const white = signalstatsLuma(path.join(dir, "01-white.png"));
+    assert(black.probed && black.ymax === 0, `black ymax expected 0, got ${JSON.stringify(black)}`);
+    assert(white.probed && white.ymin === 255, `white ymin expected 255, got ${JSON.stringify(white)}`);
+  });
+
+  // 4. The tool end-to-end via executeTool (schema + envelope, not bare handler).
+  const res = await step("vob_qc_stills over 3 synth stills", () =>
+    call("vob_qc_stills", { project_id: SQ, timecodes: [0.5, 1.5, 2.5] }),
+  );
+  assert(res.count === 3, `expected 3 stills, got ${res.count}`);
+  assert(res.frames_probed === 3, `expected 3 probed, got ${res.frames_probed}`);
+  assert(res.glaring_count === 2, `expected 2 glaring (black+blown), got ${res.glaring_count}`);
+  assert(res.taste_count === 0, `expected 0 taste (gradient is clean), got ${res.taste_count}`);
+  const codes = res.findings.map((f) => f.code);
+  assert(codes.includes("qc/still_black"), `expected qc/still_black, got [${codes.join(",")}]`);
+  assert(codes.includes("qc/still_blown_out"), `expected qc/still_blown_out, got [${codes.join(",")}]`);
+  const black = res.findings.find((f) => f.code === "qc/still_black");
+  assert(
+    black.frame_index === 0 && black.timecode_seconds === 0.5,
+    `black should be frame 0 @ t=0.5, got idx=${black.frame_index} t=${black.timecode_seconds}`,
+  );
+  assert(fs.existsSync(path.join(dir, "stills-qc.json")), "stills-qc.json report not written");
+
+  // 5. Negative: empty snapshots dir -> NOT_FOUND (run snapshot first).
+  const SQ2 = `${SQ}-empty`;
+  try {
+    await call("vob_init_project", { project_id: SQ2, target: { format: "tiktok", duration: "8s" } });
+  } catch (e) { /* idempotent */ }
+  fs.rmSync(snapshotsDir(SQ2), { recursive: true, force: true });
+  await step("vob_qc_stills with no stills -> NOT_FOUND", () =>
+    expectError("vob_qc_stills", { project_id: SQ2 }, /NOT_FOUND/),
+  );
+
+  console.log("=== stillsqc walker OK");
+}
+
 async function main() {
   const phase = process.argv[2] || "all";
+  if (phase === "stillsqc") {
+    await runStillsQc();
+    return;
+  }
   if (phase === "fanout") {
     await runFanout();
     return;

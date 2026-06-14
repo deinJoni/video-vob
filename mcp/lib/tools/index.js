@@ -21,6 +21,7 @@ const TOOL_MODULES = Object.freeze([
   require("./lint-composition.js"),
   require("./render-preview.js"),
   require("./snapshot-keyframes.js"),
+  require("./qc-stills.js"),
   require("./confirm-preview.js"),
   require("./render-full.js"),
   require("./confirm-render.js"),
