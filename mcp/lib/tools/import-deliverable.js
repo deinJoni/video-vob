@@ -17,7 +17,8 @@ const { readSessionStateStrict } = require("../session-state.js");
 const { probeFile, summarizeProbe } = require("../ffprobe.js");
 const { compositeOverlayOverBase } = require("../overlay-compositor.js");
 const { normalizeLoudnessInPlace } = require("../loudnorm.js");
-const { storyboardHasShorts, storyboardTimelines } = require("../storyboard-schema.js");
+const { buildCaptionSidecar } = require("../caption-sidecar.js");
+const { distributionFromStoryboard, findTimeline, storyboardHasShorts, storyboardTimelines } = require("../storyboard-schema.js");
 
 function nowIso() {
   return new Date().toISOString();
@@ -300,8 +301,28 @@ async function importDeliverable(args) {
     // silently collapse.
     const finalExt = path.extname(finalAbs);
     const meta = describeVideo(finalAbs);
+    // Chunk-level caption sidecars per deliverable (the package mirror): same
+    // buildCaptionSidecar, fan-out-aware. Fan-out resolves this short's timeline
+    // by short_id; a single-deliverable / escape-hatch import uses the
+    // storyboard's top-level scenes[] (null storyboard -> no sidecar). The cue
+    // ends clamp to the probed deliverable duration; skip when that is unknown.
+    const stem = path.basename(finalAbs, finalExt) || safeStem(item.title, index);
+    const captionScenes = item.short_id !== null && item.short_id !== undefined
+      ? (() => { const t = findTimeline(storyboard, item.short_id); return t ? { scenes: t.scenes } : null; })()
+      : storyboard;
+    const captionSidecar = meta.duration_seconds !== null
+      ? buildCaptionSidecar(captionScenes, { durationSeconds: meta.duration_seconds })
+      : null;
+    let captionsRel = null;
+    if (captionSidecar) {
+      const srtAbs = path.join(destDir, `${stem}.srt`);
+      const vttAbs = path.join(destDir, `${stem}.vtt`);
+      writeFileAtomic(srtAbs, captionSidecar.srt);
+      writeFileAtomic(vttAbs, captionSidecar.vtt);
+      captionsRel = { srt: sessionRelative(id, srtAbs), vtt: sessionRelative(id, vttAbs) };
+    }
     records.push({
-      id: path.basename(finalAbs, finalExt) || safeStem(item.title, index),
+      id: stem,
       title: item.title,
       notes: item.notes,
       origin: item.origin,
@@ -315,6 +336,18 @@ async function importDeliverable(args) {
             skipped_reason: loudnorm.skipped_reason,
             measured_input_i: loudnorm.measured_input_i,
             measured_input_tp: loudnorm.measured_input_tp,
+          },
+        }
+        : {}),
+      ...(captionSidecar
+        ? {
+          captions: {
+            srt_path: captionsRel.srt,
+            vtt_path: captionsRel.vtt,
+            segment_count: captionSidecar.segment_count,
+            level: "chunk",
+            source: "caption_segments",
+            timing_basis: "storyboard_target",
           },
         }
         : {}),
@@ -342,19 +375,29 @@ async function importDeliverable(args) {
     }
     const merged = Array.from(byKey.values());
     // A replaced short's old file (different stem) is superseded — remove it so
-    // deliverables/ holds exactly the current set. Best-effort.
+    // deliverables/ holds exactly the current set, along with its old caption
+    // sidecars (siblings of the superseded .mp4). Best-effort.
     for (const rel of supersededRelPaths) {
-      try { fs.rmSync(path.resolve(sessionDir(id), rel), { force: true }); } catch {}
+      const abs = path.resolve(sessionDir(id), rel);
+      try { fs.rmSync(abs, { force: true }); } catch {}
+      const oldStem = abs.slice(0, abs.length - path.extname(abs).length);
+      try { fs.rmSync(`${oldStem}.srt`, { force: true }); } catch {}
+      try { fs.rmSync(`${oldStem}.vtt`, { force: true }); } catch {}
     }
 
     // deliverables/manifest.json — the fan-out set's presentable manifest (the
-    // analog of package/manifest.json for multi-deliverable projects).
+    // analog of package/manifest.json for multi-deliverable projects). The
+    // post-copy block mirrors the single-timeline package manifest — multi-short
+    // fan-out is precisely the multi-platform-distribution case. Chapters-free
+    // here (fan-out has no document-level segments).
+    const distribution = distributionFromStoryboard(storyboard);
     const deliverablesManifestAbs = path.join(destDir, "manifest.json");
     writeFileAtomic(deliverablesManifestAbs, `${JSON.stringify({
       manifest_version: "1.0",
       project_id: id,
       generated_at: importedAt,
       derived_from: stateNow.style && stateNow.style.derived_from ? stateNow.style.derived_from : null,
+      ...(distribution ? { distribution } : {}),
       deliverable_count: merged.length,
       deliverables: merged,
     }, null, 2)}\n`);
@@ -375,6 +418,7 @@ async function importDeliverable(args) {
           count: records.length,
           ids: records.map((r) => r.id),
           short_ids: records.map((r) => r.short_id || null),
+          caption_segment_counts: records.map((r) => (r.captions ? r.captions.segment_count : 0)),
           superseded_files: supersededRelPaths.length,
           note: "deliverables recorded outside the single-timeline package (fan-out shorts / overlay escape hatch)",
         },

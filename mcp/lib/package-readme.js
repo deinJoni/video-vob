@@ -66,6 +66,29 @@ function renderPackageReadme(manifest) {
     lines.push("");
   }
 
+  // Posters (v3 PACKAGE): the canonical thumbnail (poster_0) plus the extra
+  // output-time stills extracted at chapter starts / percent stops. Rendered
+  // only when the manifest carries a non-empty posters set.
+  if (manifest.posters && Array.isArray(manifest.posters.items) && manifest.posters.items.length > 0) {
+    lines.push("## Posters");
+    lines.push("");
+    for (const poster of manifest.posters.items) {
+      const pct = Number.isFinite(poster.extracted_at_percent) ? `${poster.extracted_at_percent}%, ` : "";
+      let how;
+      if (poster.strategy === "hook_scene_midpoint") how = "hook scene midpoint";
+      else if (poster.strategy === "chapter_start") how = poster.label ? `chapter: ${poster.label}` : "chapter start";
+      else if (poster.strategy === "percent_stop") how = `${poster.extracted_at_percent ?? "?"}% stop`;
+      else how = poster.strategy || "frame";
+      lines.push(`- **poster_${poster.index}** \`${poster.path}\` — ${fmtSeconds(poster.extracted_at_seconds)} (${pct}${how})`);
+    }
+    lines.push("");
+    if (Array.isArray(manifest.posters.warnings) && manifest.posters.warnings.length > 0) {
+      const n = manifest.posters.warnings.length;
+      lines.push(`_(${n} extra poster${n === 1 ? "" : "s"} could not be extracted and ${n === 1 ? "was" : "were"} skipped.)_`);
+      lines.push("");
+    }
+  }
+
   // Audio section: omitted entirely on a legacy (pre-v1.1) manifest.
   if (manifest.audio && typeof manifest.audio === "object") {
     lines.push("## Audio");
@@ -93,6 +116,99 @@ function renderPackageReadme(manifest) {
     lines.push("");
     if (manifest.chapters.length < 3) {
       lines.push("_(YouTube shows chapters only with 3+ entries starting at 0:00 — fewer are kept here for navigation/reference.)_");
+      lines.push("");
+    }
+  }
+
+  // Captions (v3 PACKAGE): the chunk-level soft-caption sidecars derived from
+  // the storyboard's planned scene.caption_segments, timed off the scene
+  // targets. Rendered only when the manifest carries a captions block.
+  if (manifest.captions && typeof manifest.captions === "object") {
+    lines.push("## Captions");
+    lines.push("");
+    lines.push(`- **SRT:** \`${manifest.captions.srt_path}\``);
+    lines.push(`- **VTT:** \`${manifest.captions.vtt_path}\``);
+    lines.push(`- **Cues:** ${manifest.captions.segment_count} (chunk-level, timed from storyboard targets)`);
+    lines.push("");
+  }
+
+  // Distribution (v3 PACKAGE): the post-copy the human pastes into the upload
+  // form — each present field rendered as its own fenced copy-paste block. The
+  // header is printed only when at least one field is present; the description
+  // fence appends the chapter stamps inline when chapters_paste_block is set, so
+  // a YouTube long-form description is one paste. Empty fields are omitted.
+  if (manifest.distribution && typeof manifest.distribution === "object") {
+    const d = manifest.distribution;
+    const hashtagsLine = typeof d.hashtags_line === "string" && d.hashtags_line.trim() !== ""
+      ? d.hashtags_line
+      : (Array.isArray(d.hashtags) && d.hashtags.length > 0 ? d.hashtags.join(" ") : null);
+    const hasTitle = typeof d.title === "string" && d.title.trim() !== "";
+    const hasDescription = typeof d.description === "string" && d.description.trim() !== "";
+    const hasChaptersBlock = typeof d.chapters_paste_block === "string" && d.chapters_paste_block.trim() !== "";
+    const hasHashtags = hashtagsLine !== null;
+    const hasCta = typeof d.cta === "string" && d.cta.trim() !== "";
+    if (hasTitle || hasDescription || hasChaptersBlock || hasHashtags || hasCta) {
+      lines.push("## Distribution");
+      lines.push("");
+      if (hasTitle) {
+        lines.push("**Title**");
+        lines.push("");
+        lines.push("```");
+        lines.push(d.title);
+        lines.push("```");
+        lines.push("");
+      }
+      if (hasDescription || hasChaptersBlock) {
+        lines.push("**Description**");
+        lines.push("");
+        lines.push("```");
+        if (hasDescription) lines.push(d.description);
+        if (hasChaptersBlock) {
+          if (hasDescription) lines.push("");
+          lines.push(d.chapters_paste_block);
+        }
+        lines.push("```");
+        lines.push("");
+      }
+      if (hasHashtags) {
+        lines.push("**Hashtags**");
+        lines.push("");
+        lines.push("```");
+        lines.push(hashtagsLine);
+        lines.push("```");
+        lines.push("");
+      }
+      if (hasCta) {
+        lines.push("**Call to action**");
+        lines.push("");
+        lines.push("```");
+        lines.push(d.cta);
+        lines.push("```");
+        lines.push("");
+      }
+    }
+  }
+
+  // Aspect variants (v3 PACKAGE): the opt-in, labeled-lossy center-crop MP4s
+  // produced under package/variants/. Rendered only when the manifest carries a
+  // non-empty aspect_variants set. Each variant is an honest dumb-crop — the
+  // edges are discarded — so the section leads with that warning and points at
+  // the faithful --like path; it also names the single-timeline limitation.
+  if (Array.isArray(manifest.aspect_variants) && manifest.aspect_variants.length > 0) {
+    lines.push("## Aspect variants");
+    lines.push("");
+    for (const v of manifest.aspect_variants) {
+      const dims = (Number.isFinite(v.width) && Number.isFinite(v.height)) ? ` (${v.width}×${v.height})` : "";
+      lines.push(`- **${v.aspect}** \`${v.path}\`${dims} — \`${v.quality || "naive_crop"}\``);
+    }
+    lines.push("");
+    lines.push("Center-crop only (`naive_crop`) — edges are discarded, which may clip captions or subjects. For a faithful re-frame, create a separate project with `--like <this project>` and the target platform.");
+    lines.push("");
+    lines.push("Aspect variants are single-timeline only; multi-short fan-out projects don't produce them.");
+    lines.push("");
+    if (Array.isArray(manifest.aspect_variant_warnings) && manifest.aspect_variant_warnings.length > 0) {
+      const failed = manifest.aspect_variant_warnings.map((w) => w.aspect).filter(Boolean).join(", ");
+      lines.push(`_(Could not produce: ${failed || "(unknown)"}.)_`);
       lines.push("");
     }
   }

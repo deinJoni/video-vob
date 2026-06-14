@@ -497,6 +497,11 @@ function summarizePackage(slot) {
     readme_path: strOrNull(p.readme_path),
     packaged_at: strOrNull(p.packaged_at),
     iteration_version: intOr(p.iteration_version, 0),
+    captions_srt_path: strOrNull(p.captions_srt_path),
+    captions_vtt_path: strOrNull(p.captions_vtt_path),
+    posters_dir: strOrNull(p.posters_dir),
+    posters_count: intOr(p.posters_count, 0),
+    variants: arrOr(p.variants).filter((v) => typeof v === "string"),
   };
 }
 

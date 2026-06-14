@@ -30,9 +30,11 @@ const path = require("path");
 const { execFileSync } = require("child_process");
 
 const { executeTool } = require("../mcp/lib/dispatch.js");
-const { snapshotsDir } = require("../mcp/lib/paths.js");
+const { sessionDir, snapshotsDir } = require("../mcp/lib/paths.js");
 const { classifyStillLuma } = require("../mcp/lib/still-qc.js");
-const { signalstatsLuma } = require("../mcp/lib/ffprobe.js");
+const { signalstatsLuma, probeFile, summarizeProbe } = require("../mcp/lib/ffprobe.js");
+const { stampSrt } = require("../mcp/lib/caption-sidecar.js");
+const { findTimeline } = require("../mcp/lib/storyboard-schema.js");
 
 const PROJECT_ID = process.env.VOB_WALKER_PROJECT || "dji-aerial";
 // No bundled fixture (this is a template repo). Point the walker at any local
@@ -256,6 +258,13 @@ function storyboard({ manifestPath, briefPath, sourcePath, windows, speech }) {
         palette: { bg: "#000000", text: "#FFFFFF", accent: "#FFD60A" },
         typography: { headline: "Anton", caption: "Inter" },
         caption_style: "bold-pop", motion: "fast-snap", grade: "high-contrast",
+      },
+      // v3 post-copy metadata surfaced at PACKAGE (no segments -> no paste block).
+      distribution: {
+        title: "Walker Cut Title",
+        description: "Body line one.",
+        hashtags: ["#walker", "#vob"],
+        cta: "Follow for more.",
       },
     },
     scenes,
@@ -520,7 +529,10 @@ function cannedClassification(segmentsDoc) {
 // (identity merge, completeness gate, package guard) without real renders.
 
 function fanoutStoryboard({ projectId, manifestPath, briefPath, sourcePath, windows }) {
-  const mkScene = (sceneId, sequence, purpose, w, lenS) => ({
+  // captionSegs (optional): SOURCE-time caption_segments to exercise the import
+  // sidecar mirror (PRD-01). Only short-1's payoff carries them — the cue-1
+  // start asserts the - in_seconds re-time against the resolved short timeline.
+  const mkScene = (sceneId, sequence, purpose, w, lenS, captionSegs = null) => ({
     scene_id: sceneId,
     sequence,
     purpose,
@@ -530,7 +542,11 @@ function fanoutStoryboard({ projectId, manifestPath, briefPath, sourcePath, wind
       { manifest_file_index: 0, source_path: sourcePath, in_seconds: w.in, out_seconds: w.out },
     ],
     overlays: purpose === "hook" ? ["text overlay: 'WALKER FANOUT'"] : [],
+    // captions stays null (the summary STRING gates on speech via the on-silent
+    // ERROR); the timed caption_segments layer is what feeds the sidecar and
+    // only ever warns, so it is safe on the synthetic fixture.
     captions: null,
+    ...(captionSegs ? { caption_segments: captionSegs } : {}),
     pacing: purpose === "hook" ? "fast" : "medium",
   });
   return {
@@ -538,7 +554,10 @@ function fanoutStoryboard({ projectId, manifestPath, briefPath, sourcePath, wind
     project_id: projectId,
     generated_at: new Date().toISOString(),
     source: { manifest_path: manifestPath, brief_path: briefPath },
-    target: { platform: "tiktok", duration_seconds: 5, tone: "cinematic" },
+    target: {
+      platform: "tiktok", duration_seconds: 5, tone: "cinematic",
+      distribution: { title: "Walker Fanout Title", description: "Fan-out body.", hashtags: ["#fan", "#out"], cta: "Watch the set." },
+    },
     shorts: [
       {
         short_id: "short-1",
@@ -546,7 +565,12 @@ function fanoutStoryboard({ projectId, manifestPath, briefPath, sourcePath, wind
         sequence: 1,
         total_target_duration_seconds: 5,
         scenes: [
-          mkScene("s101", 1, "hook", windows.h1, 2),
+          // Caption on the HOOK scene (s101) — the import below records short-1
+          // from the s101-0 pre-cut clip alone (a ~2s stand-in for the render),
+          // so the cue must fall inside the hook window to survive the clamp.
+          mkScene("s101", 1, "hook", windows.h1, 2, [
+            { text: "fan-out caption", start_seconds: round3(windows.h1.in + 0.3), end_seconds: round3(windows.h1.in + 1.2) },
+          ]),
           mkScene("s102", 2, "payoff", windows.p1, 3),
         ],
       },
@@ -701,6 +725,19 @@ async function runFanout() {
     assert(
       Array.isArray(d.schema_errors) && d.schema_errors.some((m) => /omitted when shorts/.test(String(m))),
       `expected the mutual-exclusion schema error, got ${JSON.stringify(d.schema_errors)}`,
+    );
+  });
+
+  // 3b-dist. NEGATIVE: malformed target.distribution shape rejects at save
+  //     (validateDistribution — the unconditional, non-version-gated shape gate).
+  await step("save storyboard (distribution bad-shape fixture)", async () => {
+    const bad = JSON.parse(JSON.stringify(fanSb));
+    bad.target.distribution.hashtags = "not-an-array";
+    const err = await expectError("vob_save_storyboard", { project_id: FAN_PROJECT, content: bad }, /INVALID_ARGUMENTS/);
+    const d = err.details || {};
+    assert(
+      Array.isArray(d.schema_errors) && d.schema_errors.some((m) => /target\.distribution\.hashtags must be an array/.test(String(m))),
+      `expected the distribution hashtags shape error, got ${JSON.stringify(d.schema_errors)}`,
     );
   });
 
@@ -863,12 +900,52 @@ async function runFanout() {
       `unexpected loudnorm outcome (audio_present=${inspect.audio_present}): ${JSON.stringify(rec.loudnorm)}`);
     assert(fs.existsSync(imp1.deliverables_manifest_path), "deliverables/manifest.json not written");
     assert(imp1.phase === "PACKAGE", `expected phase PACKAGE after import, got ${imp1.phase}`);
+    // Distribution mirror (PRD-03): the fan-out deliverables manifest carries the
+    // top-level distribution block, chapters-free (no document-level segments).
+    {
+      const dm = JSON.parse(fs.readFileSync(imp1.deliverables_manifest_path, "utf8"));
+      assert(dm.distribution && dm.distribution.title === "Walker Fanout Title",
+        `deliverables manifest distribution wrong: ${JSON.stringify(dm.distribution)}`);
+      assert(dm.distribution.hashtags_line === "#fan #out",
+        `deliverables manifest hashtags_line wrong: ${JSON.stringify(dm.distribution.hashtags_line)}`);
+      assert(!("chapters_paste_block" in dm.distribution),
+        `fan-out distribution must carry no chapters_paste_block: ${JSON.stringify(dm.distribution)}`);
+    }
+    // Caption sidecar mirror (PRD-01): short-1's hook scene carries one
+    // caption_segment; the import derives the per-deliverable .srt/.vtt from the
+    // short timeline resolved by findTimeline(short_id). The deliverable is the
+    // s101-0 clip, so the cue (re-timed cursor=0 + (start - hook in_seconds))
+    // survives the ~2s clamp. Assert the cue-1 START matches the timeline-
+    // resolved expectation (the - in_seconds re-time), not just the count.
+    assert(rec.captions && rec.captions.level === "chunk" && rec.captions.source === "caption_segments"
+      && rec.captions.timing_basis === "storyboard_target",
+      `import record captions block missing/wrong: ${JSON.stringify(rec.captions)}`);
+    assert(rec.captions.segment_count >= 1, `expected >=1 caption cue on short-1, got ${rec.captions.segment_count}`);
+    {
+      const timeline = findTimeline(fanSb, "short-1");
+      const hook = timeline.scenes[0];
+      const hookIn = hook.source_clips[0].in_seconds;
+      const seg0 = hook.caption_segments[0];
+      const expectedStart = 0 + (seg0.start_seconds - hookIn); // cursor 0 at the hook scene
+      const expectedStamp = stampSrt(expectedStart);
+      const srtAbs = path.resolve(sessionDir(FAN_PROJECT), rec.captions.srt_path);
+      assert(fs.existsSync(srtAbs), `import .srt sidecar missing on disk: ${srtAbs}`);
+      const srt = fs.readFileSync(srtAbs, "utf8");
+      assert(srt.includes(`1\n${expectedStamp} --> `),
+        `import SRT cue 1 start ${expectedStamp} missing — likely the in_seconds re-time bug:\n${srt}`);
+      assert(/^WEBVTT/.test(fs.readFileSync(path.resolve(sessionDir(FAN_PROJECT), rec.captions.vtt_path), "utf8")),
+        "import .vtt sidecar header malformed");
+      console.log(`   captions: ${rec.captions.segment_count} cue(s), cue1 @ ${expectedStamp}`);
+    }
     console.log(`   loudnorm: ${rec.loudnorm.applied ? "applied" : `skipped (${rec.loudnorm.skipped_reason})`}   origin: ${rec.origin}`);
   }
 
   // 6a. package_output refuses on a fan-out storyboard — BEFORE wiping anything.
+  // aspect_variants is passed too (PRD-05): variants must NEVER reach a fan-out
+  // project — the fan-out refusal precedes the variant work just as it precedes
+  // the wipe.
   await step("package_output refused (fan-out guard)", async () => {
-    const err = await expectError("vob_package_output", { project_id: FAN_PROJECT }, /STATE_CONFLICT/);
+    const err = await expectError("vob_package_output", { project_id: FAN_PROJECT, aspect_variants: ["1:1"] }, /STATE_CONFLICT/);
     assert(err.details && err.details.fan_out === true, `expected fan_out:true details, got ${JSON.stringify(err.details)}`);
   });
 
@@ -1478,7 +1555,10 @@ async function runLongform() {
     project_id: LF,
     generated_at: new Date().toISOString(),
     source: { manifest_path: boot.summary.manifest.path, brief_path: boot.savedBrief.brief_path },
-    target: { platform: "youtube_long", duration_seconds: 10, tone: "calm documentary" },
+    target: {
+      platform: "youtube_long", duration_seconds: 10, tone: "calm documentary",
+      distribution: { title: "Longform Title", description: "Doc body.", hashtags: ["#doc"], cta: "Subscribe." },
+    },
     scenes: [
       generalScene({ sceneId: "a101", sequence: 1, purpose: "beat", win: wins.a1, targetSeconds: 2, sourcePath: srcPath }),
       generalScene({ sceneId: "a102", sequence: 2, purpose: "beat", win: wins.a2, targetSeconds: 3, sourcePath: srcPath }),
@@ -1642,10 +1722,31 @@ async function runLongform() {
     assert(manifest.video_type && manifest.video_type.canonical === "long-form",
       `manifest video_type wrong: ${JSON.stringify(manifest.video_type)}`);
     assert(manifest.assembly && manifest.assembly.segment_count === 2, "manifest assembly block missing");
+    // Poster set on a chaptered project (PRD-02): count == min(2+1,5) == 3, with
+    // a chapter_start poster at the act-2 boundary (5s, "The Payoff").
+    assert(manifest.posters && manifest.posters.count === Math.min(2 + 1, 5),
+      `chaptered poster count wrong: ${JSON.stringify(manifest.posters && manifest.posters.count)}`);
+    assert(manifest.posters.items.some((p) => p.strategy === "chapter_start" && p.extracted_at_seconds === 5 && p.label === "The Payoff"),
+      `expected a chapter_start poster at 5s "The Payoff": ${JSON.stringify(manifest.posters.items)}`);
+    // Distribution (PRD-03): chaptered project -> the paste block reuses the
+    // exact chapter stamps, inlined into the pasteable description fence.
+    assert(manifest.distribution && manifest.distribution.title === "Longform Title",
+      `longform manifest.distribution.title wrong: ${JSON.stringify(manifest.distribution)}`);
+    assert(manifest.distribution.chapters_paste_block === "0:00 The Setup\n0:05 The Payoff",
+      `chapters_paste_block wrong: ${JSON.stringify(manifest.distribution.chapters_paste_block)}`);
     const readme = fs.readFileSync(pkg.readme_path, "utf8");
     assert(/## Chapters/.test(readme) && /0:00 The Setup/.test(readme) && /0:05 The Payoff/.test(readme),
       "README chapters section missing/wrong");
+    assert(/## Posters/.test(readme), "README ## Posters section missing on chaptered project");
+    assert(/## Distribution/.test(readme) && /0:00 The Setup/.test(readme.split("## Distribution")[1] || ""),
+      "README ## Distribution section missing or chapters not inlined into the description");
+    // Captions (PRD-01): the assembled-segmented case takes the same package
+    // path with no regression. This fixture's scenes carry no caption_segments,
+    // so the skip path leaves captions absent (proves null-on-caption-less).
+    assert(manifest.captions === undefined, `caption-less segmented storyboard must skip captions: ${JSON.stringify(manifest.captions)}`);
+    assert(!/## Captions/.test(readme), "README ## Captions section must be absent on a caption-less project");
     console.log(`   chapters: ${manifest.chapters.map((c) => `${c.youtube_stamp} ${c.title}`).join(" | ")}`);
+    console.log(`   posters:  ${manifest.posters.count} (${manifest.posters.items.map((i) => i.strategy).join(", ")})`);
   }
   await step("transition PACKAGE→ITERATE", () =>
     call("vob_transition_phase", { project_id: LF, to_phase: "ITERATE" }),
@@ -2183,6 +2284,10 @@ async function main() {
   }
   console.log(`=== M5 walker v2 — phase: ${phase} — project: ${PROJECT_ID}`);
 
+  // Hoisted so the package-phase assertions (captions) can read the storyboard
+  // fixture + speech flag built in the setup block (separate `if` scopes).
+  let sb = null, speech = false;
+
   if (phase === "setup" || phase === "all") {
     // 0. doctor preflight (warn-only — the walker itself is the smoke test)
     try {
@@ -2259,7 +2364,7 @@ async function main() {
         transcript = JSON.parse(fs.readFileSync(inspect.transcript_path, "utf8"));
       } catch { transcript = null; }
     }
-    const speech = inspect.speech_detected === true && Array.isArray(transcript) && transcript.length > 0;
+    speech = inspect.speech_detected === true && Array.isArray(transcript) && transcript.length > 0;
     const windows = planWindows({ durationSeconds: file0.duration_seconds, transcript });
 
     // 4. intent — 5 base keys, then the inspect-conditional keys; assert the
@@ -2311,7 +2416,7 @@ async function main() {
       call("vob_log_storyboarder_invocation", { project_id: PROJECT_ID }),
     );
     const summary = await call("vob_read_state_summary", { project_id: PROJECT_ID });
-    const sb = storyboard({
+    sb = storyboard({
       manifestPath: summary.manifest.path,
       briefPath: savedBrief.brief_path,
       sourcePath: file0.path || SOURCE,
@@ -2478,15 +2583,129 @@ async function main() {
   }
 
   if (phase === "package" || phase === "all") {
-    // 11. package
+    // 11. package — pass aspect_variants so the dumb-crop hatch (PRD-05) runs.
+    // The walker cut is 9:16 (1080×1920), so both 1:1 and 16:9 are real crops
+    // (neither a no-op), and neither is a fan-out project.
     const pkg = await step("package output", () =>
-      call("vob_package_output", { project_id: PROJECT_ID }),
+      call("vob_package_output", { project_id: PROJECT_ID, aspect_variants: ["1:1", "16:9"] }),
     );
     console.log(`   ${pkg.directory_path}`);
     console.log(`   final:     ${pkg.final_mp4_path}`);
     console.log(`   thumbnail: ${pkg.thumbnail_path}`);
     console.log(`   manifest:  ${pkg.manifest_path}`);
     console.log(`   readme:    ${pkg.readme_path}`);
+
+    // Poster set (PRD-02): poster_0 IS thumbnail.jpg, extras non-fatal. The
+    // walker source has a single hook scene + no narrative segments, so
+    // chaptersFromStoryboard is null and the count defaults to 3.
+    {
+      assert(typeof pkg.posters_count === "number" && pkg.posters_count >= 1, `pkg.posters_count missing/zero: ${pkg.posters_count}`);
+      assert(typeof pkg.posters_dir === "string" && pkg.posters_dir, `pkg.posters_dir missing: ${pkg.posters_dir}`);
+      const manifest = JSON.parse(fs.readFileSync(pkg.manifest_path, "utf8"));
+      assert(manifest.manifest_version === "1.2", `manifest_version must stay 1.2, got ${manifest.manifest_version}`);
+      assert(manifest.posters && Array.isArray(manifest.posters.items) && manifest.posters.items.length >= 1,
+        `manifest.posters set missing: ${JSON.stringify(manifest.posters)}`);
+      assert(manifest.posters.items[0].path === "thumbnail.jpg" && manifest.posters.items[0].index === 0,
+        `poster_0 must be the canonical thumbnail: ${JSON.stringify(manifest.posters.items[0])}`);
+      assert(fs.existsSync(path.join(pkg.directory_path, "posters")) || manifest.posters.items.length === 1,
+        "posters/ dir missing despite extra posters");
+      for (const item of manifest.posters.items) {
+        if (item.index === 0) continue;
+        assert(fs.existsSync(path.join(pkg.directory_path, item.path)), `poster file missing on disk: ${item.path}`);
+      }
+      const readme = fs.readFileSync(pkg.readme_path, "utf8");
+      assert(/## Posters/.test(readme), "README ## Posters section missing");
+      console.log(`   posters:   ${manifest.posters.count} (${manifest.posters.items.map((i) => i.strategy).join(", ")})`);
+
+      // Distribution (PRD-03): post-copy block on a schema-1.0, no-segments
+      // project -> no chapters_paste_block (the gating requirement).
+      assert(manifest.distribution && manifest.distribution.title === "Walker Cut Title",
+        `manifest.distribution.title wrong: ${JSON.stringify(manifest.distribution)}`);
+      assert(manifest.distribution.hashtags_line === "#walker #vob",
+        `manifest.distribution.hashtags_line wrong: ${JSON.stringify(manifest.distribution.hashtags_line)}`);
+      assert(!("chapters_paste_block" in manifest.distribution),
+        `non-chaptered short must emit no chapters_paste_block: ${JSON.stringify(manifest.distribution)}`);
+      assert(/## Distribution/.test(readme) && /Walker Cut Title/.test(readme) && /#walker #vob/.test(readme),
+        "README ## Distribution section missing/wrong");
+
+      // Captions (PRD-01): chunk-level .srt/.vtt from the beat scene's two
+      // caption_segments. The beat clip's in_seconds is non-zero (>=2.3, the
+      // hook.out floor), so the SOURCE->OUTPUT re-time `cursor + (start - in)`
+      // is LOAD-BEARING — the count alone would pass even with the naive-add
+      // bug; the cue-1 START TIMESTAMP is what the bug corrupts. The hook/payoff
+      // scenes carry no segments, exercising the skip path. (When INSPECT found
+      // no speech the beat scene has no caption_segments and the block is
+      // absent — assert the skip path instead.)
+      if (speech) {
+        const beat = sb.scenes[1];
+        const beatClipIn = beat.source_clips[0].in_seconds;
+        assert(beatClipIn > 0, `beat clip in_seconds must be non-zero to make the re-time load-bearing, got ${beatClipIn}`);
+        const cursor = sb.scenes[0].target_duration_seconds; // output start of the beat scene
+        const seg0 = beat.caption_segments[0];
+        const expectedStart = cursor + (seg0.start_seconds - beatClipIn);
+        const expectedStamp = stampSrt(expectedStart);
+        const buggyStamp = stampSrt(cursor + seg0.start_seconds); // the missing - in_seconds
+        assert(manifest.captions && manifest.captions.level === "chunk" && manifest.captions.timing_basis === "storyboard_target"
+          && manifest.captions.source === "caption_segments",
+          `captions manifest block missing/wrong: ${JSON.stringify(manifest.captions)}`);
+        assert(manifest.captions.segment_count === 2, `expected 2 caption cues from the beat scene, got ${manifest.captions.segment_count}`);
+        const srt = fs.readFileSync(path.join(pkg.directory_path, "captions.srt"), "utf8");
+        assert(srt.includes(`1\n${expectedStamp} --> `),
+          `SRT cue 1 start ${expectedStamp} missing — likely the in_seconds re-time bug (buggy would be ${buggyStamp}):\n${srt}`);
+        assert(expectedStamp !== buggyStamp, "fixture in_seconds is zero — the bug would be masked");
+        assert(/^1\n\d\d:\d\d:\d\d,\d\d\d --> \d\d:\d\d:\d\d,\d\d\d\nwalker caption one/m.test(srt),
+          "SRT cue 1 shape malformed");
+        const vtt = fs.readFileSync(path.join(pkg.directory_path, "captions.vtt"), "utf8");
+        assert(/^WEBVTT/.test(vtt) && /\d\d:\d\d:\d\d\.\d\d\d --> /.test(vtt), "VTT header/stamp malformed");
+        assert(/## Captions/.test(readme) && /captions\.srt/.test(readme), "README captions section missing");
+        console.log(`   captions:  ${manifest.captions.segment_count} cues, cue1 @ ${expectedStamp}`);
+      } else {
+        assert(manifest.captions === undefined, "no speech -> no caption_segments -> manifest.captions must be absent");
+      }
+
+      // Aspect variants (PRD-05): opt-in dumb-crop. Source is 9:16, so both
+      // requested aspects are real crops. Lean return + on-disk files + manifest
+      // block + decoded dims (proves the crop ran, not a copy) + README + state.
+      assert(Array.isArray(pkg.variants) && pkg.variants.length === 2,
+        `pkg.variants must be a length-2 array, got ${JSON.stringify(pkg.variants)}`);
+      assert(fs.existsSync(path.join(pkg.directory_path, "variants", "1x1.mp4")),
+        "variants/1x1.mp4 missing on disk");
+      assert(fs.existsSync(path.join(pkg.directory_path, "variants", "16x9.mp4")),
+        "variants/16x9.mp4 missing on disk");
+      assert(Array.isArray(manifest.aspect_variants) && manifest.aspect_variants.length === 2,
+        `manifest.aspect_variants must be length 2, got ${JSON.stringify(manifest.aspect_variants)}`);
+      for (const v of manifest.aspect_variants) {
+        assert(v.quality === "naive_crop", `aspect variant quality must be naive_crop, got ${JSON.stringify(v)}`);
+      }
+      const v11 = manifest.aspect_variants.find((v) => v.aspect === "1:1");
+      const v169 = manifest.aspect_variants.find((v) => v.aspect === "16:9");
+      assert(v11 && v11.width === 1080 && v11.height === 1080,
+        `1:1 variant dims wrong: ${JSON.stringify(v11)}`);
+      assert(v169 && v169.width === 1920 && v169.height === 1080,
+        `16:9 variant dims wrong: ${JSON.stringify(v169)}`);
+      // Decode each variant and confirm the actual dims match the manifest dims.
+      for (const v of manifest.aspect_variants) {
+        const probed = summarizeProbe(path.join(pkg.directory_path, v.path), probeFile(path.join(pkg.directory_path, v.path)));
+        assert(probed.primary_video && probed.primary_video.width === v.width && probed.primary_video.height === v.height,
+          `decoded dims ${probed.primary_video && `${probed.primary_video.width}x${probed.primary_video.height}`} != manifest ${v.width}x${v.height} for ${v.aspect}`);
+      }
+      assert(/## Aspect variants/.test(readme) && /naive_crop/.test(readme) && /--like/.test(readme),
+        "README ## Aspect variants section / naive_crop warning / --like note missing");
+      console.log(`   variants:  ${manifest.aspect_variants.map((v) => `${v.aspect} ${v.width}x${v.height}`).join(", ")}`);
+    }
+
+    // Negative path (PRD-05): an unknown aspect rejects with INVALID_ARGUMENTS
+    // (the canonicalizePlatform `recognized:false` discriminator), and because
+    // arg validation precedes the wipe, the prior successful package is intact.
+    await step("package_output rejects unknown aspect (refusal precedes wipe)", async () => {
+      await expectError(
+        "vob_package_output",
+        { project_id: PROJECT_ID, aspect_variants: ["banana"] },
+        /INVALID_ARGUMENTS/,
+      );
+      assert(fs.existsSync(pkg.final_mp4_path), "prior package final.mp4 was wiped by a rejected aspect arg");
+      assert(fs.existsSync(pkg.manifest_path), "prior package manifest.json was wiped by a rejected aspect arg");
+    });
 
     await step("transition PACKAGE→ITERATE", () =>
       call("vob_transition_phase", { project_id: PROJECT_ID, to_phase: "ITERATE" }),
@@ -2497,6 +2716,18 @@ async function main() {
   }
 
   const final = await call("vob_read_state_summary", { project_id: PROJECT_ID });
+  if ((phase === "package" || phase === "all") && final.package) {
+    assert(final.package.posters_count >= 1, `summary posters_count missing: ${final.package.posters_count}`);
+    assert(typeof final.package.posters_dir === "string", `summary posters_dir missing: ${final.package.posters_dir}`);
+    // captions_*_path mirror into summarizePackage when the cut had captions.
+    assert("captions_srt_path" in final.package && "captions_vtt_path" in final.package,
+      `summary captions_*_path keys missing: ${JSON.stringify(Object.keys(final.package))}`);
+    // variants[] (PRD-05): session-relative paths, two for the 9:16 walker cut.
+    assert(Array.isArray(final.package.variants) && final.package.variants.length === 2,
+      `summary package.variants must be length 2, got ${JSON.stringify(final.package.variants)}`);
+    assert(final.package.variants.every((v) => typeof v === "string" && v.startsWith("package/variants/")),
+      `summary package.variants must be session-relative package/variants/ paths, got ${JSON.stringify(final.package.variants)}`);
+  }
   console.log(`\n=== final phase: ${final.phase}   project: ${final.project_id}`);
 }
 
