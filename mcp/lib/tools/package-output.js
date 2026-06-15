@@ -31,7 +31,7 @@ const {
 } = require("../ffmpeg-runner.js");
 const { normalizeLoudnessInPlace } = require("../loudnorm.js");
 const { buildCaptionSidecar } = require("../caption-sidecar.js");
-const { distributionFromStoryboard, storyboardHasSegments, storyboardHasShorts, storyboardSegments, storyboardTimelines } = require("../storyboard-schema.js");
+const { buildTranscriptResolver, distributionFromStoryboard, loadTranscript, storyboardHasSegments, storyboardHasShorts, storyboardSegments, storyboardTimelines } = require("../storyboard-schema.js");
 const { renderPlanOf } = require("../render-segments.js");
 const { stderrTail } = require("../spawn-with-shutdown.js");
 const { thumbnailTimestampPercent, canonicalizePlatform, getPlatformProfile } = require("../platform-profiles.js");
@@ -561,7 +561,14 @@ async function packageOutput(args) {
   // (wiped/recreated every run) so they rebuild like every package file; null
   // when the storyboard declares no caption segments. sbForGuard is the parsed
   // single-timeline storyboard already in scope (fan-out refuses far above).
-  const captionSidecar = buildCaptionSidecar(sbForGuard, { durationSeconds });
+  // (v3.4) When INSPECT forced-aligned the transcript, the cue windows are
+  // word-anchored to the same per-word times the burn-in uses (no drift).
+  const inspectSlot = state.inspect && typeof state.inspect === "object" && !Array.isArray(state.inspect) ? state.inspect : null;
+  const captionSidecar = buildCaptionSidecar(sbForGuard, {
+    durationSeconds,
+    transcriptForFileIndex: buildTranscriptResolver(state, loadTranscript(inspectSlot && inspectSlot.transcript_path)),
+    transcriptAligned: inspectSlot ? inspectSlot.transcript_aligned === true : false,
+  });
   const captionsSrtAbs = packageCaptionsSrtPath(id);
   const captionsVttAbs = packageCaptionsVttPath(id);
   if (captionSidecar) {
@@ -692,7 +699,9 @@ async function packageOutput(args) {
           segment_count: captionSidecar.segment_count,
           level: "chunk",
           source: "caption_segments",
-          timing_basis: "storyboard_target",
+          // (v3.4) "forced_aligned" when cues were word-anchored to the aligned
+          // transcript (matches the burn-in); "storyboard_target" otherwise.
+          timing_basis: captionSidecar.timing_basis || "storyboard_target",
         },
       }
       : {}),

@@ -42,13 +42,13 @@ function sceneDuration(scene) {
   return Number.isFinite(d) && d > 0 ? d : 0;
 }
 
-function chunkRow(segmentId, title, scenes, transitionOut) {
+function chunkRow(segmentId, title, scenes, transitionOut, videoCountFn = sceneVideoCount) {
   return {
     segment_id: segmentId,
     title,
     scene_ids: scenes.map((s) => s.scene_id),
     target_duration_seconds: Math.round(scenes.reduce((acc, s) => acc + sceneDuration(s), 0) * 1000) / 1000,
-    video_count: scenes.reduce((acc, s) => acc + sceneVideoCount(s), 0),
+    video_count: scenes.reduce((acc, s) => acc + videoCountFn(s), 0),
     // Normalize to a real ffmpeg seam: a non-seam transition_out degrades to a
     // dip-to-black "fade" (dissolve family) or a hard "cut" (PRD-02 §7.3).
     transition_out: seamOf(transitionOut),
@@ -76,7 +76,7 @@ function chunkScenesToBudget(scenes, budget) {
   return chunks;
 }
 
-// deriveRenderPlan({ storyboard, state }) ->
+// deriveRenderPlan({ storyboard, state, fellBackLayoutScenes }) ->
 //   { mode: "single" } |
 //   { mode: "segmented", segmentation: "auto"|"manual", video_budget,
 //     segments: [{ segment_id, title, scene_ids, target_duration_seconds,
@@ -85,7 +85,13 @@ function chunkScenesToBudget(scenes, budget) {
 // > "single". Fan-out (shorts[]) is always single (each short is its own
 // render). "auto" that fits in one chunk collapses to single — zero overhead
 // when segmentation isn't needed.
-function deriveRenderPlan({ storyboard, state }) {
+//
+// fellBackLayoutScenes (optional Set of scene_ids, from this COMPOSE entry's
+// layout materialization): a layout scene normally costs 1 <video> (the
+// composite), but when its composite DEGRADED the composer renders the N cells
+// as separate <video> elements — so those scenes are budgeted at their cell
+// count here, or an auto chunk would be under-counted and overflow the host cap.
+function deriveRenderPlan({ storyboard, state, fellBackLayoutScenes } = {}) {
   const sb = isPlainObject(storyboard) ? storyboard : null;
   if (!sb || storyboardHasShorts(sb)) return { mode: "single" };
   const scenes = Array.isArray(sb.scenes) ? sb.scenes.filter(isPlainObject) : [];
@@ -100,13 +106,28 @@ function deriveRenderPlan({ storyboard, state }) {
   const budget = hostProfile.videoBudget();
   const narrative = storyboardSegments(sb);
 
+  // A degraded layout scene is costed at its actual fallback element count
+  // (cells + pip overlays), not the optimistic 1; otherwise sceneVideoCount.
+  const fellBack = fellBackLayoutScenes instanceof Set ? fellBackLayoutScenes : new Set();
+  const videoCountFn = fellBack.size === 0
+    ? sceneVideoCount
+    : (scene) => {
+      if (isPlainObject(scene) && isNonEmptyString(scene.scene_id) && fellBack.has(scene.scene_id)) {
+        const clips = Array.isArray(scene.source_clips) ? scene.source_clips.length : 0;
+        const pips = Array.isArray(scene.overlays)
+          ? scene.overlays.filter((o) => isPlainObject(o) && o.type === "pip").length : 0;
+        return clips + pips;
+      }
+      return sceneVideoCount(scene);
+    };
+
   if (requested === "manual") {
     if (narrative.length === 0) return { mode: "single" }; // schema enforces; belt-and-braces
     return {
       mode: "segmented",
       segmentation: "manual",
       video_budget: budget,
-      segments: narrative.map((seg) => chunkRow(seg.segment_id, seg.title, seg.scenes, seg.transition_out)),
+      segments: narrative.map((seg) => chunkRow(seg.segment_id, seg.title, seg.scenes, seg.transition_out, videoCountFn)),
     };
   }
 
@@ -123,9 +144,9 @@ function deriveRenderPlan({ storyboard, state }) {
   const segments = [];
   if (narrative.length > 0) {
     for (const seg of narrative) {
-      const { chunks } = packScenesGlueAware(seg.scenes, budget, hardCap, sceneVideoCount);
+      const { chunks } = packScenesGlueAware(seg.scenes, budget, hardCap, videoCountFn);
       if (chunks.length === 1) {
-        segments.push(chunkRow(seg.segment_id, seg.title, chunks[0].scenes, seg.transition_out));
+        segments.push(chunkRow(seg.segment_id, seg.title, chunks[0].scenes, seg.transition_out, videoCountFn));
       } else {
         chunks.forEach((chunk, ix) => {
           const last = ix === chunks.length - 1;
@@ -134,15 +155,16 @@ function deriveRenderPlan({ storyboard, state }) {
             `${seg.title} (part ${ix + 1})`,
             chunk.scenes,
             last ? seg.transition_out : chunk.outSeam,
+            videoCountFn,
           ));
         });
       }
     }
   } else {
-    const { chunks } = packScenesGlueAware(scenes, budget, hardCap, sceneVideoCount);
+    const { chunks } = packScenesGlueAware(scenes, budget, hardCap, videoCountFn);
     chunks.forEach((chunk, ix) => {
       const last = ix === chunks.length - 1;
-      segments.push(chunkRow(`seg-${ix + 1}`, `Segment ${ix + 1}`, chunk.scenes, last ? "cut" : chunk.outSeam));
+      segments.push(chunkRow(`seg-${ix + 1}`, `Segment ${ix + 1}`, chunk.scenes, last ? "cut" : chunk.outSeam, videoCountFn));
     });
   }
   if (segments.length <= 1) return { mode: "single" };

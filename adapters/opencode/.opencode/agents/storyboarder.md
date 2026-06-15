@@ -246,6 +246,18 @@ so a correctly-authored sped clip is clean; `PLAN_SCENE_CLIP_SUM_MISMATCH` / `PL
 speed change is an editorial beat, not a way to cram footage. (True variable speed *ramps* — easing
 1×→2× across a clip — are not supported; `speed` is one constant per clip.)
 
+**The `scene.layout` field (optional — split-screen / multi-crop).** A scene can composite **multiple of its `source_clips` into one frame** — the classic case is a **2-up speaker stack** (two talking heads, one over the other) for a reaction or a back-and-forth. Shape:
+
+```json
+"layout": {
+  "type": "split_vertical",          // split_vertical (top/bottom — the vertical 2-up stack) | split_horizontal (left/right) | grid_2x2 | pip (base + inset)
+  "cells": [ { "clip_index": 0, "fit": "cover" }, { "clip_index": 1, "fit": "cover" } ],
+  "audio_cell": 0                     // which cell's audio is kept (the speaker); default 0
+}
+```
+
+`cells[].clip_index` indexes the scene's own `source_clips`. The engine **pre-composites the cells into ONE clip at COMPOSE entry** (ffmpeg), so a layout scene costs a **single `<video>` element** in the composition — it does NOT blow the `<video>` budget and it dodges the multi-`<video>` render fragility that forces split-screen off-rails. Author the cell clips to the **same span/length** (both speakers cover the scene window) and set each scene's `target_duration_seconds` to that on-screen length. The layout is **fail-safe**: a malformed layout never rejects the save — plan-lint WARNS (`PLAN_LAYOUT_INVALID` / `PLAN_LAYOUT_UNKNOWN_TYPE` / `PLAN_LAYOUT_CELL_OUT_OF_RANGE` / `PLAN_LAYOUT_CELL_COUNT`) and the composer falls back to positioned cells if the composite can't be built. Use it when the *content* needs two feeds on screen at once; for a cutaway over the spine use `broll_placements`/`overlays` instead.
+
 **`broll_placements` (optional).** Each entry points at an existing `role:"b_roll"` clip by `{ scene_id, clip_index }` and records where it sits over the spine. `narration_span` is in SOURCE seconds — the same time base as `in_seconds`/`out_seconds` — and MUST overlap the scene's a_roll clip window (plan lint rejects the save with `PLAN_NARRATION_SPAN_OUTSIDE_SCENE` otherwise; never emit scene-relative offsets like 1.0–3.0). Advisory metadata for the plan gate and the composer — it does NOT create new clips (the clip must already exist in that scene's `source_clips`), so it can never dangle into a missing-file render error. Omit it entirely if the cut is pure A-roll.
 
 ## Craft — what makes a good storyboard
@@ -322,6 +334,8 @@ Ground each candidate window on the per-FILE strips: via `strips_legend_path`, f
 
 Do not emit a timecode you have not personally seen the frames for. Prefer in/out points aligned with natural motion or audio rests; a user-named `key_moments` moment wins; otherwise consult the transcript for clean cut points between sentences. One source file with multiple scenes is fine. A single scene can reference multiple clips for a quick cut sequence — keep total clip duration close to the scene's `target_duration_seconds`.
 
+**Distinct spans — no reused footage.** Each scene's a_roll window must cover DIFFERENT source seconds. A pulled-forward hook (lifting a punchy line from the body up to scene 1) is great — but then **cut that line OUT of the body scene**, don't leave it in both, or the same words play twice. Plan lint warns `PLAN_CLIP_SPAN_OVERLAP` when two a_roll clips from the same file reuse ≥0.75s of the same source seconds. Padding a too-short cut by overlapping spans is the wrong fix (see Total duration) — it reads as a repeat.
+
 ### B-roll matching & the A-roll spine
 
 When `broll_index.json` is present, you can lift the edit from a flat A-roll concatenation to a spine with cutaways — but only when a cutaway *earns its place*. This is semantic judgment over the B-roll descriptions plus your read of the frames, not mechanical pairing.
@@ -341,6 +355,7 @@ Plan lint enforces: hold ≥1.5s, no back-to-back reuse of the same B-roll segme
 - Text overlays go in `overlays[]` — single concise strings COMPOSE can render literally, e.g. `"text overlay: 'Here is the trick'"`.
 - Captions (burned-in transcript captions) go in `captions`, with the timed chunking in `caption_segments`. If the brief says "no captions" or `music_vo` indicates music with no voiceover/dialogue, set `captions: null`.
 - **Caption grounding.** A captioned scene's source_clips MUST overlap spoken words in the transcript — the server rejects captioning a silent stretch with `STORYBOARD_CAPTIONS_ON_SILENT_SEGMENT`. Cross-check the transcript when in doubt.
+- **Caption text must match the chosen span.** A `caption_segments.text` chunk must say what is actually spoken in the clip window you picked. If you pull a line forward, set its caption AND its source window to the SAME line — don't caption "Western propaganda" over footage where the speaker is saying "India is against China". Plan lint warns `PLAN_CAPTION_TEXT_MISMATCH` when a caption's words barely appear in its window's transcript (a wrong-span tell), and `PLAN_CAPTION_REPEATED` when the same line is captioned in two scenes. Verify the in/out picks the line the caption claims.
 - **Caption spelling on low-confidence speech.** The transcript carries a per-word `p` (confidence); INSPECT's `digest.md` ranks the lowest-confidence words in its caption-risk section. When a `caption_segments.text` chunk covers those words (names, jargon, inaudible asides), verify the spelling against the footage rather than trusting the ASR string verbatim, and surface any uncertain proper noun in the scene `note` so it gets a human check at the plan gate.
 - **On-screen-text collisions (P3).** When a clip's `on_screen_text` shows the footage already burns in text (a lower third, a caption), don't stack your overlays/captions on top of it — move yours to a clear band or drop them for that clip, and note it so the composer keeps that region clear.
 
@@ -360,6 +375,8 @@ Every concrete moment the user listed in `intent.key_moments` MUST appear in at 
 ### Total duration
 
 `total_target_duration_seconds` is the sum of per-scene `target_duration_seconds` and should land within ±15% of `target.duration_seconds`. If the source can't make the target, scale down and explain in top-level `notes`. Plan lint warns when the scene-duration sum differs from `total_target_duration_seconds` by >0.5s or from the target by >20% — make the numbers add up before saving.
+
+**Feasibility — speed × available footage vs the window.** The cut you build must actually FIT the requested duration window. Plan lint computes the REALIZED on-screen A-roll length (sum of `(out−in)/speed` over a_roll clips — speed baked in) and warns `PLAN_DURATION_INFEASIBLE` when it lands below the window's floor or above its ceiling. This catches a contradiction like "~1.25× speed + 60–90s output" when each topic only has ~50–62s of clean source: at 1.25× the cut realizes ~40–50s, under the 60s floor. There is no honest fix by padding (reusing footage trips `PLAN_CLIP_SPAN_OVERLAP`) — instead **slow the clips** (lower `speed`, or 1.0×), **add footage** (declare a `source:"gap"` placement and re-ingest), or surface the conflict in top-level `notes` so the human re-scopes the duration. Resolve it at PLAN, not at the caption-dump stage.
 
 ## Revision passes
 

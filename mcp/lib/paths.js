@@ -295,6 +295,22 @@ function matteSidecarPath(projectId, sceneId, clipIndex) {
   return path.join(mattesDir(projectId), `${transcodedClipStem(sceneId, clipIndex)}.json`);
 }
 
+// Multi-cell layouts (v3.4 split-screen / multi-crop): ONE composited clip per
+// layout scene, keyed by scene_id (scene_ids are document-globally unique), plus
+// a content-hash sidecar. Sibling dir under transcoded/, same discipline as the
+// pre-cut clips and mattes so a back-edge COMPOSE re-entry re-uses the cache.
+function layoutsDir(projectId) {
+  return path.join(transcodedDir(projectId), "layouts");
+}
+
+function layoutPath(projectId, sceneId) {
+  return path.join(layoutsDir(projectId), `${assertSafeSceneId(sceneId)}.mp4`);
+}
+
+function layoutSidecarPath(projectId, sceneId) {
+  return path.join(layoutsDir(projectId), `${assertSafeSceneId(sceneId)}.json`);
+}
+
 function previewDir(projectId) {
   return path.join(sessionDir(projectId), "preview");
 }
@@ -472,6 +488,9 @@ module.exports = {
   mattesDir,
   mattePath,
   matteSidecarPath,
+  layoutsDir,
+  layoutPath,
+  layoutSidecarPath,
   transcriptCacheDir,
   transcriptCachePath,
 };

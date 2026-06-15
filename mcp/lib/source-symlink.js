@@ -3,11 +3,12 @@
 const fs = require("fs");
 const path = require("path");
 
-const { allStoryboardScenes, collectSubjectPlacements } = require("./storyboard-schema.js");
+const { allStoryboardScenes, collectSceneLayouts, collectSubjectPlacements } = require("./storyboard-schema.js");
 const {
   assertSafeProjectId,
   assertSafeSceneId,
   composeSourceDir,
+  layoutPath,
   manifestPath,
   mattePath,
   storyboardPath,
@@ -121,6 +122,44 @@ function resolveMatteLinks(projectId) {
   return tuples;
 }
 
+// Multi-cell layout symlinks (v3.4): compose/source/<scene_id>-layout.mp4 ->
+// <session>/transcoded/layouts/<scene_id>.mp4, for every scene with a usable
+// scene.layout. The composer references the composite as a single
+// ./source/<scene_id>-layout.mp4 <video> (the whole point — one element, not N).
+// Mirrors resolveMatteLinks; a missing composite warns (not fails) — the
+// COMPOSE-entry materializer degrades on a malformed/failed layout, in which
+// case the composer falls back to CSS-positioned cells (the <scene_id>-<k>.mp4
+// clips, which the normal scene-clip symlinks already provide).
+function resolveLayoutLinks(projectId) {
+  const id = assertSafeProjectId(projectId);
+  const sb = readStoryboardSafe(id);
+  if (!sb) return [];
+  const layouts = collectSceneLayouts(sb);
+  if (layouts.length === 0) return [];
+  const linkDir = composeSourceDir(id);
+  const tuples = [];
+  const seen = new Set();
+  for (const l of layouts) {
+    if (typeof l.scene_id !== "string") continue;
+    let sceneId;
+    try {
+      sceneId = assertSafeSceneId(l.scene_id);
+    } catch {
+      continue;
+    }
+    if (seen.has(sceneId)) continue; // one composite per layout scene
+    seen.add(sceneId);
+    const linkName = `${sceneId}-layout.mp4`;
+    tuples.push({
+      scene_id: sceneId,
+      layout_abs: layoutPath(id, sceneId),
+      link_rel: `${SOURCE_SUBDIR}/${linkName}`,
+      link_abs: path.join(linkDir, linkName),
+    });
+  }
+  return tuples;
+}
+
 function dedupeBasename(basename, used) {
   if (!used.has(basename)) return basename;
   const ext = path.extname(basename);
@@ -162,16 +201,17 @@ function recreateSourceSymlinks(projectId, composeRoot) {
   const id = assertSafeProjectId(projectId);
   const manifest = readManifestSafe(id);
   if (!manifest) {
-    return { links: [], scene_clip_links: [], matte_links: [], warnings: ["manifest not found; no source symlinks created"] };
+    return { links: [], scene_clip_links: [], matte_links: [], layout_links: [], warnings: ["manifest not found; no source symlinks created"] };
   }
   if (!Array.isArray(manifest.files) || manifest.files.length === 0) {
-    return { links: [], scene_clip_links: [], matte_links: [], warnings: [] };
+    return { links: [], scene_clip_links: [], matte_links: [], layout_links: [], warnings: [] };
   }
   const links = resolveSourceLinks(id);
   const sceneClipLinks = resolveSceneClipLinks(id);
   const matteLinks = resolveMatteLinks(id);
-  if (links.length === 0 && sceneClipLinks.length === 0 && matteLinks.length === 0) {
-    return { links: [], scene_clip_links: [], matte_links: [], warnings: [] };
+  const layoutLinks = resolveLayoutLinks(id);
+  if (links.length === 0 && sceneClipLinks.length === 0 && matteLinks.length === 0 && layoutLinks.length === 0) {
+    return { links: [], scene_clip_links: [], matte_links: [], layout_links: [], warnings: [] };
   }
 
   const linkDir = path.join(composeRoot, SOURCE_SUBDIR);
@@ -265,7 +305,35 @@ function recreateSourceSymlinks(projectId, composeRoot) {
       throw err;
     }
   }
-  return { links: created, scene_clip_links: sceneClipsCreated, matte_links: mattesCreated, warnings };
+
+  // Multi-cell layout symlinks: compose/source/<scene_id>-layout.mp4. Warn (don't
+  // fail) on a missing composite — same posture as the scene-clip/matte symlinks.
+  // A degraded/failed layout simply has no symlink and the composer falls back to
+  // CSS-positioned cells; a composition that references a missing layout clip is
+  // caught by composition QC's source-ref check.
+  const layoutsCreated = [];
+  for (const link of layoutLinks) {
+    if (!fs.existsSync(link.layout_abs)) {
+      warnings.push(`scene layout missing on disk for ${link.scene_id}: ${link.layout_abs}`);
+      continue;
+    }
+    try {
+      try {
+        fs.unlinkSync(link.link_abs);
+      } catch (err) {
+        if (err && err.code !== "ENOENT") throw err;
+      }
+      fs.symlinkSync(link.layout_abs, link.link_abs);
+      layoutsCreated.push(link);
+    } catch (err) {
+      if (err && (err.code === "EPERM" || err.code === "EACCES")) {
+        warnings.push(`could not create layout symlink for ${link.scene_id}: ${err.code}`);
+        continue;
+      }
+      throw err;
+    }
+  }
+  return { links: created, scene_clip_links: sceneClipsCreated, matte_links: mattesCreated, layout_links: layoutsCreated, warnings };
 }
 
 // Inject the vendored font kit into compose/: symlink compose/fonts -> mcp/assets/fonts
@@ -347,6 +415,7 @@ module.exports = {
   injectFontKit,
   injectCaptionKit,
   recreateSourceSymlinks,
+  resolveLayoutLinks,
   resolveMatteLinks,
   resolveSceneClipLinks,
   resolveSourceLinks,

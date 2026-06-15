@@ -60,6 +60,18 @@ disk. Record reality:
   overlay renders) is sanctioned ONLY under `~/video-vob-sessions/<project_id>/work/` — the
   write-guard allows exactly that subtree (spine rule 8). Get the user's go-ahead before leaving
   the rails, and record every resulting final immediately below.
+- **How to invoke hyperframes (NOT npx).** Run `mcp__vob__vob_doctor` first: its `hyperframes`
+  check returns `resolved_command` (e.g. `node /…/hyperframes/dist/cli.js`) + `pin_env` (the
+  no-auto-update + raised-CDP-timeout vars), and the report carries `hyperframes_invocation`.
+  Run THAT exact command in `work/` (with the `pin_env` exported) so a bespoke build matches the
+  in-pipeline render — never `npx hyperframes` (it re-resolves and can float the version).
+- **QC the off-rails composition before you render it.** Off-rails work used to skip lint/QC
+  entirely (that's how a short shipped 52px captions, under the 56px floor). Now run
+  `mcp__vob__vob_lint_composition { project_id, compose_dir: "<…>/work/<your-comp-dir>" }` on the
+  hyperframes composition you built in `work/` BEFORE rendering it. It runs the SAME engine QC —
+  the caption font-size floor + hyperframes-inspect layout/safe-band overflow — writes a
+  `lint-report.json` into that dir, and returns `{off_rails:true}` (no FSM state is touched). Fix
+  caption-floor / safe-band findings there, just as the on-rails composer would.
 - **Register finished files:** `mcp__vob__vob_import_deliverable { project_id, deliverables:
   [{ path, title?, notes?, short_id? }, ...], normalize?: true }`. Each file is copied into the
   session's `deliverables/` dir, optionally loudness-normalized to −14 LUFS (`normalize:true` —

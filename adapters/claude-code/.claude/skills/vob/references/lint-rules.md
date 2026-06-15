@@ -355,6 +355,29 @@ fragile, or when the backdrop is itself a clip (clip-over-clip is cheaper in ffm
 **Audio gotcha (both paths):** the matte `.webm` is silent — the subject's speech comes from the
 `.mp4` clip; a `clip_ref`/`scene_base` backdrop clip is laid MUTED so the subject's audio wins.
 
+### Multi-cell layout (`scene.layout` — split-screen / 2-up, v3.4)
+
+The engine **pre-composites** a layout scene's cells into ONE clip at COMPOSE entry
+(`./source/<scene_id>-layout.mp4`). When the scene is in your spawn's `layout_scenes_composited`
+list, reference that single clip full-frame — one `<video>`, no per-cell elements:
+
+```html
+<video class="clip" src="./source/s003-layout.mp4" data-media-start="0" data-duration="6.0" data-track-index="0" muted="false"
+       style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover"></video>
+```
+
+**Fallback (scene in `layout_scenes_fell_back`):** the composite degraded, so render the cells
+yourself as positioned `<video>` elements (a `split_vertical` 2-up = two clips, top/bottom). Keep
+the speaker cell's audio; mute the rest. Costs N `<video>` elements — mind the budget.
+
+```html
+<!-- 2-up speaker stack fallback (cells 0 top, 1 bottom) -->
+<video class="clip" src="./source/s003-0.mp4" data-media-start="0" data-duration="6.0" data-track-index="0"
+       style="position:absolute;top:0;left:0;width:100%;height:50%;object-fit:cover"></video>
+<video class="clip" src="./source/s003-1.mp4" data-media-start="0" data-duration="6.0" data-track-index="0" muted
+       style="position:absolute;top:50%;left:0;width:100%;height:50%;object-fit:cover"></video>
+```
+
 ### Caption binding (`caption_segments`)
 
 A `caption_segment` carrying an `id` (or `exact:true`) is a **bound** caption — stamp the

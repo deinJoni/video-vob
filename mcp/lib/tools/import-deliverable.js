@@ -18,7 +18,7 @@ const { probeFile, summarizeProbe } = require("../ffprobe.js");
 const { compositeOverlayOverBase } = require("../overlay-compositor.js");
 const { normalizeLoudnessInPlace } = require("../loudnorm.js");
 const { buildCaptionSidecar } = require("../caption-sidecar.js");
-const { distributionFromStoryboard, findTimeline, storyboardHasShorts, storyboardTimelines } = require("../storyboard-schema.js");
+const { buildTranscriptResolver, distributionFromStoryboard, findTimeline, loadTranscript, storyboardHasShorts, storyboardTimelines } = require("../storyboard-schema.js");
 
 function nowIso() {
   return new Date().toISOString();
@@ -111,6 +111,12 @@ async function importDeliverable(args) {
   // identity — require it on every entry and validate against the plan, so a
   // typo can't orphan a short or duplicate its record.
   const storyboard = readStoryboardSafe(id);
+  // (v3.4) Word-anchor caption cues to the forced-aligned per-word times (the
+  // same the burn-in uses) when INSPECT aligned the transcript — built once,
+  // reused per deliverable below.
+  const inspectSlot = statePre.inspect && typeof statePre.inspect === "object" && !Array.isArray(statePre.inspect) ? statePre.inspect : null;
+  const captionTranscriptResolver = buildTranscriptResolver(statePre, loadTranscript(inspectSlot && inspectSlot.transcript_path));
+  const captionTranscriptAligned = inspectSlot ? inspectSlot.transcript_aligned === true : false;
   const fanOut = storyboard !== null && storyboardHasShorts(storyboard);
   const validShortIds = fanOut
     ? new Set(storyboardTimelines(storyboard).map((t) => t.short_id).filter(Boolean))
@@ -311,7 +317,11 @@ async function importDeliverable(args) {
       ? (() => { const t = findTimeline(storyboard, item.short_id); return t ? { scenes: t.scenes } : null; })()
       : storyboard;
     const captionSidecar = meta.duration_seconds !== null
-      ? buildCaptionSidecar(captionScenes, { durationSeconds: meta.duration_seconds })
+      ? buildCaptionSidecar(captionScenes, {
+        durationSeconds: meta.duration_seconds,
+        transcriptForFileIndex: captionTranscriptResolver,
+        transcriptAligned: captionTranscriptAligned,
+      })
       : null;
     let captionsRel = null;
     if (captionSidecar) {
@@ -347,7 +357,9 @@ async function importDeliverable(args) {
             segment_count: captionSidecar.segment_count,
             level: "chunk",
             source: "caption_segments",
-            timing_basis: "storyboard_target",
+            // (v3.4) "forced_aligned" when cues were word-anchored to the aligned
+            // transcript (matches the burn-in); "storyboard_target" otherwise.
+            timing_basis: captionSidecar.timing_basis || "storyboard_target",
           },
         }
         : {}),

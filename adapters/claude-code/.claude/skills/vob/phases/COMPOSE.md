@@ -75,6 +75,8 @@ to the `composer` subagent; linting, snapshots, and transitions stay with you.
    intent.captions_style: <value | n/a>
    transition_vocabulary: <summary.video_type.transition_vocabulary, comma-joined>   (realize scene.transition_in ONLY from this list — see Scene transitions)
    shader_transitions_allowed: <summary.video_type.shader_transitions_allowed true|false>   (false ⇒ substitute the nearest CSS transition for any shader type)
+   layout_scenes_composited: <summary.scene_layouts.composited_scenes, comma-joined | none>   (reference ./source/<scene_id>-layout.mp4 as ONE <video>)
+   layout_scenes_fell_back: <summary.scene_layouts.fell_back_scenes, comma-joined | none>     (composite degraded — render the cells as positioned <video> elements)
    fonts: ./fonts.css + ./fonts/ are present in compose/ (kit table in your instructions)
    style_source: <derived_from | none>
    style_source_compose: ~/video-vob-sessions/<derived_from>/compose/index.html | none

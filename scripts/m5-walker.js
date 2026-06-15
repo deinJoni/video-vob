@@ -41,9 +41,9 @@ const PROJECT_ID = process.env.VOB_WALKER_PROJECT || "dji-aerial";
 // video file ≥15s via VOB_WALKER_SOURCE:
 //   VOB_WALKER_SOURCE=/path/to/clip.mp4 node scripts/m5-walker.js [phase]
 const SOURCE = process.env.VOB_WALKER_SOURCE || "";
-// `stillsqc` is fully synthetic (ffmpeg-generated test stills) and needs no
-// source video — every other phase lays out a fixture against a real clip.
-if (!SOURCE && process.argv[2] !== "stillsqc") {
+// `stillsqc` (synthetic test stills) and `spans` (a source-free lint harness)
+// need no source video — every other phase lays out a fixture against a real clip.
+if (!SOURCE && process.argv[2] !== "stillsqc" && process.argv[2] !== "spans") {
   console.error(
     "m5-walker: set VOB_WALKER_SOURCE to a video file or directory, e.g.\n" +
     "  VOB_WALKER_SOURCE=/path/to/clip.mp4 node scripts/m5-walker.js [phase]",
@@ -917,8 +917,11 @@ async function runFanout() {
     // s101-0 clip, so the cue (re-timed cursor=0 + (start - hook in_seconds))
     // survives the ~2s clamp. Assert the cue-1 START matches the timeline-
     // resolved expectation (the - in_seconds re-time), not just the count.
+    // timing_basis is host-robust (v3.4): "forced_aligned" when an alignment
+    // backend (whisperx) word-anchored the cues to match the burn-in, else
+    // "storyboard_target". Both are valid; assert it's one of them.
     assert(rec.captions && rec.captions.level === "chunk" && rec.captions.source === "caption_segments"
-      && rec.captions.timing_basis === "storyboard_target",
+      && (rec.captions.timing_basis === "storyboard_target" || rec.captions.timing_basis === "forced_aligned"),
       `import record captions block missing/wrong: ${JSON.stringify(rec.captions)}`);
     assert(rec.captions.segment_count >= 1, `expected >=1 caption cue on short-1, got ${rec.captions.segment_count}`);
     {
@@ -2902,6 +2905,204 @@ async function runTransitions() {
   console.log(`\n=== transitions final phase: ${final.phase} — CSS @keyframes recipes in lint-rules.md; real-render duration-exactness covered by 'longform'`);
 }
 
+// ---------------------------------------------------------------------------
+// v3.4 `layout` walker phase — split-screen / multi-crop. The cells are
+// pre-composited into ONE clip at COMPOSE entry via REAL ffmpeg (model-free),
+// so a layout scene costs a single <video>. Exercises: the scene.layout schema
+// (fail-safe), the PLAN_LAYOUT_* warnings, the COMPOSE-entry materialization +
+// content-hash cache, the compose/source symlink, and state.scene_layouts.
+async function runLayout() {
+  const LAY = `${PROJECT_ID}-layout`;
+  console.log(`=== v3.4 layout walker (split-screen, pre-composited) — project: ${LAY}`);
+  const { layoutPath, layoutSidecarPath } = require("../mcp/lib/paths.js");
+  const { sceneVideoCount } = require("../mcp/lib/storyboard-schema.js");
+
+  const boot = await bootstrapToPlan({
+    projectId: LAY,
+    target: { format: "tiktok", duration: "8s" },
+    intentAnswers: { target_platform: "tiktok", target_duration: "8s", tone: "energetic", key_moments: "none", music_vo: "neither" },
+    briefBody: `# Brief: ${LAY}\n\n## Target\n- 8s with a 2-up speaker stack\n\n## Design language\n- Palette: bg #111 text #FFF accent #F00\n`,
+  });
+  const D = boot.file0.duration_seconds;
+  const srcPath = boot.file0.path || SOURCE;
+  // Two DISTINCT 4s windows from file 0 (the two stacked cells).
+  const aIn = 0;
+  const aOut = round3(Math.min(4, D - 0.2));
+  const bIn = round3(Math.min(Math.max(aOut + 1, D / 2), D - 4.2));
+  const bOut = round3(Math.min(bIn + 4, D - 0.1));
+
+  const clip = (i, o) => ({ manifest_file_index: 0, source_path: srcPath, in_seconds: i, out_seconds: o });
+  const layoutScene = {
+    scene_id: "lay-1", sequence: 1, purpose: "hook", target_duration_seconds: round3(aOut - aIn),
+    summary: "2-up speaker stack", source_clips: [clip(aIn, aOut), clip(bIn, bOut)],
+    overlays: [], captions: null, pacing: "fast",
+    layout: { type: "split_vertical", cells: [{ clip_index: 0 }, { clip_index: 1 }], audio_cell: 0 },
+  };
+  const tailScene = {
+    scene_id: "lay-2", sequence: 2, purpose: "payoff", target_duration_seconds: round3(bOut - bIn),
+    summary: "tail", source_clips: [clip(bIn, bOut)], overlays: [], captions: null, pacing: "medium",
+  };
+  const goodSb = {
+    schema_version: "1.2", project_id: LAY, generated_at: new Date().toISOString(),
+    source: { manifest_path: boot.summary.manifest.path, brief_path: boot.savedBrief.brief_path },
+    target: { platform: "tiktok", duration_seconds: round3((aOut - aIn) + (bOut - bIn)), tone: "energetic" },
+    scenes: [layoutScene, tailScene],
+    total_target_duration_seconds: round3((aOut - aIn) + (bOut - bIn)),
+    notes: "Layout walker fixture — split_vertical 2-up composited to one clip.",
+  };
+
+  // sceneVideoCount: the layout scene is ONE <video> (composited), not two.
+  await step("sceneVideoCount counts a layout scene as 1", () => {
+    assert(sceneVideoCount(layoutScene) === 1, `layout scene must count as 1 <video>, got ${sceneVideoCount(layoutScene)}`);
+  });
+
+  // Plan-lint: a VALID layout warns nothing PLAN_LAYOUT_*; an off-vocab type warns
+  // (save stands — fail-safe).
+  const savedGood = await step("save storyboard (valid layout — no PLAN_LAYOUT_* warnings)", () =>
+    call("vob_save_storyboard", { project_id: LAY, content: goodSb }));
+  {
+    assert(savedGood.plan_lint.error_count === 0, "valid layout storyboard reported plan errors");
+    const codes = (savedGood.plan_lint.warnings || []).map((w) => w.code);
+    assert(!codes.some((c) => /^PLAN_LAYOUT_/.test(c)), `valid layout must warn no PLAN_LAYOUT_*: ${JSON.stringify(codes)}`);
+    assert(!codes.includes("PLAN_SCENE_CLIP_SUM_MISMATCH"), `layout cells are concurrent — must not trip SCENE_CLIP_SUM_MISMATCH: ${JSON.stringify(codes)}`);
+  }
+  await step("save storyboard (off-vocab layout type warns, save stands)", async () => {
+    const bad = JSON.parse(JSON.stringify(goodSb));
+    bad.scenes[0].layout.type = "kaleidoscope";
+    const saved = await call("vob_save_storyboard", { project_id: LAY, content: bad });
+    const codes = (saved.plan_lint.warnings || []).map((w) => w.code);
+    assert(saved.plan_lint.error_count === 0, "an off-vocab layout type must NOT reject the save");
+    assert(codes.includes("PLAN_LAYOUT_UNKNOWN_TYPE"), `expected PLAN_LAYOUT_UNKNOWN_TYPE, got ${JSON.stringify(codes)}`);
+  });
+
+  // Re-save the good doc so the COMPOSE-entry materializer composites the valid layout.
+  await step("re-save good storyboard", () => call("vob_save_storyboard", { project_id: LAY, content: goodSb }));
+  await step("confirm storyboard", () => call("vob_confirm_storyboard", { project_id: LAY }));
+  await step("transition PLAN→COMPOSE (composites the layout — REAL ffmpeg)", () =>
+    call("vob_transition_phase", { project_id: LAY, to_phase: "COMPOSE" }));
+
+  const sum = await call("vob_read_state_summary", { project_id: LAY });
+  assert(sum.scene_layouts && sum.scene_layouts.count === 1,
+    `expected scene_layouts.count===1, got ${JSON.stringify(sum.scene_layouts)}`);
+  assert((sum.scene_layouts.composited + sum.scene_layouts.cached) === 1,
+    `expected the layout composited/cached, got ${JSON.stringify(sum.scene_layouts)}`);
+  assert(sum.scene_layouts.composited_scenes.includes("lay-1"),
+    `lay-1 should be in composited_scenes, got ${JSON.stringify(sum.scene_layouts.composited_scenes)}`);
+  console.log(`   scene_layouts: ${JSON.stringify(sum.scene_layouts)}`);
+
+  await step("layout composite + sidecar written at COMPOSE entry", () => {
+    assert(fs.existsSync(layoutPath(LAY, "lay-1")), `layout clip missing at ${layoutPath(LAY, "lay-1")}`);
+    assert(fs.existsSync(layoutSidecarPath(LAY, "lay-1")), `layout sidecar missing at ${layoutSidecarPath(LAY, "lay-1")}`);
+  });
+  await step("layout symlink resolves into compose/source", () => {
+    const { resolveLayoutLinks } = require("../mcp/lib/source-symlink.js");
+    const links = resolveLayoutLinks(LAY);
+    assert(links.length === 1 && links[0].link_rel === "source/lay-1-layout.mp4",
+      `expected one layout link source/lay-1-layout.mp4, got ${JSON.stringify(links)}`);
+  });
+  await step("re-materialize reports cached (content-hash no-op)", async () => {
+    const { materializeSceneLayouts } = require("../mcp/lib/layout-materialize.js");
+    const again = await materializeSceneLayouts({ projectId: LAY });
+    assert(again.summary.total === 1 && again.summary.cached === 1 && again.summary.composited === 0,
+      `re-entry must be all-cached, got ${JSON.stringify(again.summary)}`);
+  });
+  // QC: a composition referencing ./source/lay-1-layout.mp4 resolves (not unresolved).
+  await step("composition QC resolves the layout ref", () => {
+    const { runCompositionQc } = require("../mcp/lib/composition-qc.js");
+    const { resolveLayoutLinks, resolveSceneClipLinks, resolveSourceLinks } = require("../mcp/lib/source-symlink.js");
+    const html = `<div data-composition-id="c" data-width="1080" data-height="1920">`
+      + `<video class="clip" src="./source/lay-1-layout.mp4" data-media-start="0" data-duration="4" data-track-index="0"></video>`
+      + `<video class="clip" src="./source/lay-2-0.mp4" data-media-start="0" data-duration="4" data-track-index="0"></video></div>`;
+    const qc = runCompositionQc({
+      files: [{ relPath: "index.html", content: html }],
+      storyboard: goodSb,
+      sourceLinks: resolveSourceLinks(LAY),
+      sceneClipLinks: resolveSceneClipLinks(LAY),
+      layoutLinks: resolveLayoutLinks(LAY),
+      checkTargetsOnDisk: true,
+    });
+    assert(!qc.findings.some((f) => f.rule === "vob/unresolved_source_ref"),
+      `layout ref must resolve, got ${JSON.stringify(qc.findings.map((f) => f.rule))}`);
+  });
+
+  const finalSum = await call("vob_read_state_summary", { project_id: LAY });
+  console.log(`\n=== layout final phase: ${finalSum.phase}`);
+}
+
+// ---------------------------------------------------------------------------
+// v3.4 `spans` walker phase — the editorial-correctness lints a tester needed:
+// span overlap / repeated lines / caption-vs-transcript mismatch (#2) and the
+// duration feasibility check (#3). A source-free unit harness (calls
+// lintStoryboardPlan directly with synthetic transcript + intent specs) so the
+// negative paths are deterministic, model-free, and a permanent regression test.
+async function runSpans() {
+  console.log("=== v3.4 spans/feasibility walker (lint negative paths) — source-free unit harness");
+  const { lintStoryboardPlan } = require("../mcp/lib/storyboard-schema.js");
+  const clip = (i, o, role = "a_roll", speed) => ({ manifest_file_index: 0, source_path: "/x.mp4", in_seconds: i, out_seconds: o, role, ...(speed ? { speed } : {}) });
+  const scene = (id, seq, purpose, target, clips, extra = {}) => ({ scene_id: id, sequence: seq, purpose, target_duration_seconds: target, summary: "s", source_clips: clips, overlays: [], captions: null, pacing: "medium", ...extra });
+  const codesOf = (r) => r.errors.concat(r.warnings).map((f) => f.code);
+
+  await step("PLAN_CLIP_SPAN_OVERLAP — reused source seconds across scenes", () => {
+    const sb = { schema_version: "1.2", scenes: [scene("s1", 1, "hook", 4, [clip(2, 6)]), scene("s2", 2, "beat", 4, [clip(4, 8)])] };
+    assert(codesOf(lintStoryboardPlan(sb, {})).includes("PLAN_CLIP_SPAN_OVERLAP"), "overlap not flagged");
+    const distinct = { schema_version: "1.2", scenes: [scene("s1", 1, "hook", 4, [clip(0, 4)]), scene("s2", 2, "beat", 4, [clip(10, 14)])] };
+    assert(!codesOf(lintStoryboardPlan(distinct, {})).includes("PLAN_CLIP_SPAN_OVERLAP"), "distinct spans false-flagged");
+  });
+
+  await step("PLAN_CAPTION_TEXT_MISMATCH — caption not in window transcript", () => {
+    const words = [{ text: "india", start: 0.5, end: 1 }, { text: "is", start: 1, end: 1.2 }, { text: "against", start: 1.2, end: 1.8 }, { text: "china", start: 1.8, end: 2.4 }];
+    const sb = { schema_version: "1.2", scenes: [scene("s1", 1, "hook", 4, [clip(0, 4)], { captions: "x", caption_segments: [{ text: "Western propaganda machine", start_seconds: 0.5, end_seconds: 2.4 }] })] };
+    assert(codesOf(lintStoryboardPlan(sb, { transcriptForFileIndex: (i) => (i === 0 ? words : null) })).includes("PLAN_CAPTION_TEXT_MISMATCH"), "wrong-span caption not flagged");
+    const matchWords = [{ text: "western", start: 0.5, end: 1 }, { text: "propaganda", start: 1, end: 1.8 }, { text: "machine", start: 1.8, end: 2.4 }];
+    assert(!codesOf(lintStoryboardPlan(sb, { transcriptForFileIndex: (i) => (i === 0 ? matchWords : null) })).includes("PLAN_CAPTION_TEXT_MISMATCH"), "matching caption false-flagged");
+  });
+
+  await step("PLAN_CAPTION_REPEATED — same line captioned twice", () => {
+    const sb = { schema_version: "1.2", scenes: [
+      scene("s1", 1, "hook", 4, [clip(0, 4)], { captions: "x", caption_segments: [{ text: "the whole secret is patience", start_seconds: 0, end_seconds: 3 }] }),
+      scene("s2", 2, "beat", 4, [clip(10, 14)], { captions: "x", caption_segments: [{ text: "The whole secret is patience!", start_seconds: 10, end_seconds: 13 }] }),
+    ] };
+    assert(codesOf(lintStoryboardPlan(sb, {})).includes("PLAN_CAPTION_REPEATED"), "repeated caption line not flagged");
+  });
+
+  await step("PLAN_DURATION_INFEASIBLE — realized cut below the window", () => {
+    const sb = { schema_version: "1.2", scenes: [scene("s1", 1, "hook", 4, [clip(0, 4)]), scene("s2", 2, "beat", 4, [clip(10, 14)])] };
+    assert(codesOf(lintStoryboardPlan(sb, { durationSpec: { seconds: 75, range: { min_seconds: 60, max_seconds: 90 } } })).includes("PLAN_DURATION_INFEASIBLE"), "infeasible (8s vs 60-90s) not flagged");
+    const ok = { schema_version: "1.2", scenes: [scene("s1", 1, "hook", 35, [clip(0, 35)]), scene("s2", 2, "beat", 35, [clip(40, 75)])] };
+    assert(!codesOf(lintStoryboardPlan(ok, { durationSpec: { range: { min_seconds: 60, max_seconds: 90 } } })).includes("PLAN_DURATION_INFEASIBLE"), "in-window cut false-flagged");
+  });
+
+  await step("PLAN_DURATION_INFEASIBLE — speed pushes below the floor", () => {
+    // 60s of source at 1.25x = 48s realized, below a 60s floor (the tester's case).
+    const sb = { schema_version: "1.2", scenes: [scene("s1", 1, "hook", 48, [clip(0, 60, "a_roll", 1.25)])] };
+    const r = lintStoryboardPlan(sb, { durationSpec: { range: { min_seconds: 60, max_seconds: 90 } } });
+    assert(codesOf(r).includes("PLAN_DURATION_INFEASIBLE"), "1.25x×60s=48s vs 60-90s not flagged");
+    const f = r.warnings.find((w) => w.code === "PLAN_DURATION_INFEASIBLE");
+    assert(/speed/.test(f.message), "infeasible message should name the speed lever");
+  });
+
+  await step("PLAN_DURATION_INFEASIBLE — full-frame b_roll counts (no false-positive)", () => {
+    // 40s a_roll spine + a 20s PURE b_roll cutaway scene = a real 60s on-screen
+    // cut; feasibility must NOT flag it short just because it counts the spine.
+    const sb = { schema_version: "1.2", scenes: [scene("s1", 1, "hook", 40, [clip(0, 40, "a_roll")]), scene("s2", 2, "beat", 20, [clip(0, 20, "b_roll")])] };
+    assert(!codesOf(lintStoryboardPlan(sb, { durationSpec: { seconds: 60 } })).includes("PLAN_DURATION_INFEASIBLE"), "b-roll-driven 60s cut false-flagged");
+    // but a genuinely-short b_roll cut still fires
+    const short = { schema_version: "1.2", scenes: [scene("s1", 1, "hook", 8, [clip(0, 8, "b_roll")])] };
+    assert(codesOf(lintStoryboardPlan(short, { durationSpec: { range: { min_seconds: 60, max_seconds: 90 } } })).includes("PLAN_DURATION_INFEASIBLE"), "genuinely-short b_roll cut not flagged");
+  });
+
+  await step("PLAN_LAYOUT_* — invalid / unknown-type / cell-out-of-range", () => {
+    const unknown = { schema_version: "1.2", scenes: [scene("s1", 1, "hook", 4, [clip(0, 4), clip(10, 14)], { layout: { type: "bogus", cells: [{ clip_index: 0 }, { clip_index: 9 }] } })] };
+    const codes = codesOf(lintStoryboardPlan(unknown, {}));
+    assert(codes.includes("PLAN_LAYOUT_UNKNOWN_TYPE"), "off-vocab type not flagged");
+    assert(codes.includes("PLAN_LAYOUT_CELL_OUT_OF_RANGE"), "out-of-range cell not flagged");
+    const invalid = { schema_version: "1.2", scenes: [scene("s1", 1, "hook", 4, [clip(0, 4)], { layout: { type: "split_vertical", cells: [{ clip_index: 0 }] } })] };
+    assert(codesOf(lintStoryboardPlan(invalid, {})).includes("PLAN_LAYOUT_INVALID"), "<2-cell layout not flagged");
+  });
+
+  console.log("\n=== spans/feasibility: all lint negative paths verified");
+}
+
 async function main() {
   const phase = process.argv[2] || "all";
   if (phase === "stillsqc") {
@@ -2938,6 +3139,14 @@ async function main() {
   }
   if (phase === "transitions") {
     await runTransitions();
+    return;
+  }
+  if (phase === "layout") {
+    await runLayout();
+    return;
+  }
+  if (phase === "spans") {
+    await runSpans();
     return;
   }
   console.log(`=== M5 walker v2 — phase: ${phase} — project: ${PROJECT_ID}`);

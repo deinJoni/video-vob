@@ -229,6 +229,105 @@ function parseLoudnormStats(stderr) {
   return out;
 }
 
+// --- Multi-cell layout composite (split-screen / multi-crop, v3.4) -----------
+//
+// Composite N already-pre-cut clips into ONE clip at the output dimensions, so a
+// split-screen scene (e.g. a 2-up speaker stack) costs a SINGLE <video> element
+// in the composition instead of N — keeping the host <video> budget honest AND
+// dodging the multi-<video> headless-Chrome render fragility that drove this
+// footage off-rails. Each cell is scaled+cropped to COVER its region (no
+// letterboxing) unless its `fit` is "contain" (scaled to fit + padded with
+// `background`). Audio is taken from one cell (audio_cell — the speaker's a_roll
+// clip), mapped optionally so a muted cell doesn't fail the mux.
+//
+// Layout types (cells are 0-indexed in order):
+//   split_vertical    cell0 top / cell1 bottom (the vertical 2-up speaker stack)
+//   split_horizontal  cell0 left / cell1 right
+//   grid_2x2          cells 0..3 → 2×2 grid (row-major)
+//   pip               cell0 full-frame base, cell1 inset (bottom-right)
+// An unknown type or an odd cell count falls back to a vertical stack of the
+// cells given (deterministic, never throws) — plan-lint already warned.
+// Restrict a backdrop color to a safe ffmpeg color token (a name like "black"
+// or a #hex), so a layout.background string can never inject filtergraph syntax
+// (a comma/colon would otherwise start a new filter). Anything else → "black".
+function safeColor(background) {
+  return typeof background === "string" && /^#?[0-9A-Za-z]{1,16}$/.test(background) ? background : "black";
+}
+
+function cellFilter(idx, w, h, fit, background) {
+  const W = Math.round(w);
+  const H = Math.round(h);
+  if (fit === "contain") {
+    return `[${idx}:v]scale=${W}:${H}:force_original_aspect_ratio=decrease,`
+      + `pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2:color=${safeColor(background)},setsar=1[v${idx}]`;
+  }
+  // cover: fill the region then crop the overflow.
+  return `[${idx}:v]scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H},setsar=1[v${idx}]`;
+}
+
+function buildLayoutCompositeArgv({ inputs, type, outPath, width, height, cells = null, audioCell = 0, background = "black" } = {}) {
+  // libx264 + yuv420p require EVEN master dims (an odd dim aborts the encode).
+  // Floor to even here too, so a stray odd dimension can never reach the encoder.
+  const W = Math.round(width) - (Math.round(width) % 2);
+  const H = Math.round(height) - (Math.round(height) % 2);
+  const n = Array.isArray(inputs) ? inputs.length : 0;
+  const fitOf = (i) => (cells && cells[i] && cells[i].fit === "contain" ? "contain" : "cover");
+  const argv = ["-y"];
+  for (const inp of inputs) argv.push(...inputAutorotateArgs(), "-i", inp);
+
+  const steps = [];
+  let outv = "[outv]";
+  if (type === "pip" && n >= 2) {
+    const insetW = Math.round(W / 3);
+    steps.push(`[0:v]scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H},setsar=1[base]`);
+    steps.push(`[1:v]scale=${insetW}:-2,setsar=1[ins]`);
+    steps.push(`[base][ins]overlay=W-w-${Math.round(W * 0.04)}:H-h-${Math.round(H * 0.04)}[outv]`);
+  } else if (type === "split_horizontal" && n >= 2) {
+    const cw = Math.floor(W / 2);
+    steps.push(cellFilter(0, cw, H, fitOf(0), background));
+    steps.push(cellFilter(1, cw, H, fitOf(1), background));
+    steps.push(`[v0][v1]hstack=inputs=2,scale=${W}:${H},setsar=1[outv]`);
+  } else if (type === "grid_2x2" && n >= 4) {
+    const cw = Math.floor(W / 2);
+    const ch = Math.floor(H / 2);
+    for (let i = 0; i < 4; i += 1) steps.push(cellFilter(i, cw, ch, fitOf(i), background));
+    steps.push(`[v0][v1][v2][v3]xstack=inputs=4:layout=0_0|w0_0|0_h0|w0_h0,scale=${W}:${H},setsar=1[outv]`);
+  } else {
+    // split_vertical (and the safe fallback for anything else): stack the cells
+    // top-to-bottom, each W × H/count.
+    const count = Math.max(2, n);
+    const ch = Math.floor(H / count);
+    const labels = [];
+    for (let i = 0; i < count; i += 1) {
+      steps.push(cellFilter(i, W, ch, fitOf(i), background));
+      labels.push(`[v${i}]`);
+    }
+    steps.push(`${labels.join("")}vstack=inputs=${count},scale=${W}:${H},setsar=1[outv]`);
+  }
+
+  argv.push("-filter_complex", steps.join(";"));
+  argv.push("-map", outv);
+  // Audio from the chosen cell (optional: a muted b_roll cell has no audio).
+  const aCell = Number.isInteger(audioCell) && audioCell >= 0 && audioCell < n ? audioCell : 0;
+  argv.push("-map", `${aCell}:a?`);
+  argv.push(
+    "-c:v", "libx264", "-preset", "medium", "-crf", "18",
+    "-g", "30", "-keyint_min", "30", "-pix_fmt", "yuv420p",
+    "-c:a", "aac", "-b:a", "192k",
+    "-movflags", "+faststart",
+    outPath,
+  );
+  return argv;
+}
+
+async function compositeLayout({ inputs, type, outPath, width, height, cells = null, audioCell = 0, background = "black", timeoutMs = CLIP_CUT_TIMEOUT_MS } = {}) {
+  if (!Array.isArray(inputs) || inputs.length < 2) throw new Error("compositeLayout: need >= 2 input clips");
+  if (typeof outPath !== "string" || !outPath) throw new Error("compositeLayout: outPath is required");
+  const argv = buildLayoutCompositeArgv({ inputs, type, outPath, width, height, cells, audioCell, background });
+  const result = await runFfmpegBlocking(argv, { timeoutMs });
+  return { ...result, argv };
+}
+
 async function cutClip({ src, out, inSeconds, outSeconds, dropAudio = false, speed = 1, timeoutMs = CLIP_CUT_TIMEOUT_MS } = {}) {
   if (typeof src !== "string" || !src) throw new Error("cutClip: src is required");
   if (typeof out !== "string" || !out) throw new Error("cutClip: out is required");
@@ -280,9 +379,11 @@ module.exports = {
   PREFLIGHT_TIMEOUT_MS,
   MAX_OUTPUT_BYTES,
   buildClipCutArgv,
+  buildLayoutCompositeArgv,
   buildLoudnormApplyArgv,
   buildLoudnormMeasureArgv,
   checkFfmpegAvailable,
+  compositeLayout,
   cutClip,
   inputAutorotateArgs,
   normalizeClipSpeed,

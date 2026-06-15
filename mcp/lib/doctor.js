@@ -13,7 +13,7 @@
 const os = require("os");
 
 const { checkFfmpegAvailable } = require("./ffmpeg-runner.js");
-const { checkHyperframesAvailable, resolveBrowserGpuMode, renderWorkerArgs, checkRemoveBackgroundAvailable, resolveRemoveBgDevice } = require("./hyperframes-runner.js");
+const { checkHyperframesAvailable, describeHyperframesInvocation, resolveBrowserGpuMode, renderWorkerArgs, checkRemoveBackgroundAvailable, resolveRemoveBgDevice } = require("./hyperframes-runner.js");
 const { checkAsrAvailable } = require("./asr-backend.js");
 const { recommendedHeavyEncodeConcurrency } = require("./concurrency.js");
 const hostProfile = require("./host-profile.js");
@@ -79,6 +79,9 @@ function runDoctor({ projectId = null } = {}) {
   const ffmpeg = checkFfmpegAvailable();
   const ffprobe = checkFfprobe();
   const hyperframes = checkHyperframesAvailable();
+  // The exact resolved hyperframes invocation (+ pin env) — surfaced so bespoke
+  // escape-hatch work under <session>/work/ runs the SAME pinned binary.
+  const hfInvocation = (() => { try { return describeHyperframesInvocation(); } catch { return null; } })();
   const asr = checkAsrAvailable();
   const removeBg = checkRemoveBackgroundAvailable();
 
@@ -111,9 +114,17 @@ function runDoctor({ projectId = null } = {}) {
   checks.push({
     name: "hyperframes",
     level: level(hyperframes.ok, true),
-    detail: hyperframes.ok ? `present (${hyperframes.version || "version?"})` : (hyperframes.error || "not found"),
-    recommendation: hyperframes.ok ? null : "Install hyperframes (`npm i -g hyperframes`) — required to render compositions. Not needed for overlay-over-base/import-only flows.",
+    detail: hyperframes.ok
+      ? `present (${hyperframes.version || "version?"})${hfInvocation ? ` — engine runs: ${hfInvocation.command} [${hfInvocation.resolution}]` : ""}`
+      : (hyperframes.error || "not found"),
+    recommendation: hyperframes.ok
+      ? (hfInvocation
+        ? `For sanctioned bespoke work under <session>/work/, run the SAME pinned binary the engine uses — NOT npx (which floats the version): \`${hfInvocation.command} <args>\`. Export these to match in-pipeline behavior: ${Object.entries(hfInvocation.pin_env).map(([k, v]) => `${k}=${v}`).join(" ")}. Then QC the work/ composition with vob_lint_composition { project_id, compose_dir } before rendering.`
+        : null)
+      : "Install hyperframes (`npm i -g hyperframes`) — required to render compositions. Not needed for overlay-over-base/import-only flows.",
     blocker: false,
+    resolved_command: hfInvocation ? hfInvocation.command : null,
+    pin_env: hfInvocation ? hfInvocation.pin_env : null,
   });
 
   checks.push({
@@ -242,6 +253,8 @@ function runDoctor({ projectId = null } = {}) {
     },
     tuning,
     video_types: videoTypes,
+    // The exact pinned hyperframes invocation for bespoke escape-hatch work.
+    hyperframes_invocation: hfInvocation,
     checks,
     advisories,
     blockers,

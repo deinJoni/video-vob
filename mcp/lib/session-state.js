@@ -10,6 +10,7 @@ const { archiveForIteration, currentIterationVersion, isArchivalTransition } = r
 const { missingIntentKeys } = require("./intent-schema.js");
 const { materializeSceneClips } = require("./clip-materialize.js");
 const { materializeSubjectMattes } = require("./matte-materialize.js");
+const { materializeSceneLayouts } = require("./layout-materialize.js");
 const { summarizeActiveVideoType } = require("./video-types.js");
 const hostProfile = require("./host-profile.js");
 const { deriveRenderPlan, validSegmentRenders } = require("./render-segments.js");
@@ -196,6 +197,32 @@ function summarizeSubjectMattes(slot) {
     unavailable: Number(s.unavailable) || 0,
     over_budget: m.over_budget === true,
     backend_available: typeof m.backend_available === "boolean" ? m.backend_available : null,
+  };
+}
+
+// Lean digest of the multi-cell layout materialization (v3.4 split-screen). The
+// orchestrator reads this to tell the composer which layout scenes have a
+// composited clip ready (reference ./source/<scene_id>-layout.mp4) vs which
+// degraded (fall back to CSS-positioned cells).
+function summarizeSceneLayouts(slot) {
+  const m = asSlot(slot);
+  if (!m) return null;
+  const s = asSlot(m.summary) || {};
+  const composited = [];
+  const fell_back = [];
+  for (const l of (Array.isArray(m.layouts) ? m.layouts : [])) {
+    if (!asSlot(l) || typeof l.scene_id !== "string") continue;
+    if (l.status === "composited" || l.status === "cached") composited.push(l.scene_id);
+    else fell_back.push(l.scene_id);
+  }
+  return {
+    count: Number(s.total) || 0,
+    composited: Number(s.composited) || 0,
+    cached: Number(s.cached) || 0,
+    skipped: Number(s.skipped) || 0,
+    failed: Number(s.failed) || 0,
+    composited_scenes: composited,
+    fell_back_scenes: fell_back,
   };
 }
 
@@ -572,6 +599,7 @@ function buildStateSummary(state, projectId) {
       ? { generated_at: strOrNull(transcoded.generated_at), ...clipsDigest(projectId, transcoded) }
       : null,
     subject_mattes: summarizeSubjectMattes(state.subject_mattes),
+    scene_layouts: summarizeSceneLayouts(state.scene_layouts),
     composition: summarizeComposition(state.composition),
     render_plan: summarizeRenderPlan(state),
     assembly: summarizeAssembly(state),
@@ -677,6 +705,7 @@ async function transitionPhase(args) {
     // into COMPOSE with a half-prepared compose/source/ tree.
     let transcodedClips = null;
     let subjectMattes = null;
+    let sceneLayouts = null;
     let renderPlan = null;
     if (toPhase === "COMPOSE") {
       transcodedClips = await materializeSceneClips({
@@ -696,11 +725,24 @@ async function transitionPhase(args) {
       // COMPOSE re-entry is a no-op; DEGRADES (never throws) on a matte failure so
       // a missing/uncached model can't strand the user mid-COMPOSE.
       subjectMattes = await materializeSubjectMattes({ projectId: id, storyboard: sbDoc });
+      // Composite every scene.layout (split-screen / multi-crop) into ONE clip per
+      // scene — its inputs are the already-pre-cut cell clips, so this runs AFTER
+      // materializeSceneClips. Content-hash cached (back-edge re-entry is a no-op)
+      // and DEGRADES (never throws) on a malformed/failed composite so a layout
+      // can't strand COMPOSE — the composer then falls back to CSS-positioned cells.
+      sceneLayouts = await materializeSceneLayouts({ projectId: id, storyboard: sbDoc });
       // Derive the render plan (v3 segmented render) from the storyboard on
       // disk + the active preset. Recomputed on EVERY COMPOSE entry: same
       // storyboard + same budget => same plan; a changed storyboard re-chunks
-      // and the registry's revision binding invalidates stale partials.
-      renderPlan = deriveRenderPlan({ storyboard: sbDoc, state });
+      // and the registry's revision binding invalidates stale partials. A layout
+      // scene whose composite DEGRADED this entry is budgeted at its fallback
+      // cell count (the composer will render N <video> cells, not 1 composite).
+      const fellBackLayoutScenes = new Set(
+        (sceneLayouts && Array.isArray(sceneLayouts.layouts) ? sceneLayouts.layouts : [])
+          .filter((l) => l && typeof l.scene_id === "string" && l.status !== "composited" && l.status !== "cached")
+          .map((l) => l.scene_id),
+      );
+      renderPlan = deriveRenderPlan({ storyboard: sbDoc, state, fellBackLayoutScenes });
     }
 
     const ts = nowIso();
@@ -735,6 +777,13 @@ async function transitionPhase(args) {
         next.subject_mattes = subjectMattes;
       } else {
         delete next.subject_mattes;
+      }
+      // Same discipline for multi-cell layouts: stamp only when this entry
+      // composited something; otherwise DROP any stale slot from a prior entry.
+      if (sceneLayouts && sceneLayouts.summary && sceneLayouts.summary.total > 0) {
+        next.scene_layouts = sceneLayouts;
+      } else {
+        delete next.scene_layouts;
       }
       if (renderPlan && renderPlan.mode === "segmented") {
         const sbRevision = state.storyboard && Number.isInteger(state.storyboard.revision_count)
@@ -776,6 +825,13 @@ async function transitionPhase(args) {
           summary: subjectMattes.summary,
         }]
       : [];
+    const layoutEvents = sceneLayouts && sceneLayouts.summary && sceneLayouts.summary.total > 0
+      ? [{
+          kind: "scene_layouts_materialized",
+          at: ts,
+          summary: sceneLayouts.summary,
+        }]
+      : [];
     const renderPlanEvents = renderPlan && renderPlan.mode === "segmented"
       ? [{
           kind: "render_plan_derived",
@@ -790,6 +846,7 @@ async function transitionPhase(args) {
       ...archiveEvents,
       ...clipEvents,
       ...matteEvents,
+      ...layoutEvents,
       ...renderPlanEvents,
       {
         kind: "transition",

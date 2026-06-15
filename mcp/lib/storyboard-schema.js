@@ -64,6 +64,21 @@ const PACING_RANK = Object.freeze({ slow: 0, medium: 1, fast: 2 });
 const SPEED_MIN = 0.25;
 const SPEED_MAX = 4.0;
 
+// Multi-cell layouts (split-screen / multi-crop — e.g. a 2-up speaker stack,
+// before/after, reaction PiP). A scene.layout composites its named source_clips
+// into ONE pre-rendered clip at COMPOSE entry (layout-materialize.js), so the
+// composition references a single <video> regardless of cell count — keeping the
+// host <video> budget honest AND sidestepping the multi-<video> render fragility
+// that drove this footage off-rails. Loosely validated + FAIL-SAFE (like
+// transition_in / target.design): a malformed layout NEVER rejects the save —
+// plan-lint WARNS (PLAN_LAYOUT_*) and the materializer degrades (the composer
+// then falls back to CSS-positioned cells). Advisory at COMPOSE QC (no hard
+// binding, unlike a typed overlay).
+const LAYOUT_TYPES = Object.freeze(["split_horizontal", "split_vertical", "grid_2x2", "pip"]);
+const LAYOUT_TYPE_SET = new Set(LAYOUT_TYPES);
+// Canonical cell count per layout type (the plan-lint cell-count check).
+const LAYOUT_CELL_COUNTS = Object.freeze({ split_horizontal: 2, split_vertical: 2, grid_2x2: 4, pip: 2 });
+
 function clipRoleOf(clip) {
   return clip && typeof clip.role === "string" && clip.role.trim() ? clip.role : "a_roll";
 }
@@ -83,17 +98,96 @@ function effectiveClipDuration(clip) {
   return (clip.out_seconds - clip.in_seconds) / clipSpeedOf(clip);
 }
 
+// A scene's multi-cell layout when it is STRUCTURALLY a layout — scene.layout is
+// an object with a non-empty `type` string and ≥2 cells each carrying a
+// non-negative integer clip_index. Returns the normalized layout (type, cells,
+// audio_cell, gap_px, background) or null. The single accessor every layout
+// consumer (sceneVideoCount, plan-lint, the materializer, the symlinker) uses,
+// so "what counts as a layout scene" is defined once. Note this is intentionally
+// loose: an off-vocabulary type or out-of-range clip_index still parses (so the
+// materializer can try/degrade and plan-lint can warn specifically) — full
+// validity is the plan-lint's job (warnLayouts), not this accessor's.
+function sceneLayoutOf(scene) {
+  if (!isPlainObject(scene) || !isPlainObject(scene.layout)) return null;
+  const layout = scene.layout;
+  if (!isNonEmptyString(layout.type) || !Array.isArray(layout.cells)) return null;
+  const cells = layout.cells
+    .filter((c) => isPlainObject(c) && Number.isInteger(c.clip_index) && c.clip_index >= 0)
+    .map((c) => ({ clip_index: c.clip_index, fit: isNonEmptyString(c.fit) ? c.fit : "cover" }));
+  if (cells.length < 2) return null;
+  return {
+    type: layout.type,
+    cells,
+    audio_cell: Number.isInteger(layout.audio_cell) && layout.audio_cell >= 0 ? layout.audio_cell : 0,
+    gap_px: isFiniteNumber(layout.gap_px) && layout.gap_px >= 0 ? layout.gap_px : 0,
+    background: isNonEmptyString(layout.background) ? layout.background : null,
+  };
+}
+
 // <video> elements a scene costs the composition: one per source clip plus one
 // per planned PiP overlay (a pip carries a <video> by definition). The single
 // budget-accounting function — render-segments chunking and plan lint both use
 // it, so a PiP-heavy segment auto-splits and over-budget plans warn early.
+// A layout scene composites its cells into ONE pre-rendered clip at COMPOSE
+// entry (layout-materialize.js), so it costs a SINGLE <video> regardless of how
+// many cells it stacks — that is the whole point of the layout primitive (a
+// 2-up speaker stack is 1 element, not 2, so it fits the host budget and dodges
+// the multi-<video> render fragility).
 function sceneVideoCount(scene) {
   if (!scene || typeof scene !== "object") return 0;
-  const clips = Array.isArray(scene.source_clips) ? scene.source_clips.length : 0;
+  const clips = sceneLayoutOf(scene)
+    ? 1
+    : (Array.isArray(scene.source_clips) ? scene.source_clips.length : 0);
   const pips = Array.isArray(scene.overlays)
     ? scene.overlays.filter((o) => o !== null && typeof o === "object" && !Array.isArray(o) && o.type === "pip").length
     : 0;
   return clips + pips;
+}
+
+// A scene's on-screen A-roll seconds. Normal scenes play their a_roll clips
+// SEQUENTIALLY → the effective-duration SUM. A LAYOUT scene plays its cells
+// CONCURRENTLY (the composite's length is the longest cell) → the MAX over the
+// layout cells. Using this everywhere a "scene's a_roll length" is needed keeps
+// the duration lints from double-counting a split-screen's stacked clips.
+function sceneArollOutputSeconds(scene) {
+  if (!isPlainObject(scene) || !Array.isArray(scene.source_clips)) return 0;
+  const layout = sceneLayoutOf(scene);
+  if (layout) {
+    let max = 0;
+    for (const cell of layout.cells) {
+      const clip = scene.source_clips[cell.clip_index];
+      if (isPlainObject(clip) && clipHasWindow(clip)) max = Math.max(max, effectiveClipDuration(clip));
+    }
+    return max;
+  }
+  let sum = 0;
+  for (const c of scene.source_clips) {
+    if (isPlainObject(c) && clipRoleOf(c) === "a_roll" && clipHasWindow(c)) sum += effectiveClipDuration(c);
+  }
+  return sum;
+}
+
+// A scene's TOTAL on-screen seconds, for whole-cut feasibility — broader than
+// sceneArollOutputSeconds (which is a_roll-only, for the a_roll-vs-target check).
+// A scene can legitimately be filled by full-frame b_roll with NO a_roll spine
+// (the scene-clip-sum lint skips those), so feasibility must count them or it
+// false-flags a b-roll-driven cut as too short. Precedence: layout (max cell) →
+// a_roll spine sum → full-frame footage sum (b_roll/other, no a_roll) →
+// target_duration_seconds (a clipless overlay/title card — authored length, no
+// footage to derive from, so never penalize it).
+function sceneOutputSeconds(scene) {
+  if (!isPlainObject(scene)) return 0;
+  const aroll = sceneArollOutputSeconds(scene);
+  if (aroll > 0) return aroll; // layout or a_roll spine governs the length
+  const clips = Array.isArray(scene.source_clips) ? scene.source_clips : [];
+  let footage = 0;
+  for (const c of clips) {
+    if (isPlainObject(c) && clipHasWindow(c)) footage += effectiveClipDuration(c);
+  }
+  if (footage > 0) return footage; // full-frame b_roll-driven scene
+  return isFiniteNumber(scene.target_duration_seconds) && scene.target_duration_seconds > 0
+    ? scene.target_duration_seconds
+    : 0;
 }
 
 function isPlainObject(value) {
@@ -718,6 +812,38 @@ function collectSubjectPlacements(parsed) {
   return out;
 }
 
+// --- Multi-cell layouts (split-screen / multi-crop, v3.4) --------------------
+// Every scene carrying a usable scene.layout, normalized for the layout
+// materializer (layout-materialize.js) and the compose/source symlinker. Each
+// entry resolves its cells to (scene_id, clip_index) keys into the already-pre-
+// cut clips the composite is built from. Fan-out-aware (mirrors
+// collectSubjectPlacements): scene_ids are document-globally unique, so a scene
+// is an unambiguous layout key across shorts.
+function collectSceneLayouts(parsed) {
+  const out = [];
+  for (const timeline of storyboardTimelines(parsed)) {
+    for (const scene of timeline.scenes) {
+      const layout = sceneLayoutOf(scene);
+      if (!layout) continue;
+      const clips = Array.isArray(scene.source_clips) ? scene.source_clips : [];
+      out.push({
+        short_id: timeline.short_id,
+        scene_id: scene.scene_id,
+        type: layout.type,
+        cells: layout.cells,
+        audio_cell: layout.audio_cell,
+        gap_px: layout.gap_px,
+        background: layout.background,
+        source_clips_count: clips.length,
+        // Whether every cell resolves to a real source clip — the materializer
+        // skips (degrades) a layout whose cell points past source_clips.
+        resolved: layout.cells.every((c) => c.clip_index < clips.length),
+      });
+    }
+  }
+  return out;
+}
+
 // Normalize a storyboard's target.distribution into the post-copy block the
 // packager (and the fan-out deliverables manifest) emit. Chapters-agnostic on
 // purpose: chapters_paste_block is a single-timeline/segmented concept layered
@@ -1214,6 +1340,19 @@ const PLAN_LINT_THRESHOLDS = Object.freeze({
   caption_chunk_max_words: 7,
   caption_chunk_max_chars: 42,
   caption_window_tolerance_s: 0.1,
+  // (v3.4) Significant reuse of the same source seconds by two a_roll clips —
+  // the "pulled-forward hook overlapped the body / repeated whole lines" defect.
+  // Small overlaps (a few frames at a cut) are intentional and below this floor.
+  clip_span_overlap_min_s: 0.75,
+  // (v3.4) Caption-text-vs-transcript content fit. A caption whose content words
+  // largely DON'T appear in the words actually spoken in its chosen source window
+  // is captioning the wrong span. Deliberately permissive (paraphrase/cleanup is
+  // legitimate) — only a STRONG mismatch warns, and only when there is enough
+  // speech + enough caption text to judge.
+  caption_text_match_min_ratio: 0.34,
+  caption_text_min_content_words: 3,
+  // (v3.4) Repeated whole caption lines across scenes (substantial lines only).
+  caption_repeat_min_content_words: 4,
 });
 
 function round1(value) {
@@ -1447,9 +1586,11 @@ function warnDurations(parsed, scenes, targetSeconds, warnings) {
     if (!isFiniteNumber(scene.target_duration_seconds) || scene.target_duration_seconds <= 0) return;
     const aroll = scene.source_clips.filter((c) => isPlainObject(c) && clipRoleOf(c) === "a_roll" && clipHasWindow(c));
     if (aroll.length === 0) return;
-    // OUTPUT sum: each clip's on-screen length is (out-in)/speed, so a 10s raw clip
-    // at 2x correctly fills a 5s scene target instead of false-rejecting at 10s.
-    const sum = aroll.reduce((acc, c) => acc + effectiveClipDuration(c), 0);
+    // OUTPUT length: each clip's on-screen length is (out-in)/speed, so a 10s raw
+    // clip at 2x correctly fills a 5s scene target instead of false-rejecting at
+    // 10s. A LAYOUT scene's cells play concurrently → the MAX cell, not the sum
+    // (sceneArollOutputSeconds handles both), so a 2-up doesn't false-trip here.
+    const sum = sceneArollOutputSeconds(scene);
     const ratio = Math.abs(sum - scene.target_duration_seconds) / scene.target_duration_seconds;
     if (ratio > PLAN_LINT_THRESHOLDS.scene_clip_sum_ratio) {
       warnings.push({
@@ -2007,6 +2148,261 @@ function lintSubjectPlacements(parsed, sceneById, warnings) {
   }
 }
 
+// --- Span / caption / transcript content lints (v3.4) ------------------------
+// These close the gap a tester hit: a storyboard that passes plan-lint but is
+// editorially wrong because the chosen SPANS were never checked against what the
+// transcript actually says — pulled-forward hook spans overlapping the body,
+// repeated lines, and a hook that grabbed the wrong sentence. All WARNINGS
+// (advisory, like every other span/caption lint; the human accepts-or-fixes at
+// the plan gate).
+
+// Lowercased alphanumeric tokens of length >= minLen (apostrophes folded out so
+// "don't" -> "dont"). The shared normalizer for content-overlap comparisons.
+function contentTokens(text, minLen = 3) {
+  if (typeof text !== "string") return [];
+  return text
+    .toLowerCase()
+    .replace(/['’]/g, "")
+    .split(/[^a-z0-9]+/)
+    .filter((t) => t.length >= minLen);
+}
+
+// PLAN_CLIP_SPAN_OVERLAP — two a_roll clips drawn from the SAME source file reuse
+// overlapping source seconds, so the same footage/words play twice (the
+// "pulled-forward hook overlapped the body / repeated whole lines" defect).
+// Geometric only (no transcript needed); a sweep over clips sorted by in_seconds.
+function warnClipSpanOverlap(scenes, warnings) {
+  const byFile = new Map(); // manifest_file_index -> [{sceneIx, clipIx, scene_id, in, out}]
+  eachClip(scenes, (scene, i, clip, j) => {
+    if (clipRoleOf(clip) !== "a_roll" || !clipHasWindow(clip)) return;
+    if (!Number.isInteger(clip.manifest_file_index)) return;
+    if (!byFile.has(clip.manifest_file_index)) byFile.set(clip.manifest_file_index, []);
+    byFile.get(clip.manifest_file_index).push({
+      sceneIx: i, clipIx: j, scene_id: sceneIdOf(scene), in: clip.in_seconds, out: clip.out_seconds,
+    });
+  });
+  const min = PLAN_LINT_THRESHOLDS.clip_span_overlap_min_s;
+  const seen = new Set();
+  for (const clips of byFile.values()) {
+    if (clips.length < 2) continue;
+    clips.sort((a, b) => a.in - b.in);
+    for (let a = 0; a < clips.length; a += 1) {
+      for (let b = a + 1; b < clips.length; b += 1) {
+        if (clips[b].in >= clips[a].out - 1e-9) break; // sorted: no later clip can overlap
+        const overlap = Math.min(clips[a].out, clips[b].out) - Math.max(clips[a].in, clips[b].in);
+        if (overlap < min) continue;
+        const key = `${clips[a].sceneIx}:${clips[a].clipIx}|${clips[b].sceneIx}:${clips[b].clipIx}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        warnings.push({
+          code: "PLAN_CLIP_SPAN_OVERLAP",
+          message: `scenes[${clips[a].sceneIx}].source_clips[${clips[a].clipIx}] (${round1(clips[a].in)}–${round1(clips[a].out)}s) and scenes[${clips[b].sceneIx}].source_clips[${clips[b].clipIx}] (${round1(clips[b].in)}–${round1(clips[b].out)}s) reuse ${round1(overlap)}s of the SAME source footage — the same words will play twice (a pulled-forward hook overlapping the body reads as a repeat). Pick distinct spans.`,
+          scene_index: clips[a].sceneIx,
+          scene_id: clips[a].scene_id,
+          clip_index: clips[a].clipIx,
+          data: { overlap_seconds: round1(overlap), other_scene_index: clips[b].sceneIx, other_clip_index: clips[b].clipIx },
+        });
+      }
+    }
+  }
+}
+
+// The clip whose [in,out] window contains a caption segment's [start,end]
+// (±tolerance) — the segment is re-timed against it, so its transcript file is
+// the one to check the caption text against. Returns the clip or null.
+function containingClipForCaption(seg, scene) {
+  const tol = PLAN_LINT_THRESHOLDS.caption_window_tolerance_s;
+  const clips = Array.isArray(scene.source_clips) ? scene.source_clips : [];
+  return clips.find((c) => isPlainObject(c) && clipHasWindow(c)
+    && seg.start_seconds >= c.in_seconds - tol && seg.end_seconds <= c.out_seconds + tol) || null;
+}
+
+// PLAN_CAPTION_TEXT_MISMATCH — a caption whose content words largely DON'T appear
+// in the transcript words actually spoken in its chosen source window. Catches
+// "the span grabbed the wrong sentence": the burned caption claims one line but
+// the footage under it says something else. Fails safe (skips) when there is no
+// transcript, no containing clip, too little speech in the window, or too short
+// a caption to judge — and only a STRONG mismatch (below the match ratio) warns,
+// so legitimate paraphrase/cleanup never false-positives.
+function lintCaptionTranscriptFit(scenes, ctx, warnings) {
+  const resolveTranscript = typeof ctx.transcriptForFileIndex === "function" ? ctx.transcriptForFileIndex : null;
+  if (!resolveTranscript) return;
+  const minWords = PLAN_LINT_THRESHOLDS.caption_text_min_content_words;
+  const minRatio = PLAN_LINT_THRESHOLDS.caption_text_match_min_ratio;
+  scenes.forEach((scene, ix) => {
+    if (!isPlainObject(scene) || !Array.isArray(scene.caption_segments)) return;
+    scene.caption_segments.forEach((seg, segIx) => {
+      if (!isPlainObject(seg) || !isNonEmptyString(seg.text)
+        || !isFiniteNumber(seg.start_seconds) || !isFiniteNumber(seg.end_seconds)) return;
+      const clip = containingClipForCaption(seg, scene);
+      if (!clip || !Number.isInteger(clip.manifest_file_index)) return;
+      const transcript = resolveTranscript(clip.manifest_file_index);
+      if (!Array.isArray(transcript) || transcript.length === 0) return;
+      // Words spoken inside the caption's source window.
+      const windowText = transcript
+        .filter((e) => isPlainObject(e) && isFiniteNumber(e.start) && isFiniteNumber(e.end)
+          && e.end > seg.start_seconds && e.start < seg.end_seconds && typeof e.text === "string")
+        .map((e) => e.text)
+        .join(" ");
+      const windowTokens = new Set(contentTokens(windowText));
+      if (windowTokens.size < minWords) return; // not enough speech to judge (silence handled elsewhere)
+      const capTokens = contentTokens(seg.text);
+      if (capTokens.length < minWords) return; // too short a caption to judge confidently
+      const matched = capTokens.filter((t) => windowTokens.has(t)).length;
+      const ratio = matched / capTokens.length;
+      if (ratio < minRatio) {
+        warnings.push({
+          code: "PLAN_CAPTION_TEXT_MISMATCH",
+          message: `scenes[${ix}].caption_segments[${segIx}] text "${seg.text.trim().slice(0, 48)}" barely matches the words actually spoken in its ${round1(seg.start_seconds)}–${round1(seg.end_seconds)}s source window ("${windowText.trim().slice(0, 48)}…") — the caption may be on the WRONG span (only ${Math.round(ratio * 100)}% of its words are in that window). Verify the clip in/out picks the line the caption claims.`,
+          scene_index: ix,
+          scene_id: sceneIdOf(scene),
+          data: { match_ratio: Math.round(ratio * 100) / 100, caption: seg.text.trim().slice(0, 80), window_text: windowText.trim().slice(0, 80) },
+        });
+      }
+    });
+  });
+}
+
+// PLAN_CAPTION_REPEATED — the same substantial caption line appears in two scenes
+// (the "repeated whole lines" defect). Normalized-content-token identity; only
+// lines with enough content words to be meaningful are compared. Modeled on
+// warnBrollRepeats but over caption_segments[].text.
+function warnRepeatedCaptionLines(scenes, warnings) {
+  const minWords = PLAN_LINT_THRESHOLDS.caption_repeat_min_content_words;
+  const firstSeen = new Map(); // normalized text -> { sceneIx, segIx, text }
+  scenes.forEach((scene, ix) => {
+    if (!isPlainObject(scene) || !Array.isArray(scene.caption_segments)) return;
+    scene.caption_segments.forEach((seg, segIx) => {
+      if (!isPlainObject(seg) || !isNonEmptyString(seg.text)) return;
+      const tokens = contentTokens(seg.text);
+      if (tokens.length < minWords) return;
+      const norm = tokens.join(" ");
+      const prior = firstSeen.get(norm);
+      if (prior) {
+        warnings.push({
+          code: "PLAN_CAPTION_REPEATED",
+          message: `scenes[${ix}].caption_segments[${segIx}] repeats the caption line from scenes[${prior.sceneIx}] ("${prior.text.slice(0, 48)}") — the same line is captioned twice; cut one or pick a distinct beat.`,
+          scene_index: ix,
+          scene_id: sceneIdOf(scene),
+          data: { first_scene_index: prior.sceneIx, text: prior.text.slice(0, 80) },
+        });
+      } else {
+        firstSeen.set(norm, { sceneIx: ix, segIx, text: seg.text.trim() });
+      }
+    });
+  });
+}
+
+// PLAN_DURATION_INFEASIBLE (v3.4) — the REALIZED cut (sum of a_roll OUTPUT
+// seconds, which already bakes per-clip speed via effectiveClipDuration) lands
+// outside the requested duration window. Distinct from PLAN_TARGET_DRIFT /
+// PLAN_SHORT_DURATION_OUT_OF_RANGE, which compare the AUTHORED scene/total
+// targets: this catches the "~1.25× speed + 60–90s" contradiction a tester hit,
+// where the footage available at the planned speed simply can't fill the window
+// no matter what targets are authored. Speed-attributed so the lever is obvious.
+function warnDurationFeasibility(scenes, ctx, warnings) {
+  const spec = isPlainObject(ctx.durationSpec) ? ctx.durationSpec : null;
+  let lo = null;
+  let hi = null;
+  let windowLabel = null;
+  if (spec && spec.range) {
+    const tol = PLAN_LINT_THRESHOLDS.short_duration_range_tolerance_s;
+    lo = spec.range.min_seconds - tol;
+    hi = spec.range.max_seconds + tol;
+    windowLabel = `${round1(spec.range.min_seconds)}–${round1(spec.range.max_seconds)}s`;
+  } else if (isFiniteNumber(ctx.targetSeconds) && ctx.targetSeconds > 0) {
+    const r = PLAN_LINT_THRESHOLDS.target_drift_ratio;
+    lo = ctx.targetSeconds * (1 - r);
+    hi = ctx.targetSeconds * (1 + r);
+    windowLabel = `~${round1(ctx.targetSeconds)}s (±${Math.round(r * 100)}%)`;
+  } else {
+    return; // no intent window/target to judge feasibility against
+  }
+
+  let realized = 0;
+  const speeds = [];
+  for (const scene of scenes) {
+    // The scene's on-screen length: a split-screen's stacked cells play
+    // concurrently (longest cell), an a_roll spine governs an a_roll scene, a
+    // full-frame b_roll-driven scene counts its footage, a clipless title card
+    // its authored target — sceneOutputSeconds resolves all of these, so a
+    // b-roll-driven cut isn't false-flagged as too short.
+    realized += sceneOutputSeconds(scene);
+  }
+  eachClip(scenes, (scene, i, clip) => {
+    if (clipHasWindow(clip)) speeds.push(clipSpeedOf(clip));
+  });
+  if (realized <= 0) return; // nothing on screen to judge
+
+  const sped = speeds.some((s) => Math.abs(s - 1) > 1e-3);
+  const medianSpeed = speeds.length ? speeds.slice().sort((a, b) => a - b)[Math.floor(speeds.length / 2)] : 1;
+  const speedNote = sped ? ` (footage plays at ~${round1(medianSpeed)}× the planned speed)` : "";
+  if (realized < lo) {
+    warnings.push({
+      code: "PLAN_DURATION_INFEASIBLE",
+      message: `the cut as built realizes ~${round1(realized)}s of footage${speedNote} but the requested duration is ${windowLabel} — there isn't enough source at this speed to fill the window. Slow the clips (lower speed), add footage (a B-roll gap / re-ingest), or lower the target.`,
+      data: { realized_seconds: round1(realized), window_low_seconds: round1(lo), window_high_seconds: round1(hi), median_speed: round1(medianSpeed) },
+    });
+  } else if (realized > hi) {
+    warnings.push({
+      code: "PLAN_DURATION_INFEASIBLE",
+      message: `the cut as built realizes ~${round1(realized)}s of footage${speedNote} but the requested duration is ${windowLabel} — it overruns the window. Cut scenes/clips or speed the footage up.`,
+      data: { realized_seconds: round1(realized), window_low_seconds: round1(lo), window_high_seconds: round1(hi), median_speed: round1(medianSpeed) },
+    });
+  }
+}
+
+// PLAN_LAYOUT_* (v3.4) — multi-cell layout warnings. The layout primitive is
+// fail-safe (a malformed layout never rejects the save); these warnings surface
+// the problem at the plan gate, and the materializer degrades (the composer
+// falls back to CSS-positioned cells) if a layout can't be built.
+function warnLayouts(scenes, warnings) {
+  scenes.forEach((scene, ix) => {
+    if (!isPlainObject(scene) || !isPlainObject(scene.layout)) return;
+    const layout = sceneLayoutOf(scene);
+    if (!layout) {
+      warnings.push({
+        code: "PLAN_LAYOUT_INVALID",
+        message: `scenes[${ix}].layout is present but not usable — a layout needs a "type" string and a "cells" array of ≥2 { clip_index } entries; it will be ignored (the scene renders without a split). Fix or drop it.`,
+        scene_index: ix,
+        scene_id: sceneIdOf(scene),
+      });
+      return;
+    }
+    if (!LAYOUT_TYPE_SET.has(layout.type)) {
+      warnings.push({
+        code: "PLAN_LAYOUT_UNKNOWN_TYPE",
+        message: `scenes[${ix}].layout.type "${layout.type}" is not one of ${LAYOUT_TYPES.join(", ")} — the materializer will fall back to a vertical stack; pick a known type.`,
+        scene_index: ix,
+        scene_id: sceneIdOf(scene),
+        data: { type: layout.type },
+      });
+    }
+    const clipCount = Array.isArray(scene.source_clips) ? scene.source_clips.length : 0;
+    for (const cell of layout.cells) {
+      if (cell.clip_index >= clipCount) {
+        warnings.push({
+          code: "PLAN_LAYOUT_CELL_OUT_OF_RANGE",
+          message: `scenes[${ix}].layout cell clip_index ${cell.clip_index} is out of range — the scene has ${clipCount} source_clips. The layout can't reference a clip that isn't there.`,
+          scene_index: ix,
+          scene_id: sceneIdOf(scene),
+          data: { clip_index: cell.clip_index, source_clips_count: clipCount },
+        });
+      }
+    }
+    const want = LAYOUT_CELL_COUNTS[layout.type];
+    if (Number.isInteger(want) && layout.cells.length !== want) {
+      warnings.push({
+        code: "PLAN_LAYOUT_CELL_COUNT",
+        message: `scenes[${ix}].layout type "${layout.type}" expects ${want} cells but has ${layout.cells.length} — extra cells are dropped / missing cells leave gaps.`,
+        scene_index: ix,
+        scene_id: sceneIdOf(scene),
+        data: { type: layout.type, cells: layout.cells.length, expected: want },
+      });
+    }
+  });
+}
+
 // context = { state, manifest, transcript, cleanSpeech, targetSeconds,
 // lintRules } — all best-effort/nullable. lintRules (activeLintRules(state))
 // gates the preset-dependent checks: hook heuristics under `retention` only,
@@ -2043,6 +2439,12 @@ function lintStoryboardPlan(parsed, context) {
   lintCaptionSegments(scenes, warnings, transcriptAligned);
   lintTransitions(parsed, scenes, ctx, disabled, warnings);
   lintSubjectPlacements(parsed, sceneById, warnings);
+  // (v3.4) Span / caption content vs the transcript + multi-cell layout — all
+  // warnings (advisory at the plan gate, like every other span/caption lint).
+  warnClipSpanOverlap(scenes, warnings);
+  lintCaptionTranscriptFit(scenes, ctx, warnings);
+  warnRepeatedCaptionLines(scenes, warnings);
+  warnLayouts(scenes, warnings);
 
   // B-roll gaps: informational warnings, never blockers — the plan gate is
   // where the human decides "upload these N shots or hold on the spine".
@@ -2064,6 +2466,7 @@ function lintStoryboardPlan(parsed, context) {
   warnHookShape(scenes, warnings, disabled);
   warnPacingArc(scenes, warnings, disabled);
   warnDurations(parsed, scenes, ctx.targetSeconds, warnings);
+  warnDurationFeasibility(scenes, ctx, warnings);
   warnBrollHolds(scenes, warnings);
   warnBrollRepeats(parsed, sceneById, warnings);
   // Budget per render unit: when segments[] chunk the render, the caller
@@ -2283,7 +2686,13 @@ function validateStoryboardContent(parsed, state) {
   const warnings = [];
 
   if (!storyboardHasShorts(parsed)) {
-    const context = { ...baseContext, targetSeconds: resolveTargetSeconds(state, parsed) };
+    const context = {
+      ...baseContext,
+      targetSeconds: resolveTargetSeconds(state, parsed),
+      // (v3.4) the intent duration spec ({seconds, range?, per_deliverable}) so
+      // the feasibility lint can judge the REALIZED cut against the window.
+      durationSpec: resolveIntentDurationSpec(state),
+    };
     const result = lintStoryboardPlan(parsed, context);
     errors.push(...result.errors);
     warnings.push(...result.warnings);
@@ -2323,6 +2732,9 @@ function validateStoryboardContent(parsed, state) {
     const result = lintStoryboardPlan(view, {
       ...baseContext,
       targetSeconds: perShortTarget,
+      // Per-short feasibility: the same intent spec (its range, when per-short,
+      // applies to each short's realized cut).
+      durationSpec: spec,
       suppress_key_moment_check: true,
     });
     errors.push(...tagFindingsWithShortId(result.errors, timeline.short_id));
@@ -2343,15 +2755,20 @@ module.exports = {
   CLIP_ROLES,
   SCENE_TRANSITIONS,
   CAPTION_ANIMATIONS,
+  LAYOUT_TYPES,
   PLAN_LINT_THRESHOLDS,
   BROLL_RENDER_MODES,
   BACKDROP_KINDS,
   allStoryboardScenes,
+  buildTranscriptResolver,
   captionSegmentsOf,
   clipRoleOf,
   clipSpeedOf,
   collectBrollGaps,
+  collectSceneLayouts,
   collectSubjectPlacements,
+  loadTranscript,
+  sceneLayoutOf,
   distributionFromStoryboard,
   effectiveClipDuration,
   expectedTimelineDurationSeconds,

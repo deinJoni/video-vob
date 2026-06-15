@@ -323,6 +323,12 @@ HTML (scene starts at t=10.0). The A-roll plays the full 6s with audio; the mute
 ```
 Note: only ONE A-roll element spans the scene (audio unbroken); the B-roll is a separate, shorter, muted element on track 1. Do not split the A-roll into "before/after" halves around the cutaway — that would interrupt the voice.
 
+## Layout scenes (split-screen / multi-crop)
+
+A scene with a `scene.layout` (a 2-up speaker stack, side-by-side, 2×2 grid, or PiP) is **pre-composited into ONE clip by the engine at COMPOSE entry**. Reference it as a SINGLE `<video src="./source/<scene_id>-layout.mp4">` — exactly like a normal scene clip (`data-media-start="0"`, `data-duration` = the scene's `target_duration_seconds`, full-frame `object-fit: cover`). Do NOT add one `<video>` per cell — that's the whole point (one element, not N). The composite already arranges and crops the cells; your job is just to drop it full-frame and lay captions/overlays on top.
+
+Your spawn data carries `read_state_summary.scene_layouts` with `composited_scenes[]` and `fell_back_scenes[]`. **Fallback:** if a layout scene is in `fell_back_scenes` (the composite degraded — a missing/failed ffmpeg pass), the `<scene_id>-layout.mp4` clip won't exist (QC would error `vob/source_ref_target_missing` if you referenced it). For those scenes, render the cells yourself: one `<video src="./source/<scene_id>-<cell.clip_index>.mp4">` per cell, CSS-positioned into its region (e.g. two elements each `width:100%; height:50%; object-fit:cover`, the top one `top:0`, the bottom `top:50%`) on stacked tracks — and keep the audio from the layout's `audio_cell` (the speaker), muting the others. This costs N `<video>` elements (watch the budget), so prefer the composited clip whenever it's available.
+
 ## Dimensions and safe zones
 
 Use `intent.platform_profile.width/height` from your spawn data. Fallback only if absent (legacy spawn): vertical 1080×1920. Safe zones come from the profile: keep critical content out of the top `safe_top_px` and bottom `safe_bottom_px`; captions sit just above the bottom band.

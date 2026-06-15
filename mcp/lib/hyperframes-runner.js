@@ -629,6 +629,32 @@ function checkHyperframesAvailable({ timeoutMs = PREFLIGHT_TIMEOUT_MS } = {}) {
   };
 }
 
+// The EXACT hyperframes invocation the engine uses, surfaced so a human doing
+// sanctioned bespoke work under <session>/work/ runs the SAME pinned binary
+// instead of hunting down `~/.npm-global/bin/hyperframes` or shelling `npx`
+// (which re-resolves the package graph and can float the version — see the
+// resolveHyperframesCmd note). Returns the runnable command + the pin env vars
+// the engine sets (no-auto-update + raised CDP timeouts + GPU backend), so a
+// work/ build matches the in-pipeline render exactly. Surfaced via vob_doctor.
+function describeHyperframesInvocation() {
+  const { cmd, baseArgs } = resolveHyperframesCmd();
+  const gpu = resolveBrowserGpuMode();
+  return {
+    command: [cmd, ...baseArgs].join(" "),
+    cmd,
+    base_args: baseArgs,
+    resolution: cmd === "npx" ? "npx-fallback" : "resolved-bin",
+    pin_env: {
+      HYPERFRAMES_NO_UPDATE_CHECK: "1",
+      HYPERFRAMES_NO_AUTO_INSTALL: "1",
+      PRODUCER_PUPPETEER_PROTOCOL_TIMEOUT_MS: String(DEFAULT_PROTOCOL_TIMEOUT_MS),
+      PRODUCER_PLAYER_READY_TIMEOUT_MS: String(DEFAULT_READY_TIMEOUT_MS),
+      PRODUCER_RENDER_READY_TIMEOUT_MS: String(DEFAULT_READY_TIMEOUT_MS),
+      ...(gpu !== null ? { PRODUCER_BROWSER_GPU_MODE: gpu } : {}),
+    },
+  };
+}
+
 module.exports = {
   HYPERFRAMES_INSTALL_HINT,
   LINT_TIMEOUT_MS,
@@ -638,6 +664,7 @@ module.exports = {
   INSPECT_TIMEOUT_MS,
   MAX_OUTPUT_BYTES,
   checkHyperframesAvailable,
+  describeHyperframesInvocation,
   resolveHyperframesCmd,
   runHyperframesBlocking,
   runHyperframesWithRetry,

@@ -11,14 +11,55 @@
 // take's timeline), so each cue is re-timed exactly as the composer does —
 // `cursor + (seg.start_seconds - clip.in_seconds)` reading the scene's first
 // source clip (mirror of m5-walker compose()). Cue ends clamp to the probed
-// output duration; the timing basis is the storyboard scene targets (the same
-// known scene-duration-vs-cut drift chapters already declare), NOT a per-word
-// alignment — hence level:"chunk", timing_basis:"storyboard_target".
+// output duration.
+//
+// (v3.4) WORD-ANCHORING: a tester noticed the sidecars drifted from the
+// burned-in karaoke captions because the cue windows came from the storyboarder's
+// APPROXIMATE chunk windows while the burn-in uses the forced-aligned per-word
+// times. When a forced-aligned transcript is available (transcriptAligned:true +
+// a per-file resolver), each cue's start/end is re-anchored to the actual word
+// times of the words in the chunk (first matched word's start → last matched
+// word's end), so the sidecar matches what's on screen. Falls back to the
+// storyboard chunk window when alignment is absent or no word matches — hence the
+// returned timing_basis is "forced_aligned" only when at least one cue was
+// word-anchored, else "storyboard_target".
 
 const { captionSegmentsOf } = require("./storyboard-schema.js");
 
 function isPlainObject(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+// Lowercased alphanumeric word tokens (apostrophes folded) for matching caption
+// text against transcript words.
+function wordTokens(text) {
+  if (typeof text !== "string") return [];
+  return text.toLowerCase().replace(/['’]/g, "").split(/[^a-z0-9]+/).filter(Boolean);
+}
+
+// Re-anchor a caption segment's [start,end] to the forced-aligned word times of
+// the words it actually contains. `words` is the {text,start,end} array for the
+// segment's source file. Returns { start, end } from the first/last word in the
+// segment window whose token matches a caption token, or null when there is no
+// usable match (caller keeps the storyboard chunk window).
+function alignedWindow(words, seg) {
+  if (!Array.isArray(words) || words.length === 0) return null;
+  if (!Number.isFinite(seg.start_seconds) || !Number.isFinite(seg.end_seconds)) return null;
+  const capTokens = new Set(wordTokens(seg.text));
+  if (capTokens.size === 0) return null;
+  const pad = 0.5; // catch words straddling the chunk boundary
+  let first = null;
+  let last = null;
+  for (const w of words) {
+    if (!isPlainObject(w) || !Number.isFinite(w.start) || !Number.isFinite(w.end)) continue;
+    if (w.end <= seg.start_seconds - pad || w.start >= seg.end_seconds + pad) continue;
+    const toks = wordTokens(w.text);
+    if (!toks.some((t) => capTokens.has(t))) continue;
+    if (first === null || w.start < first) first = w.start;
+    if (last === null || w.end > last) last = w.end;
+  }
+  if (first === null || last === null || last <= first) return null;
+  return { start: first, end: last };
 }
 
 // HH:MM:SS,mmm (SRT, comma fraction) / HH:MM:SS.mmm (VTT, dot fraction). Both
@@ -47,21 +88,30 @@ function stampVtt(seconds) {
   return `${p.h}:${p.m}:${p.s}.${p.ms}`;
 }
 
-// buildCaptionSidecar(storyboard, { durationSeconds }) ->
-//   { srt, vtt, segment_count } | null
+// buildCaptionSidecar(storyboard, { durationSeconds, transcriptForFileIndex?, transcriptAligned? }) ->
+//   { srt, vtt, segment_count, timing_basis } | null
 //
 // Walks storyboard.scenes in OUTPUT-time order; returns null when the input is
 // not a single-timeline scenes[] object or when no cue survives. The fan-out
 // path passes { scenes: timeline.scenes } for the active short.
+//
+// transcriptForFileIndex(fileIndex) -> [{text,start,end}] | null and
+// transcriptAligned (bool) opt the cues into word-anchored timing (the same word
+// times the burn-in uses); absent, the storyboard chunk windows are used as before.
 function buildCaptionSidecar(storyboard, options) {
   if (!isPlainObject(storyboard) || !Array.isArray(storyboard.scenes)) return null;
   const durationSeconds = options && Number.isFinite(options.durationSeconds)
     ? options.durationSeconds
     : null;
   if (durationSeconds === null || durationSeconds <= 0) return null;
+  const resolver = options && typeof options.transcriptForFileIndex === "function"
+    ? options.transcriptForFileIndex
+    : null;
+  const aligned = options && options.transcriptAligned === true && resolver !== null;
 
   const cues = [];
   let cursor = 0;
+  let usedAligned = false;
   for (const scene of storyboard.scenes) {
     const d = Number(scene && scene.target_duration_seconds);
     // Malformed scene durations break every downstream cue offset — stop
@@ -74,9 +124,22 @@ function buildCaptionSidecar(storyboard, options) {
     // cueStart >= durationSeconds guard silently drops them).
     const clip = (Array.isArray(scene.source_clips) && scene.source_clips[0]) || {};
     const inSec = Number(clip.in_seconds) || 0;
+    const fileIdx = Number.isInteger(clip.manifest_file_index) ? clip.manifest_file_index : null;
+    const words = aligned && fileIdx !== null ? resolver(fileIdx) : null;
     for (const seg of captionSegmentsOf(scene)) {
-      let cueStart = cursor + (seg.start_seconds - inSec);
-      let cueEnd = cursor + (seg.end_seconds - inSec);
+      // Word-anchor the cue window to the aligned word times when available, so
+      // the sidecar matches the burned-in (karaoke) timing rather than the
+      // storyboarder's approximate chunk window.
+      let segStart = seg.start_seconds;
+      let segEnd = seg.end_seconds;
+      const refined = Array.isArray(words) ? alignedWindow(words, seg) : null;
+      if (refined) {
+        segStart = refined.start;
+        segEnd = refined.end;
+        usedAligned = true;
+      }
+      let cueStart = cursor + (segStart - inSec);
+      let cueEnd = cursor + (segEnd - inSec);
       if (cueStart < 0) cueStart = 0;
       cueEnd = Math.min(cueEnd, durationSeconds);
       // The cursor can overrun the real cut (durationSeconds is the probed
@@ -101,6 +164,7 @@ function buildCaptionSidecar(storyboard, options) {
     srt: srtBlocks.join("\n"),
     vtt: `WEBVTT\n\n${vttBlocks.join("\n")}`,
     segment_count: cues.length,
+    timing_basis: usedAligned ? "forced_aligned" : "storyboard_target",
   };
 }
 

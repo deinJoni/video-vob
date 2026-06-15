@@ -99,6 +99,8 @@ function isAbsoluteSrc(value) {
 //   storyboard       parsed storyboard.json object | null (null = unreadable/missing)
 //   sourceLinks      resolveSourceLinks(id) tuples (may be [])
 //   sceneClipLinks   resolveSceneClipLinks(id) tuples (may be [])
+//   layoutLinks      resolveLayoutLinks(id) tuples (may be []) — the composited
+//                    <scene_id>-layout.mp4 split-screen clips
 //   checkTargetsOnDisk  fs.existsSync each referenced link target when true
 //   activeShortId    fan-out: the short this composition targets — scopes the
 //                    scene-coverage/master-duration checks to that short's
@@ -108,7 +110,7 @@ function isAbsoluteSrc(value) {
 // => { findings: [{severity, rule, message, file, line, column, source:"vob"}],
 //      error_count, warning_count, expected_source_names, active_short_id,
 //      active_segment_id }
-function runCompositionQc({ files, storyboard, sourceLinks, sceneClipLinks, checkTargetsOnDisk, activeShortId = null, activeSegment = null }) {
+function runCompositionQc({ files, storyboard, sourceLinks, sceneClipLinks, layoutLinks = null, checkTargetsOnDisk, activeShortId = null, activeSegment = null }) {
   const findings = [];
   const fileList = Array.isArray(files)
     ? files.filter((f) => f && typeof f.relPath === "string" && typeof f.content === "string")
@@ -252,12 +254,25 @@ function runCompositionQc({ files, storyboard, sourceLinks, sceneClipLinks, chec
     if (!link || typeof link.scene_id !== "string" || !Number.isInteger(link.clip_index)) continue;
     clipNames.set(`${link.scene_id}-${link.clip_index}.mp4`, link);
   }
+  // Multi-cell layout composites: "<scene_id>-layout.mp4" -> link tuple. The
+  // composer references the composite as a single ./source/<scene_id>-layout.mp4
+  // <video>; it resolves like a scene clip (disk + cross-scope checks).
+  const layoutNames = new Map();
+  for (const link of (Array.isArray(layoutLinks) ? layoutLinks : [])) {
+    if (!link || typeof link.scene_id !== "string") continue;
+    layoutNames.set(`${link.scene_id}-layout.mp4`, link);
+  }
   // Resolution keeps ALL materialized clips (cross-short refs resolve on disk,
   // so they must not error as unresolved) — but the EXPECTED list handed to
   // the composer is the active short's clips when fan-out scoping is on.
   const expectedClipNameList = activeSceneIdSet
     ? [...clipNames.keys()].filter((n) => activeSceneIdSet.has(clipNames.get(n).scene_id))
     : [...clipNames.keys()];
+  // Same active-scope filter for layout composite names in the suggestion list,
+  // so a fan-out/segmented unresolved-ref doesn't suggest another short's layout.
+  const expectedLayoutNameList = activeSceneIdSet
+    ? [...layoutNames.keys()].filter((n) => activeSceneIdSet.has(layoutNames.get(n).scene_id))
+    : [...layoutNames.keys()];
 
   // --- Media src scan ---------------------------------------------------------
   let videoCount = 0;
@@ -315,6 +330,26 @@ function runCompositionQc({ files, storyboard, sourceLinks, sceneClipLinks, chec
                 tag.line,
               ));
           }
+        } else if (layoutNames.has(name)) {
+          const link = layoutNames.get(name);
+          if (checkTargetsOnDisk && typeof link.layout_abs === "string" && !fs.existsSync(link.layout_abs)) {
+            findings.push(makeFinding(
+              "error",
+              "vob/source_ref_target_missing",
+              `src "./source/${name}" (${f.relPath}:${tag.line}) refers to the layout composite for scene "${link.scene_id}" whose file is missing at ${link.layout_abs} — the layout materializer degraded (a malformed/failed composite); render the cells as positioned <video> elements instead, or re-enter COMPOSE`,
+              f.relPath,
+              tag.line,
+            ));
+          }
+          if (activeSceneIdSet && !activeSceneIdSet.has(link.scene_id)) {
+            findings.push(makeFinding(
+              "warning",
+              scopeKind === "segment" ? "vob/cross_segment_clip_ref" : "vob/cross_short_clip_ref",
+              `src "./source/${name}" (${f.relPath}:${tag.line}) references the layout composite for scene "${link.scene_id}" belonging to ANOTHER ${scopeKind === "segment" ? `render segment (active: ${segmentScope.segment_id})` : `short (active: ${activeShortId})`}`,
+              f.relPath,
+              tag.line,
+            ));
+          }
         } else if (sourceNames.has(name)) {
           const sourceAbs = sourceNames.get(name);
           if (checkTargetsOnDisk && typeof sourceAbs === "string" && !fs.existsSync(sourceAbs)) {
@@ -330,7 +365,7 @@ function runCompositionQc({ files, storyboard, sourceLinks, sceneClipLinks, chec
           // List the legal names (scene clips first — they're what the composer
           // almost always meant; the ACTIVE short's clips in fan-out) so the
           // fix needs no storyboard re-derivation.
-          const expected = [...expectedClipNameList, ...sourceNames.keys()];
+          const expected = [...expectedClipNameList, ...expectedLayoutNameList, ...sourceNames.keys()];
           const preview = expected.slice(0, 6).join(", ");
           const moreCount = expected.length - Math.min(6, expected.length);
           findings.push(makeFinding(
@@ -696,6 +731,7 @@ function runCompositionQc({ files, storyboard, sourceLinks, sceneClipLinks, chec
     // In fan-out / segmented mode, scene_clips is the ACTIVE scope's clip list.
     expected_source_names: {
       scene_clips: expectedClipNameList,
+      layouts: [...layoutNames.keys()],
       sources: [...sourceNames.keys()],
     },
     active_short_id: activeShortId,

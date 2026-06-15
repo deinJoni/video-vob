@@ -8,7 +8,7 @@ const { assertSafeProjectId, composeDir, statePath, storyboardPath } = require("
 const { withSessionLock, writeFileAtomic } = require("../storage.js");
 const { readSessionStateStrict } = require("../session-state.js");
 const { validateCompositionFiles, htmlAndCssEntries } = require("../composition-files.js");
-const { recreateSourceSymlinks, resolveSceneClipLinks, resolveSourceLinks, injectFontKit, injectCaptionKit } = require("../source-symlink.js");
+const { recreateSourceSymlinks, resolveLayoutLinks, resolveSceneClipLinks, resolveSourceLinks, injectFontKit, injectCaptionKit } = require("../source-symlink.js");
 const { runCompositionQc } = require("../composition-qc.js");
 const { findTimeline, storyboardHasShorts, storyboardTimelines } = require("../storyboard-schema.js");
 const { planSegmentById, renderPlanOf } = require("../render-segments.js");
@@ -134,6 +134,7 @@ async function saveComposition(args) {
     storyboard,
     sourceLinks: resolveSourceLinks(id),
     sceneClipLinks: resolveSceneClipLinks(id),
+    layoutLinks: resolveLayoutLinks(id),
     checkTargetsOnDisk: true, // clips were materialized at COMPOSE entry; missing = real problem
     activeShortId: shortId,
     activeSegment,

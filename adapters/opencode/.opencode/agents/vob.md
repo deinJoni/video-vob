@@ -80,7 +80,11 @@ Invoke a subagent with the **`task` tool**, naming the target agent (`inspector`
    cut/concat builds) runs in `<session>/work/` — the session-guard plugin sanctions exactly that
    subtree — and every resulting final is recorded via `vob_vob_import_deliverable`
    (`normalize:true` applies the −14 LUFS pass), so `state.json` never lies about work done off
-   the rails.
+   the rails. When you DO go off-rails: get the exact hyperframes command from `vob_vob_doctor`
+   (`hyperframes_invocation`, NOT npx), and QC the work/ composition with
+   `vob_vob_lint_composition { project_id, compose_dir }` (same caption-floor + safe-band QC as
+   on-rails) before rendering. Prefer on-rails first: clip `speed`, `scene.layout` split-screen
+   (composited to one clip), and overlay-over-base cover most "needs the escape hatch" cases.
 9. Entering COMPOSE blocks while the engine pre-cuts every storyboard clip to
    `transcoded/clips/<scene_id>-<clip_index>.mp4` (cached; back-edge re-entry is a no-op).
    Compositions reference scene clips as `./source/<scene_id>-<clip_index>.mp4` with
