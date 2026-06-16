@@ -80,7 +80,11 @@ Invoke a subagent with the **`task` tool**, naming the target agent (`inspector`
    cut/concat builds) runs in `<session>/work/` — the session-guard plugin sanctions exactly that
    subtree — and every resulting final is recorded via `vob_vob_import_deliverable`
    (`normalize:true` applies the −14 LUFS pass), so `state.json` never lies about work done off
-   the rails.
+   the rails. When you DO go off-rails: get the exact hyperframes command from `vob_vob_doctor`
+   (`hyperframes_invocation`, NOT npx), and QC the work/ composition with
+   `vob_vob_lint_composition { project_id, compose_dir }` (same caption-floor + safe-band QC as
+   on-rails) before rendering. Prefer on-rails first: clip `speed`, `scene.layout` split-screen
+   (composited to one clip), and overlay-over-base cover most "needs the escape hatch" cases.
 9. Entering COMPOSE blocks while the engine pre-cuts every storyboard clip to
    `transcoded/clips/<scene_id>-<clip_index>.mp4` (cached; back-edge re-entry is a no-op).
    Compositions reference scene clips as `./source/<scene_id>-<clip_index>.mp4` with
@@ -99,10 +103,51 @@ Invoke a subagent with the **`task` tool**, naming the target agent (`inspector`
 PLAN is the single planning gate: it merges the former BRIEF and STORYBOARD phases. Inside PLAN you draft + confirm the brief AND delegate + confirm the storyboard, then present them together for one human sign-off before COMPOSE.
 
 Back-edges:
-- `PLAN → INTENT` (re-clarify), `COMPOSE → PLAN`
+- `PLAN → INTENT` (re-clarify), `PLAN → INGEST` (b-roll gap resolution: the user uploads MORE footage, you re-ingest the extended drop and re-walk INSPECT → INTENT → PLAN — answers persist, caches make old files cheap), `COMPOSE → PLAN`
 - `PREVIEW → COMPOSE`, `PREVIEW → PLAN` (main iteration point)
 - `RENDER → COMPOSE`, `RENDER → PLAN`
 - `ITERATE → COMPOSE`, `ITERATE → PLAN` (post-package revision)
+
+## Video types — presets steer the rails (v3)
+
+Every project resolves a **video-type preset** (`social-short` / `long-form` / `cinematic` /
+`tutorial` / `podcast` / user-defined in `.vob-config/video-types.json`): it sets the platform
+default, whether clean-cut applies, the plan-lint ruleset (hook-first heuristics fire under
+`retention` only), the overlay vocabulary, and the render segmentation policy. Resolution is
+engine-side (`VOB_VIDEO_TYPE` env > the optional `video_type` intent answer > derived from
+platform + duration > `social-short`) and the summary's `video_type` block tells you what's
+active and why (`source`). At INTENT you PROPOSE the derived preset and let the human confirm or
+override — one beat, skippable (see `.opencode/vob/phases/INTENT.md`). A user who wants a TikTok
+never sees any of this.
+
+## Segmented long-form — one video, N render segments (v3)
+
+When the render plan is segmented (`render_plan.mode: "segmented"` in the summary — long-form
+presets auto-chunk to the host `<video>` budget; a 1.2 storyboard can declare narrative
+`segments[]` + `render_segmentation: "manual"`), ONE video is produced as N consecutive partials
+plus a join:
+
+1. **PLAN once.** Narrative `segments[]` are acts/chapters (they become YouTube chapters at
+   PACKAGE). One plan sign-off covers the whole video, as always.
+2. **COMPOSE→PREVIEW→RENDER cycle per segment** (the *active segment* = first plan segment whose
+   summary row isn't `rendered`). `vob_vob_save_composition {segment_id}` is REQUIRED on a
+   segmented plan — it scopes QC, render timeouts, and drift checks to that segment. Tell the
+   user "segment k of N: <title>".
+3. **Partials are safe by construction.** `vob_vob_render_full` writes the active segment's
+   partial to `segment_renders/` (NOT `renders/`, so the per-segment `RENDER → COMPOSE`
+   back-edge's auto-archival can't sweep it) and records it in the registry;
+   `vob_vob_confirm_render` confirms it. Then back-edge `RENDER → COMPOSE` for the next segment.
+4. **Assemble, then ship.** After the LAST segment: `vob_vob_assemble_video { project_id }` joins
+   the partials (lossless concat for hard cuts; `fade` boundaries re-encode as a
+   duration-preserving dip-to-black; optional `music_path` lays a ducked master bed). The
+   assembled final BECOMES the render — `vob_vob_confirm_render` it, then RENDER → PACKAGE →
+   `vob_vob_package_output` exactly as a single-timeline project (the manifest carries chapters).
+   The gate blocks with `segments_missing_render` / `video_not_assembled` until everything is
+   rendered AND assembled; re-saving the storyboard invalidates every partial (revision-bound
+   registry).
+5. **Revising one segment later:** back-edge to COMPOSE, recompose/render exactly that
+   `segment_id`, re-run `vob_vob_assemble_video` (a fresh partial invalidates the old assembly),
+   re-confirm, re-package.
 
 ## Fan-out — one source → N shorts (first-class)
 
@@ -193,13 +238,17 @@ explicit human acknowledgement; `vob_vob_acknowledge_inspect`; transition. Never
 **INTENT** — infer-then-confirm. Propose the five keys from the rough idea + digest +
 classification; pre-record confident ones; batch the gaps + the review-bucket question.
 Conditional keys (`audio_treatment` enum, `captions_style`) come from `missing_required_keys`.
-`--like`: pre-record stylistic keys from the source project; never `key_moments`.
+Propose the derived video-type preset as one skippable beat (`video_type` is optional — never
+blocks). `--like`: pre-record stylistic keys from the source project; never `key_moments`.
 
 **PLAN** — draft the brief (template incl. the BINDING Design language section), `vob_vob_save_brief`;
-delegate the storyboard (data-only spawn); present brief + storyboard markdown together; ONE
-sign-off → `vob_vob_confirm_brief` + `vob_vob_confirm_storyboard` → COMPOSE. Surface plan-lint warnings.
-Fan-out: the spawn carries `fan_out: N` + the duration range; the storyboard comes back as
-`shorts[]` and the one sign-off covers the whole set.
+delegate the storyboard (data-only spawn carries the video-type/editorial/overlay-vocabulary
+lines); present brief + storyboard markdown together; ONE sign-off → `vob_vob_confirm_brief` +
+`vob_vob_confirm_storyboard` → COMPOSE. Surface plan-lint warnings AND the b-roll gap list
+(`broll_gap_count` > 0 → present `plan/broll_gaps.json` as a shopping list: upload footage via
+the PLAN→INGEST back-edge, or approve without). Fan-out: the spawn carries `fan_out: N` + the
+duration range; the storyboard comes back as `shorts[]` and the one sign-off covers the whole
+set. Long-form: the storyboard declares `segments[]` (chapters) + typed overlays.
 
 **COMPOSE** — warn that the transition pre-cuts clips, then transition. Delegate to the composer
 (data-only spawn). Lint: errors → auto-retry ≤3. Lint clean → snapshot self-QC loop (≤2 rounds,
@@ -212,15 +261,20 @@ back-edge. Re-render resets the confirm.
 **RENDER** — set ETA from preview duration ×4–8; `vob_vob_render_full`; surface mp4 + size + log
 path + any drift flag. Verdict → `vob_vob_confirm_render` → PACKAGE. Archive fires on back-edges.
 Fan-out: after the confirm, record the short (`vob_vob_import_deliverable` + `normalize:true` +
-`set_phase:false`) and loop `RENDER → COMPOSE` until every short is recorded.
+`set_phase:false`) and loop `RENDER → COMPOSE` until every short is recorded. Segmented: confirm
+the partial, loop `RENDER → COMPOSE` per segment, then `vob_vob_assemble_video` → confirm the
+assembled final → PACKAGE.
 
-**PACKAGE** — single-timeline: non-interactive `vob_vob_package_output`; report the four paths
-(+ loudnorm note); auto-transition to ITERATE. Fan-out: skip `vob_vob_package_output` (it
+**PACKAGE** — single-timeline (incl. assembled segmented finals): non-interactive
+`vob_vob_package_output`; report the four paths (+ loudnorm note + chapters when the plan
+declared segments); auto-transition to ITERATE. Fan-out: skip `vob_vob_package_output` (it
 refuses) — present `deliverables/manifest.json` instead. Import-deliverable escape hatch lives in
 this phase file.
 
 **ITERATE** — `vob_vob_finalize_iteration`; offer done / revise-compose / revise-plan; back-edges
-archive automatically — surface the paths.
+archive automatically — surface the paths. With two or more archived iterations,
+`vob_vob_compare_iterations { project_id }` (read-only) shows the duration/size/revision/scene-set
+delta between cuts (`null` = unknown, never `0`) to ground a revise-vs-keep call.
 
 ## Escape hatch
 `vob_vob_import_deliverable` records finished deliverables — BOTH the on-rails fan-out loop

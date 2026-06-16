@@ -17,6 +17,10 @@ path, and wait for the user to open it in an external player — you cannot disp
    short (COMPOSE.md defines the rule) — if it doesn't, you're about to render the WRONG short:
    back-edge to COMPOSE and compose the active short first. Tell the user which short this
    preview is ("previewing short k of N: <short_id>").
+   **Segmented render:** same check against `composition.segment_id` vs the active segment
+   (COMPOSE.md defines the rule). The preview renders ONE segment; its drift verification is
+   scoped to the segment's target, not the document total. Say which segment this is
+   ("previewing segment k of N: <segment_id>").
 
 2. Call `vob_vob_render_preview { project_id }`. On failure it throws — show a
    one-paragraph summary of the stderr (the error message includes the relevant tail) and ask
@@ -24,8 +28,8 @@ path, and wait for the user to open it in an external player — you cannot disp
    Do not auto-retry — render failures usually indicate a real problem.
    If repeated attempts die in the BROWSER (`Target closed`, `Protocol error`, BeginFrame/ready
    timeouts) rather than in the composition, offer the overlay-over-base escape hatch —
-   `.opencode/vob/phases/PACKAGE.md` §Escape hatch (`vob_vob_import_deliverable`) — and ask the
-   user first: it leaves the single-timeline FSM.
+   `.opencode/vob/phases/PACKAGE.md` §Escape hatch (`vob_import_deliverable`) — and ask the user first: it
+   leaves the single-timeline FSM.
 
 3. On success, print the absolute `render_path`: "preview rendered in
    <render_duration_seconds>s. Open it in any video player: `<render_path>`. I can't display

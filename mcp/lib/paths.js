@@ -63,6 +63,12 @@ function inspectCleanSpeechPath(projectId) {
   return path.join(inspectDir(projectId), "clean_speech.json");
 }
 
+// Per-channel loudness / balance / phase analysis + the −14 LUFS normalization
+// advisory (v3.2 P2). Regenerated each INSPECT run like the other inspect/ files.
+function inspectAudioAnalysisPath(projectId) {
+  return path.join(inspectDir(projectId), "audio_analysis.json");
+}
+
 function inspectSummaryPath(projectId) {
   return path.join(inspectDir(projectId), "inspect.json");
 }
@@ -201,6 +207,18 @@ function renderStderrLogPath(projectId, kind, stamp) {
   return path.join(rendersDir(projectId), `${kind}-${stamp}.log`);
 }
 
+// PLAN-phase artifacts beyond the storyboard itself. plan/broll_gaps.json is
+// the b-roll "shopping list": coverage the cut wants that the ingested footage
+// can't supply (placements with source:"gap"), regenerated on every storyboard
+// save and surfaced at the plan gate.
+function planDir(projectId) {
+  return path.join(sessionDir(projectId), "plan");
+}
+
+function brollGapsPath(projectId) {
+  return path.join(planDir(projectId), "broll_gaps.json");
+}
+
 function storyboardPath(projectId) {
   return path.join(sessionDir(projectId), "storyboard.json");
 }
@@ -260,12 +278,79 @@ function transcodedClipSidecarPath(projectId, sceneId, clipIndex) {
   return path.join(transcodedClipsDir(projectId), `${transcodedClipStem(sceneId, clipIndex)}.json`);
 }
 
+// Subject mattes (v3.3 subject compositing): the alpha .webm lifted off each
+// subject clip via hyperframes remove-background, plus a content-hash sidecar.
+// Mirrors the transcoded-clip helpers EXACTLY (same stem, sibling dir under
+// transcoded/) so a back-edge COMPOSE re-entry re-uses the cache — same
+// discipline as the pre-cut clips.
+function mattesDir(projectId) {
+  return path.join(transcodedDir(projectId), "mattes");
+}
+
+function mattePath(projectId, sceneId, clipIndex) {
+  return path.join(mattesDir(projectId), `${transcodedClipStem(sceneId, clipIndex)}.webm`);
+}
+
+function matteSidecarPath(projectId, sceneId, clipIndex) {
+  return path.join(mattesDir(projectId), `${transcodedClipStem(sceneId, clipIndex)}.json`);
+}
+
+// Multi-cell layouts (v3.4 split-screen / multi-crop): ONE composited clip per
+// layout scene, keyed by scene_id (scene_ids are document-globally unique), plus
+// a content-hash sidecar. Sibling dir under transcoded/, same discipline as the
+// pre-cut clips and mattes so a back-edge COMPOSE re-entry re-uses the cache.
+function layoutsDir(projectId) {
+  return path.join(transcodedDir(projectId), "layouts");
+}
+
+function layoutPath(projectId, sceneId) {
+  return path.join(layoutsDir(projectId), `${assertSafeSceneId(sceneId)}.mp4`);
+}
+
+function layoutSidecarPath(projectId, sceneId) {
+  return path.join(layoutsDir(projectId), `${assertSafeSceneId(sceneId)}.json`);
+}
+
 function previewDir(projectId) {
   return path.join(sessionDir(projectId), "preview");
 }
 
 function rendersDir(projectId) {
   return path.join(sessionDir(projectId), "renders");
+}
+
+// Segment partials (v3 segmented render) live at the SESSION ROOT, deliberately
+// NOT under renders/: the per-segment cycle runs RENDER→COMPOSE back-edges, and
+// any back-edge out of RENDER auto-archives renders/ — partials parked there
+// would be swept mid-cycle and dangle the segment registry. Same rationale as
+// deliverables/. The ASSEMBLED final still lands in renders/ (it IS the cut).
+function segmentRendersDir(projectId) {
+  return path.join(sessionDir(projectId), "segment_renders");
+}
+
+function assertSafeSegmentId(segmentId) {
+  if (typeof segmentId !== "string" || !segmentId.trim()) {
+    throw new Error("segment_id must be a non-empty string");
+  }
+  const trimmed = segmentId.trim();
+  if (/[\/\\]/.test(trimmed) || /(?:^|\.)\.\.(?:\.|$)/.test(trimmed)) {
+    throw new Error(`segment_id contains invalid path characters: ${trimmed}`);
+  }
+  return trimmed;
+}
+
+function segmentRenderPath(projectId, segmentId, stamp) {
+  if (typeof stamp !== "string" || !/^[A-Za-z0-9._-]+$/.test(stamp)) {
+    throw new Error(`segmentRenderPath requires a safe stamp, got ${stamp}`);
+  }
+  return path.join(segmentRendersDir(projectId), `${assertSafeSegmentId(segmentId)}-${stamp}.mp4`);
+}
+
+function segmentRenderLogPath(projectId, segmentId, stamp) {
+  if (typeof stamp !== "string" || !/^[A-Za-z0-9._-]+$/.test(stamp)) {
+    throw new Error(`segmentRenderLogPath requires a safe stamp, got ${stamp}`);
+  }
+  return path.join(segmentRendersDir(projectId), `${assertSafeSegmentId(segmentId)}-${stamp}.log`);
 }
 
 function packageDir(projectId) {
@@ -280,12 +365,31 @@ function packageThumbnailPath(projectId) {
   return path.join(packageDir(projectId), "thumbnail.jpg");
 }
 
+function packageCaptionsSrtPath(projectId) {
+  return path.join(packageDir(projectId), "captions.srt");
+}
+
+function packageCaptionsVttPath(projectId) {
+  return path.join(packageDir(projectId), "captions.vtt");
+}
+
+function packagePostersDir(projectId) {
+  return path.join(packageDir(projectId), "posters");
+}
+
 function packageManifestPath(projectId) {
   return path.join(packageDir(projectId), "manifest.json");
 }
 
 function packageReadmePath(projectId) {
   return path.join(packageDir(projectId), "README.md");
+}
+
+// Multi-aspect dumb-crop variants (opt-in, labeled-lossy). Lives UNDER package/,
+// so it is wiped/recreated every package run and archived with the rest of
+// package/ on a back-edge — never under deliverables/.
+function packageVariantsDir(projectId) {
+  return path.join(packageDir(projectId), "variants");
 }
 
 // Where externally-produced finals are recorded (the multi-deliverable / clip
@@ -319,11 +423,14 @@ module.exports = {
   assertSafeProjectId,
   assertSafeSceneId,
   briefPath,
+  brollGapsPath,
   brollIndexPath,
+  planDir,
   reviewPoolPath,
   composeDir,
   composeSourceDir,
   ingestDir,
+  inspectAudioAnalysisPath,
   inspectAudioFeaturesDir,
   inspectAudioPath,
   inspectCleanSpeechPath,
@@ -345,14 +452,22 @@ module.exports = {
   inspectTranscriptsDir,
   manifestPath,
   deliverablesDir,
+  packageCaptionsSrtPath,
+  packageCaptionsVttPath,
   packageDir,
   packageFinalMp4Path,
   packageManifestPath,
+  packagePostersDir,
   packageReadmePath,
   packageThumbnailPath,
+  packageVariantsDir,
   previewDir,
   renderStderrLogPath,
   rendersDir,
+  assertSafeSegmentId,
+  segmentRenderLogPath,
+  segmentRenderPath,
+  segmentRendersDir,
   segmentCacheDir,
   segmentCachePath,
   segmentKeyframePath,
@@ -370,6 +485,12 @@ module.exports = {
   transcodedClipStem,
   transcodedClipsDir,
   transcodedDir,
+  mattesDir,
+  mattePath,
+  matteSidecarPath,
+  layoutsDir,
+  layoutPath,
+  layoutSidecarPath,
   transcriptCacheDir,
   transcriptCachePath,
 };

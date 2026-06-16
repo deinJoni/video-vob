@@ -4,14 +4,22 @@ const fs = require("fs");
 const path = require("path");
 
 const { ERROR_CODES, ToolError } = require("../envelope.js");
-const { assertSafeProjectId, composeDir, statePath, storyboardPath } = require("../paths.js");
+const { assertSafeProjectId, composeDir, sessionDir, statePath, storyboardPath } = require("../paths.js");
 const { withSessionLock, writeFileAtomic } = require("../storage.js");
 const { readSessionStateStrict } = require("../session-state.js");
-const { runHyperframesWithRetry, buildLintArgv, LINT_TIMEOUT_MS } = require("../hyperframes-runner.js");
+const { runHyperframesWithRetry, buildLintArgv, LINT_TIMEOUT_MS, runInspect } = require("../hyperframes-runner.js");
 const { stderrTail } = require("../spawn-with-shutdown.js");
 const { parseLintReport } = require("../lint-report.js");
 const { runCompositionQc } = require("../composition-qc.js");
-const { resolveSceneClipLinks, resolveSourceLinks } = require("../source-symlink.js");
+const { resolveLayoutLinks, resolveSceneClipLinks, resolveSourceLinks } = require("../source-symlink.js");
+const { planSegmentById } = require("../render-segments.js");
+const {
+  layoutQcMode,
+  shouldRunLayoutQc,
+  parseInspectReport,
+  mapInspectIssues,
+  layoutAdvisory,
+} = require("../layout-qc.js");
 
 const SEVERITY_ORDER = { error: 0, warning: 1, info: 2 };
 const SOURCE_ORDER = { vob: 0, hyperframes: 1 };
@@ -91,8 +99,206 @@ function nowIso() {
   return new Date().toISOString();
 }
 
+// Collect the .html/.css files under a directory (bounded recursive walk) as
+// [{relPath, content}] for the static QC pass.
+function collectHtmlCssFiles(root) {
+  const out = [];
+  const MAX = 200;
+  const walk = (dir, rel) => {
+    if (out.length >= MAX) return;
+    let entries;
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const ent of entries) {
+      if (out.length >= MAX) return;
+      const childAbs = path.join(dir, ent.name);
+      const childRel = rel ? `${rel}/${ent.name}` : ent.name;
+      // Skip the injected asset dirs (fonts/captions kits) and any source media.
+      if (ent.isDirectory()) {
+        if (ent.name === "fonts" || ent.name === "captions" || ent.name === "source" || ent.name === "node_modules") continue;
+        walk(childAbs, childRel);
+      } else if (/\.(html|css)$/i.test(ent.name)) {
+        try {
+          out.push({ relPath: childRel, content: fs.readFileSync(childAbs, "utf8") });
+        } catch { /* unreadable; skip */ }
+      }
+    }
+  };
+  walk(root, "");
+  return out;
+}
+
+// Off-rails QC (escape hatch, v3.4): lint an ARBITRARY composition directory
+// (e.g. a bespoke hyperframes build under <session>/work/) with the SAME engine
+// QC the on-rails path uses — most importantly the caption font-size floor and,
+// via hyperframes inspect, layout/legibility (text/safe-band overflow). This is
+// the equivalent of lint/QC for escape-hatch work, which previously had none
+// (the reason a tester's off-rails short shipped 52px captions under the floor).
+// It does NOT require (or touch) the saved-composition FSM state: storyboard-
+// dependent checks are skipped (storyboard:null), and the report is written into
+// the work dir itself. compose_dir must resolve inside the session (the report
+// write + the sanctioned work/ scratch subtree).
+async function lintArbitraryDir(id, composeDirArg) {
+  // Containment: compose_dir must be the sanctioned escape-hatch scratch subtree
+  // <session>/work/ (where both write-guards already allow writes), and the check
+  // is symlink-SAFE — realpath both sides so a symlink planted under work/ that
+  // points outside the session can't smuggle the lint-report.json write out.
+  let sessionRoot;
+  try {
+    sessionRoot = fs.realpathSync(path.resolve(sessionDir(id)));
+  } catch {
+    sessionRoot = path.resolve(sessionDir(id));
+  }
+  const workRoot = path.join(sessionRoot, "work");
+  let root;
+  try {
+    root = fs.realpathSync(path.resolve(composeDirArg));
+  } catch {
+    throw new ToolError(
+      ERROR_CODES.NOT_FOUND,
+      `compose_dir does not exist: ${composeDirArg} — point it at a hyperframes composition directory under <session>/work/`,
+    );
+  }
+  const within = root === workRoot || root.startsWith(workRoot + path.sep);
+  if (!within) {
+    throw new ToolError(
+      ERROR_CODES.INVALID_ARGUMENTS,
+      `compose_dir must be inside the escape-hatch scratch dir ${workRoot} — bespoke off-rails work lives under <session>/work/. Got: ${root}`,
+    );
+  }
+  const indexPath = path.join(root, "index.html");
+  if (!fs.existsSync(indexPath)) {
+    throw new ToolError(
+      ERROR_CODES.NOT_FOUND,
+      `no index.html in compose_dir ${root} — point compose_dir at a hyperframes composition directory`,
+    );
+  }
+
+  const result = await runHyperframesWithRetry(buildLintArgv({ composeRoot: root }), {
+    timeoutMs: LINT_TIMEOUT_MS,
+    captureStdoutViaFile: true,
+    maxAttempts: 2,
+    retryPatterns: [/Cannot find package/i, /ERR_MODULE_NOT_FOUND/i, /imported from .*puppeteer/i],
+  });
+  if (result.timed_out) {
+    throw new ToolError(ERROR_CODES.INTERNAL_ERROR, `hyperframes lint timed out after ${Math.round(LINT_TIMEOUT_MS / 1000)}s`);
+  }
+  const report = parseLintReport(result.stdout);
+  if (!report.ok) {
+    const parseError = (report.raw && report.raw.parse_error) || "unknown parse error";
+    throw new ToolError(
+      ERROR_CODES.INTERNAL_ERROR,
+      `hyperframes lint output was not parseable for ${root} (exit ${result.exit_code}): ${parseError}`,
+      { exit_code: result.exit_code, stderr_preview: stderrTail(result.stderr, 800) },
+    );
+  }
+
+  // Static QC with NO storyboard: the storyboard-dependent checks (scene
+  // coverage, source-ref resolution, overlay/caption binding) are skipped, but
+  // the caption font-size floor + <video> budget + absolute-path checks all run
+  // off the composition itself — exactly what off-rails work needs.
+  const qcFiles = collectHtmlCssFiles(root);
+  const qc = runCompositionQc({
+    files: qcFiles,
+    storyboard: null,
+    sourceLinks: [],
+    sceneClipLinks: [],
+    layoutLinks: [],
+    checkTargetsOnDisk: false,
+  });
+
+  // Layout / legibility QC (safe bands, overflow) via hyperframes inspect. The
+  // on-rails path gates this on the storyboard carrying captions/overlays; off
+  // rails we have no storyboard, so run it whenever layout QC is not disabled —
+  // safe bands are the whole point of the escape-hatch QC ask. Non-fatal.
+  let inspectFindings = [];
+  let inspectMeta = { ran: false, skipped_reason: "disabled" };
+  if (layoutQcMode() !== "off") {
+    try {
+      const ins = await runInspect({ composeRoot: root });
+      if (ins.timed_out) {
+        inspectFindings = [layoutAdvisory("vob/layout_qc_skipped", "hyperframes inspect timed out — caption/layout legibility not verified")];
+        inspectMeta = { ran: false, skipped_reason: "timeout" };
+      } else {
+        const inspectReport = parseInspectReport(ins.stdout);
+        if (!inspectReport.ok) {
+          inspectFindings = [layoutAdvisory("vob/layout_qc_skipped", `hyperframes inspect output not parseable (${inspectReport.parse_error || "unknown"})`)];
+          inspectMeta = { ran: false, skipped_reason: "unparseable" };
+        } else {
+          inspectFindings = mapInspectIssues(inspectReport, { storyboard: null, activeShortId: null, activeSegment: null });
+          inspectMeta = { ran: true, samples: inspectReport.sample_count, issue_count: inspectReport.issue_count };
+        }
+      }
+    } catch (err) {
+      inspectFindings = [layoutAdvisory("vob/layout_qc_skipped", `layout QC did not run — ${err && err.message ? err.message : String(err)}`)];
+      inspectMeta = { ran: false, skipped_reason: "error" };
+    }
+  }
+
+  const { kept: hfFindings, dropped: hfDropped } = dedupeHyperframesFindings(qc.findings, report.findings);
+  const droppedBySeverity = { error: 0, warning: 0, info: 0 };
+  for (const f of hfDropped) if (f.severity in droppedBySeverity) droppedBySeverity[f.severity] += 1;
+  let inspectWarnings = 0;
+  let inspectInfo = 0;
+  for (const f of inspectFindings) {
+    if (f.severity === "warning") inspectWarnings += 1;
+    else if (f.severity === "info") inspectInfo += 1;
+  }
+  const findings = [...qc.findings, ...inspectFindings, ...hfFindings];
+  const errorCount = Math.max(0, report.error_count - droppedBySeverity.error) + qc.error_count;
+  const warningCount = Math.max(0, report.warning_count - droppedBySeverity.warning) + qc.warning_count + inspectWarnings;
+  const infoCount = Math.max(0, report.info_count - droppedBySeverity.info) + inspectInfo;
+  const lintStatus = errorCount > 0 ? "errors" : warningCount > 0 ? "warnings_only" : "clean";
+
+  const reportPath = path.join(root, "lint-report.json");
+  writeFileAtomic(reportPath, `${JSON.stringify({
+    report_version: 3,
+    off_rails: true,
+    compose_dir: root,
+    lint_status: lintStatus,
+    error_count: errorCount,
+    warning_count: warningCount,
+    info_count: infoCount,
+    findings,
+    qc: { error_count: qc.error_count, warning_count: qc.warning_count },
+    hyperframes: { error_count: report.error_count, warning_count: report.warning_count, info_count: report.info_count },
+    inspect: inspectMeta,
+    ran_at: nowIso(),
+  }, null, 2)}\n`);
+
+  const findingsSummary = findings
+    .slice()
+    .sort((a, b) => {
+      const sev = (SEVERITY_ORDER[a.severity] ?? 3) - (SEVERITY_ORDER[b.severity] ?? 3);
+      if (sev !== 0) return sev;
+      return (SOURCE_ORDER[a.source] ?? 2) - (SOURCE_ORDER[b.source] ?? 2);
+    })
+    .slice(0, 10);
+
+  return {
+    off_rails: true,
+    compose_dir: root,
+    lint_status: lintStatus,
+    error_count: errorCount,
+    warning_count: warningCount,
+    info_count: infoCount,
+    qc_error_count: qc.error_count,
+    qc_warning_count: qc.warning_count,
+    findings_summary: findingsSummary,
+    report_path: reportPath,
+  };
+}
+
 async function lintComposition(args) {
   const id = assertSafeProjectId(args && args.project_id);
+  // Off-rails escape-hatch QC: lint an arbitrary work/ composition dir with the
+  // same QC (caption floor + layout/safe-band inspect) and no FSM coupling.
+  if (args && typeof args.compose_dir === "string" && args.compose_dir.trim() !== "") {
+    return lintArbitraryDir(id, args.compose_dir.trim());
+  }
   const composeRoot = composeDir(id);
 
   // Read state outside the lock — the lint binary takes seconds; do its work
@@ -187,20 +393,64 @@ async function lintComposition(args) {
     storyboard = null;
   }
   if (storyboard && (typeof storyboard !== "object" || Array.isArray(storyboard))) storyboard = null;
-  // Fan-out: scope the QC re-run to the short this composition implements
-  // (stamped at save time) — otherwise the gate-feeding lint would silently
-  // lose scene-coverage/master-duration on a shorts[] storyboard.
+  // Fan-out / segmented render: scope the QC re-run to the short or render
+  // segment this composition implements (stamped at save time) — otherwise
+  // the gate-feeding lint would silently lose scene-coverage/master-duration
+  // on a shorts[] storyboard or a chunked long-form plan.
   const activeShortId = typeof composition.short_id === "string" && composition.short_id !== ""
     ? composition.short_id
     : null;
+  const stampedSegmentId = typeof composition.segment_id === "string" && composition.segment_id !== ""
+    ? composition.segment_id
+    : null;
+  const planSegment = stampedSegmentId ? planSegmentById(state, stampedSegmentId) : null;
+  const activeSegment = planSegment
+    ? { segment_id: planSegment.segment_id, scene_ids: planSegment.scene_ids }
+    : (stampedSegmentId ? { segment_id: stampedSegmentId, scene_ids: [] } : null); // unresolved -> QC warns
   const qc = runCompositionQc({
     files: qcFiles,
     storyboard,
     sourceLinks: resolveSourceLinks(id),
     sceneClipLinks: resolveSceneClipLinks(id),
+    layoutLinks: resolveLayoutLinks(id),
     checkTargetsOnDisk: true,
     activeShortId,
+    activeSegment,
   });
+
+  // Layout / legibility QC (v3.3): render a few sample frames via `hyperframes
+  // inspect` and fold text/container/canvas overflow into the findings as
+  // ADVISORY findings (warnings for box overflow, info for off-canvas) — never
+  // errors, so the COMPOSE->PREVIEW gate (errors only) is unchanged. Gated to
+  // scopes that actually carry captions/typed overlays (nothing geometric to
+  // measure otherwise) unless VOB_LAYOUT_QC forces it; fully non-fatal — a
+  // timeout/crash/unparse degrades to one advisory note and the lint stands.
+  let inspectFindings = [];
+  let inspectMeta = { ran: false, skipped_reason: "no_captions_or_overlays" };
+  const layoutMode = layoutQcMode();
+  if (layoutMode === "off") {
+    inspectMeta = { ran: false, skipped_reason: "disabled" };
+  } else if (layoutMode === "always" || shouldRunLayoutQc(storyboard, { activeShortId, activeSegment })) {
+    try {
+      const ins = await runInspect({ composeRoot });
+      if (ins.timed_out) {
+        inspectFindings = [layoutAdvisory("vob/layout_qc_skipped", "hyperframes inspect timed out — caption/overlay legibility not verified this run")];
+        inspectMeta = { ran: false, skipped_reason: "timeout" };
+      } else {
+        const inspectReport = parseInspectReport(ins.stdout);
+        if (!inspectReport.ok) {
+          inspectFindings = [layoutAdvisory("vob/layout_qc_skipped", `hyperframes inspect output not parseable — legibility not verified (${inspectReport.parse_error || "unknown"})`)];
+          inspectMeta = { ran: false, skipped_reason: "unparseable" };
+        } else {
+          inspectFindings = mapInspectIssues(inspectReport, { storyboard, activeShortId, activeSegment });
+          inspectMeta = { ran: true, samples: inspectReport.sample_count, issue_count: inspectReport.issue_count };
+        }
+      }
+    } catch (err) {
+      inspectFindings = [layoutAdvisory("vob/layout_qc_skipped", `layout QC did not run — ${err && err.message ? err.message : String(err)}`)];
+      inspectMeta = { ran: false, skipped_reason: "error" };
+    }
+  }
 
   // Dedupe: vob QC deliberately pre-empts a few hyperframes rules — drop the
   // hyperframes copy of any defect an equivalent vob finding already reports,
@@ -212,15 +462,23 @@ async function lintComposition(args) {
   for (const f of hfDropped) {
     if (f.severity in droppedBySeverity) droppedBySeverity[f.severity] += 1;
   }
-  const findings = [...qc.findings, ...hfFindings]; // vob findings first (more actionable)
+  // vob QC findings first (most actionable), then the advisory inspect overflow
+  // findings, then the (deduped) hyperframes findings.
+  const findings = [...qc.findings, ...inspectFindings, ...hfFindings];
+  let inspectWarnings = 0;
+  let inspectInfo = 0;
+  for (const f of inspectFindings) {
+    if (f.severity === "warning") inspectWarnings += 1;
+    else if (f.severity === "info") inspectInfo += 1;
+  }
   const errorCount = Math.max(0, report.error_count - droppedBySeverity.error) + qc.error_count;
-  const warningCount = Math.max(0, report.warning_count - droppedBySeverity.warning) + qc.warning_count;
-  const infoCount = Math.max(0, report.info_count - droppedBySeverity.info);
+  const warningCount = Math.max(0, report.warning_count - droppedBySeverity.warning) + qc.warning_count + inspectWarnings;
+  const infoCount = Math.max(0, report.info_count - droppedBySeverity.info) + inspectInfo;
   const lintStatus = errorCount > 0 ? "errors" : warningCount > 0 ? "warnings_only" : "clean";
 
   const reportPath = path.join(composeRoot, "lint-report.json");
   const reportBody = `${JSON.stringify({
-    report_version: 2, // absent = v1 (pre-QC-merge)
+    report_version: 3, // 3 = + layout/legibility inspect fold-in; 2 = QC-merge; absent = v1
     lint_status: lintStatus,
     error_count: errorCount,
     warning_count: warningCount,
@@ -228,6 +486,7 @@ async function lintComposition(args) {
     findings,
     qc: { error_count: qc.error_count, warning_count: qc.warning_count },
     hyperframes: { error_count: report.error_count, warning_count: report.warning_count, info_count: report.info_count },
+    inspect: inspectMeta, // { ran, samples?, issue_count? } | { ran:false, skipped_reason }
     deduped_hyperframes_findings: hfDropped.length,
     raw: report.raw,
     exit_code: result.exit_code,
@@ -310,11 +569,12 @@ async function lintComposition(args) {
 
 module.exports = Object.freeze({
   name: "vob_lint_composition",
-  description: "Run hyperframes lint plus the engine's static QC over compose/ and merge both into one findings report (compose/lint-report.json; findings carry source:'vob'|'hyperframes'). Sets composition.lint_status — errors block COMPOSE->PREVIEW, warnings are accept-or-fix. Returns merged counts + first 10 findings + report_path.",
+  description: "Run hyperframes lint plus the engine's static QC over compose/ and merge both into one findings report (compose/lint-report.json; findings carry source:'vob'|'hyperframes'). Sets composition.lint_status — errors block COMPOSE->PREVIEW, warnings are accept-or-fix. Returns merged counts + first 10 findings + report_path. OPTIONAL compose_dir: lint an ARBITRARY hyperframes composition directory (must be under the escape-hatch scratch dir <session>/work/) WITHOUT touching FSM state — gives off-rails work the same QC (the caption font-size floor + hyperframes-inspect layout/safe-band overflow); the report is written into that dir and {off_rails:true} is returned.",
   inputSchema: {
     type: "object",
     properties: {
       project_id: { type: "string" },
+      compose_dir: { type: "string", description: "Optional: lint this composition directory (must be under <session>/work/) instead of compose/. Off-rails escape-hatch QC — no FSM state is read or written." },
     },
     required: ["project_id"],
   },

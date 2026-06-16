@@ -55,6 +55,23 @@ function countHookTagged(arollPool, brollIndex) {
     + clips.filter((c) => c && c.hook_candidate === true).length;
 }
 
+// v3.2 P3 quality notes (never gates, like visual_coverage). Counted across BOTH
+// pools: entries that carry non-empty content_tags, and entries with on-screen
+// text the inspector read off the frame.
+function poolEntries(arollPool, brollIndex) {
+  const segs = arollPool && Array.isArray(arollPool.segments) ? arollPool.segments : [];
+  const clips = brollIndex && Array.isArray(brollIndex.clips) ? brollIndex.clips : [];
+  return [...segs, ...clips];
+}
+function countContentTagged(arollPool, brollIndex) {
+  return poolEntries(arollPool, brollIndex)
+    .filter((e) => e && Array.isArray(e.content_tags) && e.content_tags.length > 0).length;
+}
+function countOnScreenText(arollPool, brollIndex) {
+  return poolEntries(arollPool, brollIndex)
+    .filter((e) => e && typeof e.on_screen_text === "string" && e.on_screen_text.trim() !== "").length;
+}
+
 // The inspector subagent's single write. Validates the three classification
 // pools against inspect/segments.json (the authoritative segment list), then
 // persists inspect/{aroll_pool,broll_index,review}.json and records pool paths
@@ -66,6 +83,7 @@ function saveClassification(args) {
   const arollPool = args && args.aroll_pool;
   const brollIndex = args && args.broll_index;
   const review = args && args.review;
+  const fileRoles = args && args.file_roles; // optional (v3.2 P3)
 
   const state = readSessionStateStrict(id);
   if (state.phase !== "INSPECT") {
@@ -92,7 +110,9 @@ function saveClassification(args) {
     );
   }
 
-  const verdict = validateClassification({ aroll_pool: arollPool, broll_index: brollIndex, review }, segmentsDoc);
+  const payload = { aroll_pool: arollPool, broll_index: brollIndex, review };
+  if (fileRoles !== undefined) payload.file_roles = fileRoles;
+  const verdict = validateClassification(payload, segmentsDoc);
   if (!verdict.ok) {
     throw new ToolError(
       ERROR_CODES.INVALID_ARGUMENTS,
@@ -147,6 +167,11 @@ function saveClassification(args) {
         broll_total: brollCount,
       },
       hook_tagged_count: countHookTagged(arollPool, brollIndex),
+      // v3.2 P3 — richer-tagging coverage notes + the multi-file role map.
+      content_tagged_count: countContentTagged(arollPool, brollIndex),
+      on_screen_text_count: countOnScreenText(arollPool, brollIndex),
+      file_role_count: Array.isArray(fileRoles) ? fileRoles.length : 0,
+      file_roles: Array.isArray(fileRoles) ? fileRoles : [],
       classified_at: ts,
     };
 
@@ -175,7 +200,7 @@ function saveClassification(args) {
 
 module.exports = Object.freeze({
   name: "vob_save_classification",
-  description: "Persist the inspector's three classification pools validated against inspect/segments.json (hallucinated {file_index,segment_index} refs are rejected): aroll_pool (take_group/is_best_take/hook_candidate), broll_index (description/tags/has_motion/has_usable_audio/hook_candidate), review. Entries should carry the structured visual fields shot_type, subject_position, framing_ok_for_vertical — the return's visual_coverage reports how many do. Requires phase INSPECT after vob_inspect_source. Inspector's only write tool.",
+  description: "Persist the inspector's three classification pools validated against inspect/segments.json (hallucinated {file_index,segment_index} refs are rejected): aroll_pool (take_group/is_best_take/hook_candidate/content_description/eyes_to_camera), broll_index (description/tags/has_motion/has_usable_audio/hook_candidate/b_roll_role), review, plus an optional top-level file_roles[] map ({file_index, role: primary_aroll|broll|narration|mixed, summary}) for multi-file drops. Entries should carry the structured visual fields shot_type, subject_position, framing_ok_for_vertical, and the richer camera_movement/setting/content_tags/on_screen_text/action — the return's visual_coverage + content_tagged_count/on_screen_text_count/file_role_count report coverage (quality notes, never gates). Requires phase INSPECT after vob_inspect_source. Inspector's only write tool.",
   inputSchema: {
     type: "object",
     properties: {
@@ -189,6 +214,9 @@ module.exports = Object.freeze({
       aroll_pool: { type: "object", additionalProperties: true },
       broll_index: { type: "object", additionalProperties: true },
       review: { type: "object", additionalProperties: true },
+      // Optional (v3.2 P3) top-level per-file role map. Free-form entries —
+      // shape ({file_index, role, summary}) validated by the handler.
+      file_roles: { type: "array", items: { type: "object", additionalProperties: true } },
     },
     required: ["project_id", "aroll_pool", "broll_index", "review"],
   },

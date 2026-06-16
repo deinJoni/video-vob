@@ -31,11 +31,14 @@ The orchestrator's spawn prompt is DATA-ONLY: a field list of paths and values, 
 - `project_id`, `session_dir` — the session directory is the hyperframes project root; your files land under its `compose/`, written by the MCP server.
 - `storyboard_path`, `manifest_path` — the cut plan and per-file ffprobe facts.
 - `short_id` (when present) — the storyboard is a multi-short fan-out (`shorts[]`): compose ONLY the short with this id. Use ITS `scenes` as the timeline, ITS `total_target_duration_seconds` for the master `data-duration`, and reference ONLY its clips (`./source/<scene_id>-<clip_index>.mp4` for its scene_ids — other shorts' clips also resolve in `./source/`, but referencing them warns `vob/cross_short_clip_ref`). The video-element budget applies to this short alone. Pass the same `short_id` to `vob_save_composition` — the save REQUIRES it on a fan-out storyboard.
-- `brief_path` — the brief's **Design language** section is BINDING: implement its fonts, palette, caption look, and motion intensity verbatim. You only derive look from tone when the brief predates v2 and has no Design language section.
+- `segment_id` / `segment_scene_ids` (when present) — the project renders as N SEGMENTS of one video (long-form chunking): compose ONLY the named render segment. Your timeline is exactly `segment_scene_ids` in storyboard order, **re-based to 0** (the first segment scene starts at `data-start="0"` regardless of where it sits in the document); the master `data-duration` is the sum of THOSE scenes' targets. Reference only those scenes' clips (`vob/cross_segment_clip_ref` warns otherwise — cross-segment footage duplicates content at assembly). Render segments audio-light per the normal audio rules; segment boundaries are joined at assembly (a `fade` transition_out becomes a dip-to-black there — do NOT bake boundary fades yourself). Pass the same `segment_id` to `vob_save_composition` — the save REQUIRES it on a segmented plan. Implement any typed overlays planned on the segment's scenes.
+- `brief_path` — the brief's **Design language** section is BINDING: implement its fonts, palette, caption look, and motion intensity verbatim. You only derive look from tone when the brief predates v2 and has no Design language section. (Off-brief type warns `vob/design_font_mismatch` — the storyboard's `target.design.typography` families are the kit you must use, loaded via `./fonts.css`.)
 - `intent.target_platform` + `intent.platform_profile` (width/height/fps/safe_top_px/safe_bottom_px) — your output dimensions and safe bands. Use `width`/`height` for the Rule of Three; do not parse the platform string. `intent.caption_defaults` (anchor/offset_px/min_font_px/max_words_per_line, when present) is the platform's caption geometry.
 - `intent.captions_style`, `intent.audio_treatment`, `intent.music_vo` — the user's own words/choices; they reach you directly now; honor them over any inference from tone. `intent.tone` remains the fallback signal.
 - `transcript_path` (when present) — word-level `{ text, start, end }` source-seconds entries; your caption-timing source when the storyboard has no `caption_segments`.
 - `clean_speech_path` — reference only (caption timing sanity); the storyboard already snapped cuts to it.
+- `transcript_aligned` (`true`/`false`) — whether the transcript is forced-aligned (real per-word timing). When `false`, word-level caption animations (`word-by-word`/`karaoke`) are unreliable — DOWNGRADE them to chunk-level `pop` (see Caption components / kit).
+- `per_clip_transcripts` (when present) — comma-joined `inspect/transcripts/file_<i>.json` per-file transcripts for the active scenes' clips; the per-word `{ text, start, end }` source you wire into a `karaoke`/`word-by-word` component. Passed only when the active scope plans a word-level caption animation; `none` otherwise.
 - `fonts` — `./fonts.css` + `./fonts/` are placed in `compose/` on every save (kit table under Craft).
 - `style_source` / `style_source_compose` / `style_source_brief` — set when the project was started `--like` a prior one. Read the source `compose/index.html` (+ CSS) and brief FIRST; extract the *visual language* — fonts/weights/case, palette, caption styling, animation eases, layering — and reproduce it here. The reference governs the LOOK only: structure, cuts, and timings come from THIS storyboard; never reference the source's footage or copy its timings. If the source never reached COMPOSE, derive the look from the brief as usual.
 - `prior_composition_files`, `revision_notes`, `lint_report_path` — revision passes only (see Revision passes).
@@ -44,7 +47,7 @@ The orchestrator's spawn prompt is DATA-ONLY: a field list of paths and values, 
 
 ## Your output
 
-Call `vob_vob_save_composition { project_id, files }` — plus `short_id` when your spawn data carries one — with the COMPLETE file map every time (saves are fully replacing). `files` is a map of relative-path → file-content strings, written atomically inside the session's `compose/` directory:
+Call `vob_vob_save_composition { project_id, files }` — plus `short_id` OR `segment_id` when your spawn data carries one — with the COMPLETE file map every time (saves are fully replacing). `files` is a map of relative-path → file-content strings, written atomically inside the session's `compose/` directory:
 
 ```json
 {
@@ -82,12 +85,16 @@ You are authoring HTML that headless Chrome renders to MP4 under hyperframes' de
 </div>
 ```
 
+**Frame rate.** hyperframes renders at 30fps unless the master root declares `data-fps`. When the
+storyboard's `target.fps` is set and ≠30 (cinematic plans carry `24`), add `data-fps="<fps>"` to
+the master root — QC warns `vob/fps_mismatch` otherwise.
+
 **Timing lives ON the element — the clip class is for non-media only.** `data-start`/`data-duration` (master-timeline seconds) plus `data-track-index` schedule an element. Two cases:
 
 - **`<video>`/`<audio>` carry their timing attributes DIRECTLY.** hyperframes can only own playback for timed media — a `<video src>` without `data-start` is the `media_missing_data_start` lint **error**. Media needs NO `clip` class (the runtime schedules media by its own timing attrs; a `clip` token on it is allowed but does nothing). Never wrap a video in a timed `<div>` *instead of* timing the video itself — the wrapper does not time the media inside it.
 - **Every timed NON-media element** (overlay/caption/title-card `<div>`s) MUST have `class="clip"` (exact token) plus its timing attributes. Without the token it renders static for the entire composition — the `timed_element_missing_clip_class` warning.
 
-**Media elements.** Every `<video>`/`<audio>` carries a stable, scene-anchored `id` (`s001-video`, `narration-spine`; never reuse ids — `media_missing_id` otherwise). Trim attributes: `data-media-start` = where playback begins INSIDE the file — `0` for scene clips (pre-trimmed), non-zero only on a fallback original-source symlink; `data-playback-start` = offset inside the parent clip (usually `0`). Never set `currentTime`, never call `.play()`/`.pause()` from JS (`imperative_media_control`) — hyperframes owns playback position.
+**Media elements.** Every `<video>`/`<audio>` carries a stable, scene-anchored `id` (`s001-video`, `narration-spine`; never reuse ids — `media_missing_id` otherwise). Trim attributes: `data-media-start` = where playback begins INSIDE the file — `0` for scene clips (pre-trimmed), non-zero only on a fallback original-source symlink; `data-playback-start` = offset inside the parent clip (usually `0`). Never set `currentTime`, never call `.play()`/`.pause()` from JS (`imperative_media_control`) — hyperframes owns playback position. A clip with a per-clip `speed` is ALREADY cut to its sped (shorter/longer) length on disk by the materializer — there is NO playback-rate attribute and you do nothing special: `data-media-start` stays `0` and `data-duration` is the clip's actual (effective) file length, which equals the scene's `target_duration_seconds` share (the storyboarder authored scene targets in OUTPUT time, so your `data-duration` math is unchanged).
 
 **Audio vs muted.** `<video muted>` is visual-only — the default for every clip whose audio you don't want. A clip that should contribute audio (dialogue, native sound) is `<video data-has-audio="true">`. Pick exactly one per video — an unmarked `<video>` is the `video_missing_muted` lint error. Music/VO is a separate `<audio>` clip on its own track. When `intent.audio_treatment` is `discard_audio`, scene clips were pre-cut with no audio stream — `data-has-audio="true"` is meaningless.
 
@@ -122,9 +129,81 @@ When the storyboard marks `source_clips[]` with `role` and carries `broll_placem
 
 Rules for both: B-roll is always `<video muted>` (materialized with no audio stream — `data-has-audio="true"` on it is meaningless). Never overlap two clips with identical `data-start`+`data-duration` on the same track (`overlapping_clips_same_track`) — spine and overlays live on *different* tracks. Honor `broll_placements[]` for cutaway timing when present — `narration_span` is in SOURCE seconds (the same time base as the a_roll clip's `in_seconds`/`out_seconds`, NOT scene-relative), so convert to master time: cutaway `data-start` = scene `data-start` + (`span.start_seconds` − the a_roll clip's `in_seconds`). It is otherwise advisory: the clips themselves are the `role:"b_roll"` `source_clips`, referenced like any scene clip.
 
+### Subject compositing (`render_mode: "subject"`, v3.3)
+
+A `broll_placements[]` entry with `render_mode: "subject"` is a clip MATTED off its background — the engine pre-mattes it at COMPOSE entry to an alpha `./source/<scene_id>-<clip_index>.webm` (the subject's `.mp4` is the AUDIO; the matte is visual-only) — and composited over its `backdrop` (a `design_token` color/gradient, a `clip_ref`, or `scene_base` — never synthesized). Two realizations (full HTML recipe in `references/lint-rules.md` → *Subject compositing*): **(a)** DEFAULT — the matte as an alpha `<video>` over an HTML/CSS backdrop, with the subject audio on a sibling `<audio class="clip">` from the `.mp4`; **(b)** low-RAM FALLBACK — an ffmpeg composite (backdrop + matte + subject audio) built under `<session>/work/` and recorded with `vob_import_deliverable`. If the matte is missing (`vob_read_state_summary.subject_mattes.{skipped,unavailable,failed}` > 0), fall back to a rectangular `pip` on the same clip — subject mode is ADVISORY at QC (no hard binding), so the fallback never fails QC. Prefer a subject spine on `podcast`/`cinematic` when one speaker dominates the frame.
+
+## Typed overlay layer (schema 1.2) — planned overlays are BINDING
+
+When `scene.overlays[]` entries are OBJECTS (`{id, type, start_seconds, end_seconds, track,
+content, position, style, motion}`), each one is a planned graphic you MUST implement —
+composition QC errors `vob/overlay_missing_element` for any planned overlay with no element.
+The contract:
+
+- **Stamp the binding id.** The element implementing overlay `lt-1` carries
+  `data-vob-overlay-id="lt-1"` (one element per overlay id; ids you invent that the plan doesn't
+  declare warn `vob/unplanned_overlay_element` — don't author overlays the plan didn't ask for,
+  same as ever).
+- **Re-time scene-relative → master.** Overlay `start_seconds`/`end_seconds` are relative to the
+  SCENE: element `data-start` = scene start + `overlay.start_seconds`, `data-duration` =
+  `end_seconds − start_seconds`. An untimed overlay element warns
+  `vob/overlay_element_untimed`.
+- **Track ≥ 1** (`vob/overlay_track_zero` warns — track 0 is the video spine). Honor the planned
+  `track`; captions stay on top.
+- **Non-media overlays are `class="clip"` divs**; `pip` is a real `<video muted>` (it counts
+  against the video budget — the plan already accounted for it; never add unplanned pips).
+- **Honor `content`/`position`/`style`/`motion` semantically:** content keys are the text/values
+  to render; `position.anchor` + `offset_px` place it (keep bottom anchors at or above the
+  profile's `safe_bottom_px`); `style.font` names a kit family; `motion.in`/`out` map to your
+  entrance/exit patterns at the pacing-appropriate durations, and the overlay must remain
+  readable for `dwell_min_s`.
+- **Per-type HTML/CSS patterns** live in `references/lint-rules.md` §Overlay vocabulary — read it
+  when implementing a type for the first time in an invocation, or on any `vob/overlay_*` code.
+- `kinetic_caption` is the word-sync pattern: chunk the transcript words inside the scene's clip
+  window (3–5 words per chunk, one `class="clip"` div each, sequential `data-start`s) — the same
+  craft as caption_segments, driven from `transcript_path`.
+
+## Caption components / kit
+
+A vendored caption-component **kit** ships in `compose/captions/` — placed there by the MCP server
+on every save, a read-only sibling of `./fonts.css` and `./source/` (you never author or copy it).
+It carries `./captions/manifest.json` plus 15 self-contained per-component REFERENCE compositions
+at `./captions/<name>/<name>.html`. ADAPT from them; never copy one verbatim.
+
+- **Read `./captions/manifest.json` first.** Its `animations` map names a default component per
+  caption animation — `pop` → `caption-highlight`, `word-by-word` → `caption-kinetic-slam`,
+  `karaoke` → `caption-pill-karaoke` (each with `alternates[]`). Its `components` map describes each
+  one: `file`, `suited_for[]`, `word_level`/`consumes_transcript` (true for karaoke + word-by-word),
+  `font_family` + `font_in_kit`, and `external` flags (`gsap_cdn`, `google_fonts_link`).
+- **Pick a component per `caption_segment`.** Read the segment's `animation` (`pop`|`word-by-word`|
+  `karaoke`) → take the manifest default for that animation (or an alternate when the segment's
+  `style_ref` / the look named in `target.design` points at one). Open the chosen reference HTML and
+  reproduce its **technique** (class names, structure, keyframes / GSAP timeline) — not its literal
+  bytes.
+- **Author the markup.** One timed `class="clip"` chunk `<div>` per caption chunk, each with its own
+  `data-start`/`data-duration` (re-timed source→master) on track 3. Stamp `data-vob-caption-id="<id>"`
+  on the implementing chunk for any `caption_segment` that carries an authored `id` — an `exact:true`
+  segment MUST be bound (QC errors `vob/caption_missing_element` otherwise). See the caption-binding
+  bullet under Craft and `references/lint-rules.md` §Caption binding / §Caption components.
+- **REQUIRED ADAPTATIONS** (the references are not render-ready as-is):
+  1. **Fonts.** A reference loads its font from a `fonts.googleapis.com` `<link>` — that trips the
+     hyperframes `google_fonts_import` lint. DROP it: load the vendored `./fonts.css` kit (already in
+     `<head>`) and reference the family by name. When the component's `font_in_kit` is `false`
+     (`caption-emoji-pop`=Gabarito; `caption-glitch-rgb`/`caption-matrix-decode`=Space Grotesk;
+     `caption-parallax-layers`=Instrument Serif), SUBSTITUTE the nearest kit family (e.g. Hanken
+     Grotesk or Space Mono for the grotesques, EB Garamond / Playfair Display for the serif).
+  2. **GSAP.** Keep any GSAP timeline registered at `window.__timelines["<composition-id>"]` with
+     `{ paused: true }` (hyperframes seeks it; never play it yourself).
+  3. **Binding.** Keep the `data-vob-caption-id` stamp from the rule above.
+- **NOT-ALIGNED fallback.** When `transcript_aligned` is `false` (or absent), word timing is only
+  approximate — a `word-by-word`/`karaoke` component drifts. DOWNGRADE those segments to chunk-level
+  `pop` (mirrors the engine's `PLAN_CAPTION_KARAOKE_UNALIGNED` plan-lint warning). Only when
+  `transcript_aligned` is `true` AND `per_clip_transcripts` is present do you wire a word-level
+  component from the per-word `{ text, start, end }` entries in those files.
+
 ## Video-element budget
 
-**≤6 `<video>` elements total** (QC warns above 6, errors above 8): the 8GB host's headless Chrome dies on video-element-heavy compositions. One storyboard clip = one element; never add `<video>` elements the storyboard didn't plan. Concatenated spine clips play as ONE element each — never split a spine clip into fragments around a cutaway (lay B-roll OVER it on a higher track).
+**≤6 `<video>` elements total** (QC warns above 6, errors above 8): the 8GB host's headless Chrome dies on video-element-heavy compositions. One storyboard clip = one element — **plus one per planned `pip` overlay**; never add `<video>` elements the storyboard didn't plan. In fan-out / segmented mode the budget applies to the active short/segment alone. Concatenated spine clips play as ONE element each — never split a spine clip into fragments around a cutaway (lay B-roll OVER it on a higher track).
 
 ## Animation
 
@@ -164,7 +243,15 @@ scene[2].data-start = scene[0].target_duration_seconds + scene[1].target_duratio
 ...
 ```
 
-The master root's `data-duration` is the sum of all `target_duration_seconds` (equivalently, `storyboard.total_target_duration_seconds`). Honor optional scene fields when present: re-time `caption_segments` from source to composition seconds; `transition_in`/`transition_out` is `"cut"` (default) or `"fade"` — implement `fade` as a short opacity ramp on the scene clip.
+The master root's `data-duration` is the sum of all `target_duration_seconds` (equivalently, `storyboard.total_target_duration_seconds`). Honor optional scene fields when present: re-time `caption_segments` from source to composition seconds; realize **`transition_in`** as a scene transition (see *Scene transitions* below). `transition_out` is **seam-only** — at a render-segment boundary a `"fade"` becomes a dip-to-black at assembly (do NOT bake a boundary fade yourself); inside one composition, ignore `transition_out` and use the next scene's `transition_in`.
+
+### Scene transitions (v3.3)
+
+`scene.transition_in` is the transition INTO that scene — the rich, intra-composition layer. Realize it with **CSS `@keyframes`** on the incoming scene: hyperframes' native `css` adapter scrubs a paused CSS animation deterministically to each rendered frame (primitive #1 above — **no GSAP needed**, and GSAP isn't loaded at render). Per-family recipes (crossfade · push/slide · whip_pan · zoom_punch · iris) live in `lint-rules.md` — read it when you plan a non-cut transition.
+
+- **Only from the spawn's `transition_vocabulary`.** Your spawn lists the transition types this format offers. A `transition_in` outside that list — or a shader type when `shader_transitions_allowed:false` — falls back to a hard cut; substitute the nearest CSS transition (`glitch`→`whip_pan`, `cross_warp`→`crossfade`). `cut` (the default/absent value) is a hard boundary: add nothing.
+- **Duration-exact: NEVER add time.** A transition paints over frames the scenes already own — the outgoing scene's tail and the incoming scene's head. The master `data-duration` and every scene's `target_duration_seconds` are unchanged. For a true crossfade (the outgoing must stay visible), start the incoming scene's window `dur` EARLIER on a higher track so it overlaps the outgoing's tail — the incoming still ends at its natural time, so the total is unchanged. Lengthening or shortening the timeline poisons drift verification.
+- **Mark it for QC.** Stamp the transition element with `data-vob-transition="<type>"` and `data-vob-transition-scene="<incoming scene_id>"`. QC's `vob/transition_not_realized` is ADVISORY (it never blocks), but the marker lets it confirm you realized the plan. Transitions are advisory — realize the intent your way; the marker is a courtesy, not a hard binding like a typed overlay's `data-vob-overlay-id`.
 
 ### Worked example: a hook scene
 
@@ -247,6 +334,12 @@ HTML (scene starts at t=10.0). The A-roll plays the full 6s with audio; the mute
 ```
 Note: only ONE A-roll element spans the scene (audio unbroken); the B-roll is a separate, shorter, muted element on track 1. Do not split the A-roll into "before/after" halves around the cutaway — that would interrupt the voice.
 
+## Layout scenes (split-screen / multi-crop)
+
+A scene with a `scene.layout` (a 2-up speaker stack, side-by-side, 2×2 grid, or PiP) is **pre-composited into ONE clip by the engine at COMPOSE entry**. Reference it as a SINGLE `<video src="./source/<scene_id>-layout.mp4">` — exactly like a normal scene clip (`data-media-start="0"`, `data-duration` = the scene's `target_duration_seconds`, full-frame `object-fit: cover`). Do NOT add one `<video>` per cell — that's the whole point (one element, not N). The composite already arranges and crops the cells; your job is just to drop it full-frame and lay captions/overlays on top.
+
+Your spawn data carries `read_state_summary.scene_layouts` with `composited_scenes[]` and `fell_back_scenes[]`. **Fallback:** if a layout scene is in `fell_back_scenes` (the composite degraded — a missing/failed ffmpeg pass), the `<scene_id>-layout.mp4` clip won't exist (QC would error `vob/source_ref_target_missing` if you referenced it). For those scenes, render the cells yourself: one `<video src="./source/<scene_id>-<cell.clip_index>.mp4">` per cell, CSS-positioned into its region (e.g. two elements each `width:100%; height:50%; object-fit:cover`, the top one `top:0`, the bottom `top:50%`) on stacked tracks — and keep the audio from the layout's `audio_cell` (the speaker), muting the others. This costs N `<video>` elements (watch the budget), so prefer the composited clip whenever it's available.
+
 ## Dimensions and safe zones
 
 Use `intent.platform_profile.width/height` from your spawn data. Fallback only if absent (legacy spawn): vertical 1080×1920. Safe zones come from the profile: keep critical content out of the top `safe_top_px` and bottom `safe_bottom_px`; captions sit just above the bottom band.
@@ -305,6 +398,7 @@ Tie animation duration to the parent clip's duration: an overlay clip of 2s shou
 - High contrast: white text with either a soft text-shadow (`0 2px 8px rgba(0,0,0,0.65)`) or a translucent rounded rectangle background (`rgba(0,0,0,0.5)`, 12px border-radius, 16px padding).
 - Captions sit just above the profile's `safe_bottom_px` (in your spawn data) — never inside the bottom band (platform UI eats it).
 - Implement the brief's named caption look: **bold-pop** (ALL-CAPS 3–4-word chunks, 64–72px, heavy shadow or solid pill, pops per chunk), **clean-pill** (mixed case, 56px, rgba(0,0,0,0.55) pill, 12px radius), **minimal-lower-third** (mixed case, 56–60px, soft shadow, no pill, anchored low). When the storyboard carries `caption_segments`, use them as your chunking (re-time source→composition seconds); otherwise chunk 3–5 words yourself from the transcript, each chunk its own `class="clip"`.
+- **Bind planned captions.** When a `caption_segment` carries an `id` (or `exact:true`), the implementing chunk div MUST carry `data-vob-caption-id="<id>"` plus `class="clip"` and its timing — an `exact:true` caption is a binding contract (QC errors `vob/caption_missing_element` if it's missing; use its text/timing verbatim). Captions WITHOUT an `id` stay yours to re-chunk/re-time freely (no binding). One element per id; never stamp an id the plan didn't declare (`vob/unplanned_caption_element`). See `references/lint-rules.md` §Caption binding, and pick the chunk's animation/styling from the kit per **Caption components / kit** above (`animation` → manifest component, the `./fonts.css` substitution, the not-aligned downgrade).
 
 **Layout patterns (vertical hero case).**
 - Hook: full-bleed video, large title in upper third (y ≈ 280–500), captions disabled.
@@ -320,7 +414,7 @@ Tie animation duration to the parent clip's duration: an overlay clip of 2s shou
 - Do NOT reference source timecodes beyond `manifest.files[i].duration_seconds`. Validate every storyboard `source_clips[i].out_seconds` against the manifest.
 - Do NOT stack `backdrop-filter: blur(...)` on multiple layers — two or three stacked filters tank render speed by 5–10x.
 - Do NOT author overlays or captions the storyboard didn't ask for — if `overlays` is empty and `captions` is null, render the video clean.
-- Do NOT add transitions (crossfades, wipes) between scenes unless a scene's `transition_in`/`transition_out` says `"fade"` or the storyboard `notes` call for them. Hard cuts are the default.
+- Realize `scene.transition_in` from the spawn's `transition_vocabulary` as a CSS `@keyframes` transition (see *Scene transitions*) — a hard `cut` (the default) adds nothing; `transition_out` stays seam-only (a dip at assembly). Do NOT invent transitions a scene's `transition_in` didn't ask for.
 - Do NOT load external resources at render time (no font CDNs, no remote images, no scripts). Inline or bundle everything.
 - Do NOT use `position: fixed` on timed elements — it breaks clip extraction. Use `position: absolute` inside a positioned parent.
 - Do NOT emit `<script>` tags that mutate the DOM after `DOMContentLoaded`. The framework snapshots the tree once. Build the tree in HTML.
@@ -341,7 +435,7 @@ If the spawn prompt includes prior composition paths and revision notes:
 
 - The only mutating tool you call is `vob_save_composition` — once, then re-save ONLY while the verdict carries lint ERRORS (**≤3 saves per invocation**).
 - Do not call any other `vob_*` mutating tool (`vob_lint_composition`, `vob_render_preview`, `vob_confirm_*`, `vob_transition_phase`, `vob_save_brief`, `vob_save_storyboard`, ...). They are not on your allowlist; attempting will fail.
-- Do not write any file directly (no `write`, no `edit`, no `bash`). The MCP server owns all artifact writes.
+- Do not write any file directly (no `write`, no `edit`, no `patch`, no `bash`). The MCP server owns all artifact writes.
 - `index.html` is required in the file map. The master root inside it must satisfy the Rule of Three plus `data-start` and `data-duration`.
 - Timing attrs (`data-start`/`data-duration`/`data-track-index`) go directly ON `<video>`/`<audio>`; every timed NON-media element MUST have `class="clip"` plus its timing attrs.
 - Scene clips: `./source/<scene_id>-<clip_index>.mp4`, `data-media-start="0"`, never absolute paths.

@@ -11,7 +11,8 @@
 const fs = require("fs");
 const path = require("path");
 
-const { findTimeline, storyboardHasShorts } = require("./storyboard-schema.js");
+const { findTimeline, storyboardHasShorts, typedOverlaysOf, captionSegmentsOf } = require("./storyboard-schema.js");
+const { transitionTypeOf } = require("./video-types.js");
 const hostProfile = require("./host-profile.js");
 
 // The <video>-element warn budget / hard cap are host-tunable (a big server
@@ -39,6 +40,7 @@ const OPEN_TAG_RE = /<([a-zA-Z][a-zA-Z0-9-]*)((?:"[^"]*"|'[^']*'|[^'">])*)>/g;
 const ATTR_RE = /([a-zA-Z_:][a-zA-Z0-9_:.-]*)\s*(?:=\s*("([^"]*)"|'([^']*)'|[^\s"'>]+))?/g;
 const SOURCE_REF_RE = /^\.\/source\/(.+)$/;
 const FONT_SIZE_PX_RE = /font-size\s*:\s*([0-9]+(?:\.[0-9]+)?)px/i;
+const FONT_FAMILY_RE = /font-family\s*:\s*([^;}{]+)/gi;
 
 function escapeRegExp(s) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -92,18 +94,23 @@ function isAbsoluteSrc(value) {
   return value.startsWith("/") || /^file:/i.test(value) || /^[A-Za-z]:\\/.test(value);
 }
 
-// runCompositionQc({ files, storyboard, sourceLinks, sceneClipLinks, checkTargetsOnDisk, activeShortId })
+// runCompositionQc({ files, storyboard, sourceLinks, sceneClipLinks, checkTargetsOnDisk, activeShortId, activeSegment })
 //   files            [{ relPath, content }] — only .html/.css entries are inspected
 //   storyboard       parsed storyboard.json object | null (null = unreadable/missing)
 //   sourceLinks      resolveSourceLinks(id) tuples (may be [])
 //   sceneClipLinks   resolveSceneClipLinks(id) tuples (may be [])
+//   layoutLinks      resolveLayoutLinks(id) tuples (may be []) — the composited
+//                    <scene_id>-layout.mp4 split-screen clips
 //   checkTargetsOnDisk  fs.existsSync each referenced link target when true
 //   activeShortId    fan-out: the short this composition targets — scopes the
 //                    scene-coverage/master-duration checks to that short's
 //                    scenes and flags refs into OTHER shorts' clips
+//   activeSegment    segmented render: { segment_id, scene_ids } — same scoping
+//                    for the render segment this composition implements
 // => { findings: [{severity, rule, message, file, line, column, source:"vob"}],
-//      error_count, warning_count, expected_source_names, active_short_id }
-function runCompositionQc({ files, storyboard, sourceLinks, sceneClipLinks, checkTargetsOnDisk, activeShortId = null }) {
+//      error_count, warning_count, expected_source_names, active_short_id,
+//      active_segment_id }
+function runCompositionQc({ files, storyboard, sourceLinks, sceneClipLinks, layoutLinks = null, checkTargetsOnDisk, activeShortId = null, activeSegment = null }) {
   const findings = [];
   const fileList = Array.isArray(files)
     ? files.filter((f) => f && typeof f.relPath === "string" && typeof f.content === "string")
@@ -114,10 +121,17 @@ function runCompositionQc({ files, storyboard, sourceLinks, sceneClipLinks, chec
     .map((f) => ({ relPath: f.relPath, content: f.content, tags: extractTags(f.content) }));
 
   const sb = storyboard && typeof storyboard === "object" && !Array.isArray(storyboard) ? storyboard : null;
-  // Storyboard-conformance scope: in fan-out the active short's scenes; the
-  // whole document otherwise. activeSceneIdSet non-null marks fan-out scoping.
+  // Storyboard-conformance scope: the active short's scenes in fan-out, the
+  // active render segment's scenes in segmented mode, the whole document
+  // otherwise. activeSceneIdSet non-null marks scoped mode; scopeKind labels
+  // the cross-reference warning.
   let scenes = [];
   let activeSceneIdSet = null;
+  let scopeKind = null; // "short" | "segment"
+  const segmentScope = activeSegment && typeof activeSegment === "object" && !Array.isArray(activeSegment)
+    && typeof activeSegment.segment_id === "string" && Array.isArray(activeSegment.scene_ids)
+    ? activeSegment
+    : null;
   if (sb !== null) {
     if (storyboardHasShorts(sb)) {
       const timeline = findTimeline(sb, activeShortId);
@@ -126,12 +140,32 @@ function runCompositionQc({ files, storyboard, sourceLinks, sceneClipLinks, chec
         activeSceneIdSet = new Set(
           scenes.map((s) => (s && typeof s.scene_id === "string" ? s.scene_id : null)).filter(Boolean),
         );
+        scopeKind = "short";
       } else {
         findings.push(makeFinding(
           "warning",
           "vob/active_short_unresolved",
           `fan-out storyboard but no matching short for short_id ${activeShortId === null ? "(none)" : `"${activeShortId}"`} — skipped the scoped storyboard-conformance checks (master duration, scene coverage)`,
         ));
+      }
+    } else if (segmentScope !== null) {
+      const allScenes = Array.isArray(sb.scenes) ? sb.scenes : [];
+      const wanted = new Set(segmentScope.scene_ids.filter((id) => typeof id === "string" && id));
+      const scoped = allScenes.filter((s) => s && typeof s.scene_id === "string" && wanted.has(s.scene_id));
+      if (scoped.length === segmentScope.scene_ids.length && scoped.length > 0) {
+        scenes = scoped;
+        activeSceneIdSet = new Set(scoped.map((s) => s.scene_id));
+        scopeKind = "segment";
+      } else {
+        // Plan/storyboard drifted apart (back-edge re-save without COMPOSE
+        // re-entry) — fall back to whole-document checks rather than
+        // mis-scoping against a dead segment.
+        findings.push(makeFinding(
+          "warning",
+          "vob/active_segment_unresolved",
+          `render segment "${segmentScope.segment_id}" no longer matches the storyboard scenes — re-enter COMPOSE to re-derive the render plan; ran whole-document conformance checks instead`,
+        ));
+        scenes = allScenes;
       }
     } else {
       scenes = Array.isArray(sb.scenes) ? sb.scenes : [];
@@ -220,12 +254,25 @@ function runCompositionQc({ files, storyboard, sourceLinks, sceneClipLinks, chec
     if (!link || typeof link.scene_id !== "string" || !Number.isInteger(link.clip_index)) continue;
     clipNames.set(`${link.scene_id}-${link.clip_index}.mp4`, link);
   }
+  // Multi-cell layout composites: "<scene_id>-layout.mp4" -> link tuple. The
+  // composer references the composite as a single ./source/<scene_id>-layout.mp4
+  // <video>; it resolves like a scene clip (disk + cross-scope checks).
+  const layoutNames = new Map();
+  for (const link of (Array.isArray(layoutLinks) ? layoutLinks : [])) {
+    if (!link || typeof link.scene_id !== "string") continue;
+    layoutNames.set(`${link.scene_id}-layout.mp4`, link);
+  }
   // Resolution keeps ALL materialized clips (cross-short refs resolve on disk,
   // so they must not error as unresolved) — but the EXPECTED list handed to
   // the composer is the active short's clips when fan-out scoping is on.
   const expectedClipNameList = activeSceneIdSet
     ? [...clipNames.keys()].filter((n) => activeSceneIdSet.has(clipNames.get(n).scene_id))
     : [...clipNames.keys()];
+  // Same active-scope filter for layout composite names in the suggestion list,
+  // so a fan-out/segmented unresolved-ref doesn't suggest another short's layout.
+  const expectedLayoutNameList = activeSceneIdSet
+    ? [...layoutNames.keys()].filter((n) => activeSceneIdSet.has(layoutNames.get(n).scene_id))
+    : [...layoutNames.keys()];
 
   // --- Media src scan ---------------------------------------------------------
   let videoCount = 0;
@@ -267,10 +314,38 @@ function runCompositionQc({ files, storyboard, sourceLinks, sceneClipLinks, chec
             ));
           }
           if (activeSceneIdSet && !activeSceneIdSet.has(link.scene_id)) {
+            findings.push(scopeKind === "segment"
+              ? makeFinding(
+                "warning",
+                "vob/cross_segment_clip_ref",
+                `src "./source/${name}" (${f.relPath}:${tag.line}) references scene clip ${link.scene_id}-${link.clip_index} belonging to ANOTHER render segment — a segment composition should use only its own scenes' clips (active segment: ${segmentScope.segment_id}); cross-segment footage duplicates content at assembly`,
+                f.relPath,
+                tag.line,
+              )
+              : makeFinding(
+                "warning",
+                "vob/cross_short_clip_ref",
+                `src "./source/${name}" (${f.relPath}:${tag.line}) references scene clip ${link.scene_id}-${link.clip_index} belonging to ANOTHER short — a fan-out composition should use only the active short's clips (active: ${activeShortId})`,
+                f.relPath,
+                tag.line,
+              ));
+          }
+        } else if (layoutNames.has(name)) {
+          const link = layoutNames.get(name);
+          if (checkTargetsOnDisk && typeof link.layout_abs === "string" && !fs.existsSync(link.layout_abs)) {
+            findings.push(makeFinding(
+              "error",
+              "vob/source_ref_target_missing",
+              `src "./source/${name}" (${f.relPath}:${tag.line}) refers to the layout composite for scene "${link.scene_id}" whose file is missing at ${link.layout_abs} — the layout materializer degraded (a malformed/failed composite); render the cells as positioned <video> elements instead, or re-enter COMPOSE`,
+              f.relPath,
+              tag.line,
+            ));
+          }
+          if (activeSceneIdSet && !activeSceneIdSet.has(link.scene_id)) {
             findings.push(makeFinding(
               "warning",
-              "vob/cross_short_clip_ref",
-              `src "./source/${name}" (${f.relPath}:${tag.line}) references scene clip ${link.scene_id}-${link.clip_index} belonging to ANOTHER short — a fan-out composition should use only the active short's clips (active: ${activeShortId})`,
+              scopeKind === "segment" ? "vob/cross_segment_clip_ref" : "vob/cross_short_clip_ref",
+              `src "./source/${name}" (${f.relPath}:${tag.line}) references the layout composite for scene "${link.scene_id}" belonging to ANOTHER ${scopeKind === "segment" ? `render segment (active: ${segmentScope.segment_id})` : `short (active: ${activeShortId})`}`,
               f.relPath,
               tag.line,
             ));
@@ -290,7 +365,7 @@ function runCompositionQc({ files, storyboard, sourceLinks, sceneClipLinks, chec
           // List the legal names (scene clips first — they're what the composer
           // almost always meant; the ACTIVE short's clips in fan-out) so the
           // fix needs no storyboard re-derivation.
-          const expected = [...expectedClipNameList, ...sourceNames.keys()];
+          const expected = [...expectedClipNameList, ...expectedLayoutNameList, ...sourceNames.keys()];
           const preview = expected.slice(0, 6).join(", ");
           const moreCount = expected.length - Math.min(6, expected.length);
           findings.push(makeFinding(
@@ -344,6 +419,27 @@ function runCompositionQc({ files, storyboard, sourceLinks, sceneClipLinks, chec
     }
   }
 
+  // --- fps: storyboard target vs the master root's data-fps -------------------
+  // hyperframes renders at data-fps (default 30 when absent). A cinematic
+  // 24fps plan rendered at 30 is a silent format miss — warn, never block
+  // (the render still succeeds; cadence is a craft call the user can accept).
+  if (sb !== null && effectiveMaster) {
+    const targetFps = sb.target && typeof sb.target === "object" ? Number(sb.target.fps) : NaN;
+    if (Number.isFinite(targetFps) && targetFps > 0) {
+      const rawAttr = effectiveMaster.tag.attrs["data-fps"];
+      const masterFps = rawAttr === undefined ? 30 : Number(rawAttr);
+      if (!Number.isFinite(masterFps) || Math.abs(masterFps - targetFps) > 0.01) {
+        findings.push(makeFinding(
+          "warning",
+          "vob/fps_mismatch",
+          `storyboard target.fps is ${targetFps} but the master root ${rawAttr === undefined ? "has no data-fps (hyperframes defaults to 30)" : `declares data-fps="${rawAttr}"`} — set data-fps="${targetFps}" on the composition root`,
+          effectiveMaster.file,
+          effectiveMaster.tag.line,
+        ));
+      }
+    }
+  }
+
   // --- E5: storyboard scene coverage (with the overlay-mode exemption) --------
   if (sb !== null) {
     const uncovered = [];
@@ -370,6 +466,189 @@ function runCompositionQc({ files, storyboard, sourceLinks, sceneClipLinks, chec
             "error",
             "vob/scene_missing_clip",
             `storyboard scene "${scene.scene_id}" (sequence ${scene.sequence}) has no clip element referencing ./source/${scene.scene_id}-*.mp4 — the scene would be missing from the render`,
+          ));
+        }
+      }
+    }
+  }
+
+  // --- Typed overlay binding (P3) ----------------------------------------------
+  // Every PLANNED typed overlay (scoped scenes) must have an implementing
+  // element stamped data-vob-overlay-id="<id>" — the plan is the binding
+  // layer, same severity as scene coverage. Extra checks ride as warnings:
+  // spine-track overlays, untimed elements, and composer-invented ids.
+  if (sb !== null) {
+    const planned = [];
+    for (const scene of scenes) {
+      if (!scene || typeof scene.scene_id !== "string") continue;
+      for (const overlay of typedOverlaysOf(scene)) {
+        if (overlay && typeof overlay.id === "string" && overlay.id) planned.push({ scene, overlay });
+      }
+    }
+    const elementsByOverlayId = new Map();
+    for (const f of parsedFiles) {
+      for (const tag of f.tags) {
+        const oid = tag.attrs["data-vob-overlay-id"];
+        if (typeof oid === "string" && oid !== "" && !elementsByOverlayId.has(oid)) {
+          elementsByOverlayId.set(oid, { file: f.relPath, tag });
+        }
+      }
+    }
+    for (const { scene, overlay } of planned) {
+      const el = elementsByOverlayId.get(overlay.id);
+      if (!el) {
+        findings.push(makeFinding(
+          "error",
+          "vob/overlay_missing_element",
+          `planned overlay ${overlay.type} "${overlay.id}" (scene "${scene.scene_id}") has no implementing element — render it and stamp the element with data-vob-overlay-id="${overlay.id}"`,
+        ));
+        continue;
+      }
+      const track = Number(el.tag.attrs["data-track-index"]);
+      if (Number.isFinite(track) && track === 0) {
+        findings.push(makeFinding(
+          "warning",
+          "vob/overlay_track_zero",
+          `overlay "${overlay.id}" sits on data-track-index="0" (${el.file}:${el.tag.line}) — track 0 is the video spine; overlays belong on higher tracks`,
+          el.file,
+          el.tag.line,
+        ));
+      }
+      if (!("data-start" in el.tag.attrs)) {
+        findings.push(makeFinding(
+          "warning",
+          "vob/overlay_element_untimed",
+          `overlay element for "${overlay.id}" (${el.file}:${el.tag.line}) has no data-start — it renders static for the whole composition instead of its planned ${overlay.start_seconds}–${overlay.end_seconds}s window`,
+          el.file,
+          el.tag.line,
+        ));
+      }
+    }
+    const plannedIds = new Set(planned.map((p) => p.overlay.id));
+    for (const [oid, el] of elementsByOverlayId) {
+      if (!plannedIds.has(oid)) {
+        findings.push(makeFinding(
+          "warning",
+          "vob/unplanned_overlay_element",
+          `element carries data-vob-overlay-id="${oid}" (${el.file}:${el.tag.line}) but the plan's active scope declares no such overlay — a typo'd id, or an overlay the storyboard didn't ask for`,
+          el.file,
+          el.tag.line,
+        ));
+      }
+    }
+  }
+
+  // --- Scene transition realization (v3.3) — ADVISORY ONLY --------------------
+  // A planned non-cut transition_in should leave SOME trace in the composition.
+  // Unlike the overlay/exact-caption hard bindings, transitions are advisory: the
+  // composer may realize a "whip pan" however it likes, and CSS @keyframes can't
+  // be statically proven to animate. So this NEVER errors. Convention: stamp the
+  // incoming scene's transition element with data-vob-transition="<type>" (and,
+  // ideally, data-vob-transition-scene="<scene_id>"). If the composer adopts the
+  // convention we check each planned scene is covered; if it ignores it entirely
+  // we emit ONE gentle nudge rather than per-scene spam.
+  if (sb !== null) {
+    const plannedTransitions = [];
+    scenes.forEach((scene, ix) => {
+      if (!scene || typeof scene.scene_id !== "string" || ix === 0) return;
+      const type = transitionTypeOf(scene.transition_in);
+      if (type !== "cut") plannedTransitions.push({ scene_id: scene.scene_id, type });
+    });
+    if (plannedTransitions.length > 0) {
+      const markedScenes = new Set();
+      let anyMarker = false;
+      for (const f of parsedFiles) {
+        for (const tag of f.tags) {
+          if ("data-vob-transition" in tag.attrs) {
+            anyMarker = true;
+            const sid = tag.attrs["data-vob-transition-scene"];
+            if (typeof sid === "string" && sid) markedScenes.add(sid);
+          }
+        }
+      }
+      if (!anyMarker) {
+        findings.push(makeFinding(
+          "warning",
+          "vob/transition_not_realized",
+          `the plan declares ${plannedTransitions.length} non-cut scene transition(s) (e.g. ${plannedTransitions.slice(0, 3).map((t) => `${t.scene_id}:${t.type}`).join(", ")}) but no element carries data-vob-transition — if you realized them, stamp the incoming scene's transition element with data-vob-transition="<type>" data-vob-transition-scene="<scene_id>" so QC can confirm (advisory; transitions are NOT hard-bound)`,
+        ));
+      } else {
+        for (const t of plannedTransitions) {
+          if (!markedScenes.has(t.scene_id)) {
+            findings.push(makeFinding(
+              "warning",
+              "vob/transition_not_realized",
+              `planned "${t.type}" transition into scene "${t.scene_id}" has no matching data-vob-transition-scene="${t.scene_id}" element — confirm it was realized (advisory)`,
+            ));
+          }
+        }
+      }
+    }
+  }
+
+  // --- Typed caption binding (P5) ---------------------------------------------
+  // Captions are advisory by default — the composer legitimately re-chunks and
+  // re-times them — so binding is OPT-IN: only a caption_segment carrying an
+  // AUTHORED `id` (the storyboarder's signal "bind this one") is checked. A
+  // missing element WARNS (vob/caption_unbound) unless the caption is exact:true
+  // (a binding text/timing contract), which ERRORS (vob/caption_missing_element,
+  // same severity as a missing overlay/scene clip). id-less captions are silent
+  // — no derived ids, so a re-chunked caption set never floods the report.
+  if (sb !== null) {
+    const plannedCaptions = [];
+    for (const scene of scenes) {
+      if (!scene || typeof scene.scene_id !== "string") continue;
+      for (const seg of captionSegmentsOf(scene)) {
+        if (seg && typeof seg.id === "string" && seg.id) plannedCaptions.push({ scene, seg });
+      }
+    }
+    if (plannedCaptions.length > 0) {
+      const elementsByCaptionId = new Map();
+      for (const f of parsedFiles) {
+        for (const tag of f.tags) {
+          const cid = tag.attrs["data-vob-caption-id"];
+          if (typeof cid === "string" && cid !== "" && !elementsByCaptionId.has(cid)) {
+            elementsByCaptionId.set(cid, { file: f.relPath, tag });
+          }
+        }
+      }
+      for (const { scene, seg } of plannedCaptions) {
+        const el = elementsByCaptionId.get(seg.id);
+        if (!el) {
+          if (seg.exact === true) {
+            findings.push(makeFinding(
+              "error",
+              "vob/caption_missing_element",
+              `exact caption "${seg.id}" (scene "${scene.scene_id}": "${String(seg.text || "").slice(0, 40)}") has no implementing element — render it and stamp the element with data-vob-caption-id="${seg.id}" (exact:true makes it a binding contract)`,
+            ));
+          } else {
+            findings.push(makeFinding(
+              "warning",
+              "vob/caption_unbound",
+              `caption "${seg.id}" (scene "${scene.scene_id}") declares an id but no element carries data-vob-caption-id="${seg.id}" — stamp the implementing chunk, or drop the id if the composer is free to re-chunk it`,
+            ));
+          }
+          continue;
+        }
+        if (!("data-start" in el.tag.attrs)) {
+          findings.push(makeFinding(
+            "warning",
+            "vob/caption_element_untimed",
+            `caption element for "${seg.id}" (${el.file}:${el.tag.line}) has no data-start — it renders static for the whole composition instead of its planned ${seg.start_seconds}–${seg.end_seconds}s window`,
+            el.file,
+            el.tag.line,
+          ));
+        }
+      }
+      const plannedCaptionIds = new Set(plannedCaptions.map((p) => p.seg.id));
+      for (const [cid, el] of elementsByCaptionId) {
+        if (!plannedCaptionIds.has(cid)) {
+          findings.push(makeFinding(
+            "warning",
+            "vob/unplanned_caption_element",
+            `element carries data-vob-caption-id="${cid}" (${el.file}:${el.tag.line}) but the plan's active scope declares no caption with that id — a typo'd id, or a caption the storyboard didn't ask to bind`,
+            el.file,
+            el.tag.line,
           ));
         }
       }
@@ -425,6 +704,15 @@ function runCompositionQc({ files, storyboard, sourceLinks, sceneClipLinks, chec
   // at warn level; it can never block.
   captionFontSizeFindings({ parsedFiles, cssFiles, effectiveMaster, findings });
 
+  // Design-language conformance (font kit). Document-global (no per-short /
+  // per-segment design override), reads sb.target.design regardless of scope.
+  {
+    const design = sb && sb.target && typeof sb.target.design === "object"
+      && sb.target.design !== null && !Array.isArray(sb.target.design)
+      ? sb.target.design : null;
+    designConformanceFindings({ parsedFiles, cssFiles, design, findings });
+  }
+
   // Errors first (stable) so capped slices surface blockers before advice.
   findings.sort((a, b) => (a.severity === b.severity ? 0 : (a.severity === "error" ? -1 : 1)));
 
@@ -440,12 +728,14 @@ function runCompositionQc({ files, storyboard, sourceLinks, sceneClipLinks, chec
     warning_count: warningCount,
     // Every legal ./source/ name, for callers that want to hand the composer
     // the full list on an unresolved-ref rejection (the findings cap at 6).
-    // In fan-out, scene_clips is the ACTIVE short's clip list.
+    // In fan-out / segmented mode, scene_clips is the ACTIVE scope's clip list.
     expected_source_names: {
       scene_clips: expectedClipNameList,
+      layouts: [...layoutNames.keys()],
       sources: [...sourceNames.keys()],
     },
     active_short_id: activeShortId,
+    active_segment_id: segmentScope ? segmentScope.segment_id : null,
   };
 }
 
@@ -523,6 +813,55 @@ function captionFontSizeFindings({ parsedFiles, cssFiles, effectiveMaster, findi
       }
     }
   }
+}
+
+// Document-global font-kit conformance (WARNING-only). design.typography
+// declares the kit families the composition should use (headline/caption/
+// body/…). If the composition uses font-family AT ALL but references NONE of the
+// declared families, the composer went off-brief — warn once. Referencing at
+// least one declared family counts as adherence (a montage that only renders the
+// headline face is fine). No-ops when target.design.typography is absent or the
+// composition declares no font-family (nothing to judge). Accent/grade/motion
+// conformance is deliberately NOT checked — too fuzzy to surface without noise.
+function designConformanceFindings({ parsedFiles, cssFiles, design, findings }) {
+  if (!design || typeof design.typography !== "object"
+    || design.typography === null || Array.isArray(design.typography)) return;
+  const declared = new Map(); // normalized family -> original spelling
+  for (const v of Object.values(design.typography)) {
+    if (typeof v === "string" && v.trim()) declared.set(v.trim().toLowerCase(), v.trim());
+  }
+  if (declared.size === 0) return;
+
+  const used = new Set();
+  const collect = (cssText) => {
+    if (typeof cssText !== "string" || cssText === "") return;
+    FONT_FAMILY_RE.lastIndex = 0;
+    let m;
+    while ((m = FONT_FAMILY_RE.exec(cssText)) !== null) {
+      for (const fam of m[1].split(",")) {
+        const norm = fam.trim().replace(/^['"]+|['"]+$/g, "").trim().toLowerCase();
+        if (norm) used.add(norm);
+      }
+    }
+  };
+  for (const f of cssFiles) collect(f.content);
+  const STYLE_BLOCK_RE = /<style\b[^>]*>([\s\S]*?)<\/style>/gi;
+  for (const f of parsedFiles) {
+    STYLE_BLOCK_RE.lastIndex = 0;
+    let m;
+    while ((m = STYLE_BLOCK_RE.exec(f.content)) !== null) collect(m[1]);
+    for (const tag of f.tags) collect(tag.attrs.style);
+  }
+  if (used.size === 0) return; // composition declares no fonts — nothing to judge
+
+  for (const lower of declared.keys()) {
+    if (used.has(lower)) return; // adheres to at least one declared family
+  }
+  findings.push(makeFinding(
+    "warning",
+    "vob/design_font_mismatch",
+    `the storyboard's design language declares the font kit ${JSON.stringify([...declared.values()])} (target.design.typography) but the composition's font-family declarations reference none of them — the composer used off-brief type. Use the declared kit families (loaded via ./fonts.css)`,
+  ));
 }
 
 module.exports = {

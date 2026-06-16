@@ -1,0 +1,18 @@
+{
+  "_comment": "User-defined video-type presets. Copy to video-types.json (same dir) and edit. Each entry shallow-merges over the built-in of the same name (social-short, long-form, cinematic, tutorial, podcast, general); a NEW name becomes a new preset based on `general` and is selectable as a video_type intent answer or via VOB_VIDEO_TYPE. Run `vob_doctor` to see the resolved table. An unknown preset name always falls back to `general` — never an error.",
+
+  "_fields": "platform_default: a canonical platform/profile name (incl. custom geometry names from render-profiles.json). editorial.clean_cut: snap cuts to filler/dead-air-free keep-spans (storyboarder) + straddle lint. lint_ruleset: retention | chaptered | montage | general. overlay_vocabulary: subset of title_card, lower_third, callout, kinetic_caption, caption_block, logo_bug, progress_bar, chapter_marker, section_title, data_viz, cta, end_card, pip. render.segmentation: single | auto | manual.",
+
+  "course-module": {
+    "platform_default": "tutorial",
+    "editorial": { "clean_cut": true, "scene_detect": true },
+    "lint_ruleset": "chaptered",
+    "overlay_vocabulary": ["chapter_marker", "section_title", "callout", "caption_block", "progress_bar", "data_viz", "end_card"],
+    "render": { "segmentation": "auto" }
+  },
+
+  "cinematic": {
+    "_comment_override_example": "tweak a built-in: keep everything else, just turn captions-friendly overlays on",
+    "overlay_vocabulary": ["title_card", "section_title", "caption_block", "lower_third", "end_card"]
+  }
+}

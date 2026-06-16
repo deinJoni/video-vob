@@ -11,6 +11,7 @@ const { runHyperframesWithRetry, buildRenderArgv, renderTimeoutMs } = require(".
 const { stderrTail } = require("../spawn-with-shutdown.js");
 const { verifyRenderedMp4 } = require("../render-verify.js");
 const { expectedTimelineDurationSeconds, findTimeline } = require("../storyboard-schema.js");
+const { planSegmentById } = require("../render-segments.js");
 
 function nowIso() {
   return new Date().toISOString();
@@ -54,25 +55,34 @@ async function renderPreview(args) {
   const rendersRoot = rendersDir(id);
   fs.mkdirSync(rendersRoot, { recursive: true });
 
-  // Timeout scales with the ACTIVE timeline's total (the composition's short
-  // in fan-out; the document total otherwise), floored at the fixed 15-min
-  // cap. Drift verification only gets an expectation when the active timeline
-  // actually RESOLVED — the longest-short timeout fallback must never become a
-  // false silent-truncation flag.
+  // Timeout scales with the ACTIVE scope's total (the composition's render
+  // segment in a segmented plan, its short in fan-out, the document total
+  // otherwise), floored at the fixed 15-min cap. Drift verification only gets
+  // an expectation when the active scope actually RESOLVED — a timeout
+  // fallback must never become a false silent-truncation flag.
   let sbTotal = null;
   let expectedDurationSeconds = null;
-  try {
-    const sb = JSON.parse(fs.readFileSync(storyboardPath(id), "utf8"));
-    const shortId = typeof composition.short_id === "string" && composition.short_id !== ""
-      ? composition.short_id
-      : null;
-    sbTotal = expectedTimelineDurationSeconds(sb, shortId);
-    const timeline = findTimeline(sb, shortId);
-    expectedDurationSeconds = timeline
-      && Number.isFinite(timeline.total_target_duration_seconds) && timeline.total_target_duration_seconds > 0
-      ? timeline.total_target_duration_seconds
-      : null;
-  } catch {}
+  const segmentId = typeof composition.segment_id === "string" && composition.segment_id !== ""
+    ? composition.segment_id
+    : null;
+  const planSegment = segmentId ? planSegmentById(state, segmentId) : null;
+  if (planSegment) {
+    sbTotal = Number.isFinite(planSegment.target_duration_seconds) ? planSegment.target_duration_seconds : null;
+    expectedDurationSeconds = sbTotal;
+  } else {
+    try {
+      const sb = JSON.parse(fs.readFileSync(storyboardPath(id), "utf8"));
+      const shortId = typeof composition.short_id === "string" && composition.short_id !== ""
+        ? composition.short_id
+        : null;
+      sbTotal = expectedTimelineDurationSeconds(sb, shortId);
+      const timeline = findTimeline(sb, shortId);
+      expectedDurationSeconds = timeline
+        && Number.isFinite(timeline.total_target_duration_seconds) && timeline.total_target_duration_seconds > 0
+        ? timeline.total_target_duration_seconds
+        : null;
+    } catch {}
+  }
   const timeoutMs = renderTimeoutMs("preview", sbTotal);
 
   const ts0 = filenameSafeTimestamp();

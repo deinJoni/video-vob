@@ -3,12 +3,14 @@
 const fs = require("fs");
 const path = require("path");
 
-const { allStoryboardScenes } = require("./storyboard-schema.js");
+const { allStoryboardScenes, collectSceneLayouts, collectSubjectPlacements } = require("./storyboard-schema.js");
 const {
   assertSafeProjectId,
   assertSafeSceneId,
   composeSourceDir,
+  layoutPath,
   manifestPath,
+  mattePath,
   storyboardPath,
   transcodedClipPath,
 } = require("./paths.js");
@@ -17,6 +19,7 @@ const SOURCE_SUBDIR = "source";
 
 const FONT_ASSETS_DIR = path.resolve(__dirname, "..", "assets", "fonts");
 const FONT_CSS_SRC = path.resolve(__dirname, "..", "assets", "fonts.css");
+const CAPTION_ASSETS_DIR = path.resolve(__dirname, "..", "assets", "captions");
 
 function readManifestSafe(projectId) {
   try {
@@ -78,6 +81,85 @@ function resolveSceneClipLinks(projectId) {
   return tuples;
 }
 
+// Subject-matte symlinks (v3.3): compose/source/<scene_id>-<clipIndex>.webm ->
+// <session>/transcoded/mattes/<scene_id>-<clipIndex>.webm, for every
+// render_mode:"subject" placement. The composer references the matte as
+// ./source/<scene_id>-<clipIndex>.webm (an alpha <video> over the backdrop) with
+// the subject's AUDIO from the sibling .mp4 clip. Driven by the storyboard's
+// subject placements (mirrors resolveSceneClipLinks); a missing matte warns, not
+// fails — a matte can legitimately be absent (the COMPOSE-entry materializer
+// degrades on a missing model/failed inference), in which case the composer
+// falls back to a rectangular pip.
+function resolveMatteLinks(projectId) {
+  const id = assertSafeProjectId(projectId);
+  const sb = readStoryboardSafe(id);
+  if (!sb) return [];
+  const placements = collectSubjectPlacements(sb);
+  if (placements.length === 0) return [];
+  const linkDir = composeSourceDir(id);
+  const tuples = [];
+  const seen = new Set();
+  for (const p of placements) {
+    if (typeof p.scene_id !== "string" || !Number.isInteger(p.clip_index) || p.clip_index < 0) continue;
+    let sceneId;
+    try {
+      sceneId = assertSafeSceneId(p.scene_id);
+    } catch {
+      continue;
+    }
+    const key = `${sceneId}-${p.clip_index}`;
+    if (seen.has(key)) continue; // one symlink per unique matte
+    seen.add(key);
+    const linkName = `${key}.webm`;
+    tuples.push({
+      scene_id: sceneId,
+      clip_index: p.clip_index,
+      matte_abs: mattePath(id, sceneId, p.clip_index),
+      link_rel: `${SOURCE_SUBDIR}/${linkName}`,
+      link_abs: path.join(linkDir, linkName),
+    });
+  }
+  return tuples;
+}
+
+// Multi-cell layout symlinks (v3.4): compose/source/<scene_id>-layout.mp4 ->
+// <session>/transcoded/layouts/<scene_id>.mp4, for every scene with a usable
+// scene.layout. The composer references the composite as a single
+// ./source/<scene_id>-layout.mp4 <video> (the whole point — one element, not N).
+// Mirrors resolveMatteLinks; a missing composite warns (not fails) — the
+// COMPOSE-entry materializer degrades on a malformed/failed layout, in which
+// case the composer falls back to CSS-positioned cells (the <scene_id>-<k>.mp4
+// clips, which the normal scene-clip symlinks already provide).
+function resolveLayoutLinks(projectId) {
+  const id = assertSafeProjectId(projectId);
+  const sb = readStoryboardSafe(id);
+  if (!sb) return [];
+  const layouts = collectSceneLayouts(sb);
+  if (layouts.length === 0) return [];
+  const linkDir = composeSourceDir(id);
+  const tuples = [];
+  const seen = new Set();
+  for (const l of layouts) {
+    if (typeof l.scene_id !== "string") continue;
+    let sceneId;
+    try {
+      sceneId = assertSafeSceneId(l.scene_id);
+    } catch {
+      continue;
+    }
+    if (seen.has(sceneId)) continue; // one composite per layout scene
+    seen.add(sceneId);
+    const linkName = `${sceneId}-layout.mp4`;
+    tuples.push({
+      scene_id: sceneId,
+      layout_abs: layoutPath(id, sceneId),
+      link_rel: `${SOURCE_SUBDIR}/${linkName}`,
+      link_abs: path.join(linkDir, linkName),
+    });
+  }
+  return tuples;
+}
+
 function dedupeBasename(basename, used) {
   if (!used.has(basename)) return basename;
   const ext = path.extname(basename);
@@ -119,15 +201,17 @@ function recreateSourceSymlinks(projectId, composeRoot) {
   const id = assertSafeProjectId(projectId);
   const manifest = readManifestSafe(id);
   if (!manifest) {
-    return { links: [], scene_clip_links: [], warnings: ["manifest not found; no source symlinks created"] };
+    return { links: [], scene_clip_links: [], matte_links: [], layout_links: [], warnings: ["manifest not found; no source symlinks created"] };
   }
   if (!Array.isArray(manifest.files) || manifest.files.length === 0) {
-    return { links: [], scene_clip_links: [], warnings: [] };
+    return { links: [], scene_clip_links: [], matte_links: [], layout_links: [], warnings: [] };
   }
   const links = resolveSourceLinks(id);
   const sceneClipLinks = resolveSceneClipLinks(id);
-  if (links.length === 0 && sceneClipLinks.length === 0) {
-    return { links: [], scene_clip_links: [], warnings: [] };
+  const matteLinks = resolveMatteLinks(id);
+  const layoutLinks = resolveLayoutLinks(id);
+  if (links.length === 0 && sceneClipLinks.length === 0 && matteLinks.length === 0 && layoutLinks.length === 0) {
+    return { links: [], scene_clip_links: [], matte_links: [], layout_links: [], warnings: [] };
   }
 
   const linkDir = path.join(composeRoot, SOURCE_SUBDIR);
@@ -193,7 +277,63 @@ function recreateSourceSymlinks(projectId, composeRoot) {
       throw err;
     }
   }
-  return { links: created, scene_clip_links: sceneClipsCreated, warnings };
+
+  // Subject-matte symlinks: compose/source/<scene_id>-<clipIndex>.webm. Warn
+  // (don't fail) on a missing matte — same posture as the scene-clip symlinks. A
+  // composition that actually references a missing matte is caught by composition
+  // QC's source-ref check; a degraded/failed matte simply has no symlink and the
+  // composer falls back to a rectangular pip.
+  const mattesCreated = [];
+  for (const link of matteLinks) {
+    if (!fs.existsSync(link.matte_abs)) {
+      warnings.push(`subject matte missing on disk for ${link.scene_id}-${link.clip_index}: ${link.matte_abs}`);
+      continue;
+    }
+    try {
+      try {
+        fs.unlinkSync(link.link_abs);
+      } catch (err) {
+        if (err && err.code !== "ENOENT") throw err;
+      }
+      fs.symlinkSync(link.matte_abs, link.link_abs);
+      mattesCreated.push(link);
+    } catch (err) {
+      if (err && (err.code === "EPERM" || err.code === "EACCES")) {
+        warnings.push(`could not create matte symlink for ${link.scene_id}-${link.clip_index}: ${err.code}`);
+        continue;
+      }
+      throw err;
+    }
+  }
+
+  // Multi-cell layout symlinks: compose/source/<scene_id>-layout.mp4. Warn (don't
+  // fail) on a missing composite — same posture as the scene-clip/matte symlinks.
+  // A degraded/failed layout simply has no symlink and the composer falls back to
+  // CSS-positioned cells; a composition that references a missing layout clip is
+  // caught by composition QC's source-ref check.
+  const layoutsCreated = [];
+  for (const link of layoutLinks) {
+    if (!fs.existsSync(link.layout_abs)) {
+      warnings.push(`scene layout missing on disk for ${link.scene_id}: ${link.layout_abs}`);
+      continue;
+    }
+    try {
+      try {
+        fs.unlinkSync(link.link_abs);
+      } catch (err) {
+        if (err && err.code !== "ENOENT") throw err;
+      }
+      fs.symlinkSync(link.layout_abs, link.link_abs);
+      layoutsCreated.push(link);
+    } catch (err) {
+      if (err && (err.code === "EPERM" || err.code === "EACCES")) {
+        warnings.push(`could not create layout symlink for ${link.scene_id}: ${err.code}`);
+        continue;
+      }
+      throw err;
+    }
+  }
+  return { links: created, scene_clip_links: sceneClipsCreated, matte_links: mattesCreated, layout_links: layoutsCreated, warnings };
 }
 
 // Inject the vendored font kit into compose/: symlink compose/fonts -> mcp/assets/fonts
@@ -235,10 +375,48 @@ function injectFontKit(composeRoot, { skipCss = false } = {}) {
   return { linked: true, warnings };
 }
 
+// Inject the vendored caption-component kit into compose/: symlink
+// compose/captions -> mcp/assets/captions (same mechanism as ./source/ and
+// ./fonts/). The composer READS ./captions/manifest.json + the per-component
+// reference HTML (./captions/<name>/<name>.html), then authors its OWN caption
+// markup adapting the vetted technique — nothing here is rendered directly
+// (hyperframes renders index.html; an unreferenced symlinked dir is inert). No
+// CSS copy is needed (the manifest is read, not url()-resolved). Graceful: warn
+// + linked:false if assets are absent or the composer wrote its own captions/.
+function injectCaptionKit(composeRoot, { skip = false } = {}) {
+  if (skip) return { linked: false, warnings: [] };
+  const warnings = [];
+  const linkAbs = path.join(composeRoot, "captions");
+  if (!fs.existsSync(CAPTION_ASSETS_DIR)) {
+    return { linked: false, warnings: [`caption kit not found at ${CAPTION_ASSETS_DIR}; the composer authors captions unaided`] };
+  }
+  try {
+    let st = null;
+    try { st = fs.lstatSync(linkAbs); } catch {}
+    if (st && st.isSymbolicLink()) fs.unlinkSync(linkAbs);
+    else if (st) {
+      // composer wrote real files under captions/ — respect them, skip the kit dir
+      warnings.push("compose/captions exists as a real directory (composer-supplied); caption kit dir not linked");
+      return { linked: false, warnings };
+    }
+    fs.symlinkSync(CAPTION_ASSETS_DIR, linkAbs);
+  } catch (err) {
+    if (err && (err.code === "EPERM" || err.code === "EACCES")) {
+      warnings.push(`could not link caption kit: ${err.code}`);
+      return { linked: false, warnings };
+    }
+    throw err;
+  }
+  return { linked: true, warnings };
+}
+
 module.exports = {
   SOURCE_SUBDIR,
   injectFontKit,
+  injectCaptionKit,
   recreateSourceSymlinks,
+  resolveLayoutLinks,
+  resolveMatteLinks,
   resolveSceneClipLinks,
   resolveSourceLinks,
 };

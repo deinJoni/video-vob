@@ -1,8 +1,8 @@
 # video-vob
 
-An open-source, agent-driven video pipeline. Users drop raw video plus a rough idea of what they want, and an interactive FSM walks them through ingest → inspect → intent → plan → composition → preview → render → package → iterate, producing a finished short-form video. The render engine is [hyperframes](https://github.com/heygen-com/hyperframes) (Apache 2.0). The orchestrator runs inside an agentic CLI (Claude Code and OpenCode today; Kimi-CLI, Codex CLI, and Cursor planned) via a thin CLI-specific adapter on top of a shared MCP server.
+An open-source, agent-driven video pipeline. Users drop raw video plus a rough idea of what they want, and an interactive FSM walks them through ingest → inspect → intent → plan → composition → preview → render → package → iterate, producing a finished video — **any format, any length**. The render engine is [hyperframes](https://github.com/heygen-com/hyperframes) (Apache 2.0). The orchestrator runs inside an agentic CLI (Claude Code and OpenCode today; Kimi-CLI, Codex CLI, and Cursor planned) via a thin CLI-specific adapter on top of a shared MCP server.
 
-**Version 2.1.** The pipeline is implemented end-to-end, enforces quality engine-side at every gate, and produces **one short or many from a single source**.
+**Version 3.0 — General Video.** The pipeline is implemented end-to-end, enforces quality engine-side at every gate, and produces short-form social video, **many shorts from one source**, **segmented long-form with YouTube chapters** (length effectively unbounded — the video is rendered as budget-sized segments and losslessly assembled), 24fps cinematic cuts, tutorials, and podcast→video — steered by **video-type presets** (built-in + user-definable), with overlays planned as a **typed, lint-checked layer** and a **b-roll gap shopping list** when your footage lacks the coverage the cut wants.
 
 ## How it works
 
@@ -93,6 +93,37 @@ Ask for **multiple** shorts from one source and the pipeline fans out. It's dete
 3. **Each finished short is recorded and loudness-normalized**, then the run back-edges to COMPOSE for the next one (archival keeps everything; the recorded copy is already safe).
 4. **PACKAGE is the deliverables set.** Finished shorts land in a session-level `deliverables/` directory with a `deliverables/manifest.json`; the single-timeline packager is refused so it can't wipe them. Completeness gates block reaching ITERATE until every short has a record.
 5. **Revise one short later** via an `ITERATE → COMPOSE` back-edge: recompose/render exactly that `short_id` and its record (and file) is replaced — the others stand untouched.
+
+### Any format: video-type presets (v3)
+
+Say what kind of video it is — or let the engine derive it from platform + duration — and a
+**preset** steers the rails: `social-short` (the classic TikTok path), `long-form`, `cinematic`
+(24 fps, filler-removal off, montage lint), `tutorial`, `podcast`, or your own presets in
+`.vob-config/video-types.json`. The preset picks the platform geometry default, whether
+dead-air/filler removal applies, which plan-lint heuristics run (hook-first rules only apply to
+social retention formats), the overlay vocabulary, and how the render is segmented. `vob_doctor`
+shows the resolved table; a TikTok user never sees any of this.
+
+### Any length: segmented long-form + chapters (v3)
+
+Long-form renders can't fit one headless-Chrome composition on a small host — so the engine
+chunks the plan into render **segments** (automatically to the host's `<video>` budget, or along
+your declared acts), cycles the normal compose→preview→render loop per segment, and then
+**`vob_assemble_video`** joins the partials: lossless concat on hard cuts, duration-preserving
+dip-to-black on `fade` boundaries, an optional sidechain-ducked music bed, and ffprobe drift
+verification across the join. Your narrative `segments[]` (acts/chapters) become **YouTube
+chapter markers** in the package manifest and a paste-ready `0:00 Title` block in the README.
+
+### A planned overlay layer + b-roll gaps (v3)
+
+Overlays are no longer prose suggestions: the storyboard plans **typed, timed overlay objects**
+(title cards, lower thirds, kinetic captions, callouts, progress bars, chapter markers, data
+counters, CTAs, picture-in-picture) that the composer must implement — lint checks timing,
+readability dwell, collisions, and safe areas at PLAN; QC verifies every planned overlay exists
+in the composition. And when the cut wants coverage your footage can't supply, the plan declares
+a **gap** instead of forcing a bad match: gaps land in `plan/broll_gaps.json` as a concrete
+shopping list ("~2.5s: close-up of hands typing"), you upload more footage, and a sanctioned
+PLAN→INGEST loop re-derives the plan with the new material.
 
 ### Inherit a past project's style (`--like`)
 

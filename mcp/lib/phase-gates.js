@@ -6,6 +6,7 @@ const { readJsonFile } = require("./storage.js");
 const { missingIntentKeys } = require("./intent-schema.js");
 const { composeDir, deliverablesDir, inspectSummaryPath, packageDir, packageFinalMp4Path, packageManifestPath, packageReadmePath, packageThumbnailPath, storyboardPath } = require("./paths.js");
 const { storyboardHasShorts, storyboardTimelines } = require("./storyboard-schema.js");
+const { renderPlanOf, validSegmentRenders } = require("./render-segments.js");
 
 // True when a project carries externally-imported deliverables (the
 // vob_import_deliverable escape hatch) that are on disk — its real output lives
@@ -259,6 +260,25 @@ function planToCompose(state) {
   return ALLOWED;
 }
 
+// PLAN -> INGEST (back-edge, v3): the b-roll gap-resolution loop — the user
+// uploads more footage, vob_ingest_file re-runs over the extended drop, and
+// the pipeline re-walks INSPECT -> INTENT (answers persist) -> PLAN where the
+// storyboarder re-derives against the bigger B-roll index. Nominal check: a
+// manifest must exist (we got past INGEST once; re-entering without one means
+// state damage, not a gap loop).
+function planToIngest(state) {
+  const manifest = state && typeof state.manifest === "object" ? state.manifest : null;
+  if (!manifest || typeof manifest.path !== "string" || !manifest.path) {
+    return block([
+      blocker(
+        "manifest_missing",
+        "cannot back-edge to INGEST — no manifest recorded from a prior ingest",
+      ),
+    ]);
+  }
+  return ALLOWED;
+}
+
 // PLAN -> INTENT (back-edge): allowed when the user wants to re-clarify
 // intent. Nominal check: state.intent.answers exists. Always passes under
 // normal flow (INTENT was completed before PLAN was reachable).
@@ -463,6 +483,40 @@ function renderToPackage(state) {
       ),
     ]);
   }
+  // Segmented render completeness: leaving RENDER for PACKAGE means the WHOLE
+  // video exists — every plan segment rendered (valid, revision-bound partial)
+  // AND the partials assembled into the final that IS the current render.
+  // Both overridable (shipping a deliberate partial is an audit-recorded
+  // decision), mirroring the fan-out backstop below.
+  const renderPlan = renderPlanOf(state);
+  if (renderPlan) {
+    const { missing, stale } = validSegmentRenders(state);
+    if (missing.length > 0) {
+      return block([
+        blocker(
+          "segments_missing_render",
+          `segmented render: ${missing.length} segment(s) have no valid rendered partial (${missing.join(", ")})${stale.length > 0 ? ` — ${stale.join(", ")} are stale (storyboard changed since they rendered)` : ""}. Cycle COMPOSE→PREVIEW→RENDER per segment (vob_save_composition {segment_id} → vob_render_preview → vob_confirm_preview → vob_render_full → vob_confirm_render → back-edge RENDER→COMPOSE), then vob_assemble_video.`,
+          { missing_segment_ids: missing, stale_segment_ids: stale },
+        ),
+      ]);
+    }
+    const assembly = state.assembly && typeof state.assembly === "object" && !Array.isArray(state.assembly)
+      ? state.assembly
+      : null;
+    const assembledIsCurrent = assembly
+      && typeof assembly.final_path === "string" && assembly.final_path
+      && assembly.final_path === render.mp4_path
+      && fs.existsSync(assembly.final_path);
+    if (!assembledIsCurrent) {
+      return block([
+        blocker(
+          "video_not_assembled",
+          "segmented render: every segment partial is rendered but the final has not been assembled (or a segment was re-rendered since the last assembly) — call vob_assemble_video, then vob_confirm_render on the assembled final.",
+          assembly ? { assembly_final_path: assembly.final_path || null, current_render_path: render.mp4_path } : {},
+        ),
+      ]);
+    }
+  }
   // Fan-out completeness: leaving RENDER for PACKAGE means the SET is done —
   // every storyboard short needs a deliverable record. Overridable: shipping a
   // deliberate partial set stays possible (recorded for audit).
@@ -585,6 +639,7 @@ const GATES = Object.freeze({
   "INTENT->PLAN":     intentToPlan,
   "PLAN->COMPOSE":    planToCompose,
   "PLAN->INTENT":     planToIntent,
+  "PLAN->INGEST":     planToIngest,
   "COMPOSE->PREVIEW": composeToPreview,
   "COMPOSE->PLAN":    composeToPlan,
   "PREVIEW->RENDER":  previewToRender,

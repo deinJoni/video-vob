@@ -36,9 +36,9 @@ const OVERRIDE_PATH = path.join(path.resolve(__dirname, "..", ".."), ".vob-confi
 // headless server may have no usable GPU), so it stays on its own knob /
 // platform default. render_quality null => omit the flag (hyperframes standard).
 const CAPACITY_TIERS = Object.freeze({
-  low:    Object.freeze({ render_workers: 1, encode_concurrency: 1, render_quality: null,   video_budget: 6,  video_hard_cap: 8,  thumb_concurrency: 2 }),
-  medium: Object.freeze({ render_workers: 2, encode_concurrency: 2, render_quality: "high", video_budget: 10, video_hard_cap: 12, thumb_concurrency: 4 }),
-  high:   Object.freeze({ render_workers: 4, encode_concurrency: 4, render_quality: "high", video_budget: 14, video_hard_cap: 18, thumb_concurrency: 8 }),
+  low:    Object.freeze({ render_workers: 1, encode_concurrency: 1, render_quality: null,   video_budget: 6,  video_hard_cap: 8,  thumb_concurrency: 2, subject_seconds_max: 60,   shader_transitions: false }),
+  medium: Object.freeze({ render_workers: 2, encode_concurrency: 2, render_quality: "high", video_budget: 10, video_hard_cap: 12, thumb_concurrency: 4, subject_seconds_max: 600,  shader_transitions: true }),
+  high:   Object.freeze({ render_workers: 4, encode_concurrency: 4, render_quality: "high", video_budget: 14, video_hard_cap: 18, thumb_concurrency: 8, subject_seconds_max: 1200, shader_transitions: true }),
 });
 
 // Built-in defaults when no capacity tier applies (the un-tunable historical
@@ -95,6 +95,20 @@ function envPosInt(name) {
 function filePosInt(key) {
   const v = readHostConfig()[key];
   return Number.isInteger(v) && v >= 1 ? v : undefined;
+}
+
+// Boolean field readers (for on/off knobs like shader_transitions). Accept the
+// usual truthy/falsey spellings on env; require a real boolean in host.json.
+function envBool(name) {
+  const raw = (process.env[name] || "").trim().toLowerCase();
+  if (raw === "true" || raw === "1" || raw === "on" || raw === "yes") return true;
+  if (raw === "false" || raw === "0" || raw === "off" || raw === "no") return false;
+  return undefined; // empty/garbage -> fall through
+}
+
+function fileBool(key) {
+  const v = readHostConfig()[key];
+  return typeof v === "boolean" ? v : undefined;
 }
 
 // Resolve a positive-int setting through the full precedence chain. Returns
@@ -197,6 +211,41 @@ function resolveVideoHardCap() {
   return resolvePosInt({ envVar: "VOB_VIDEO_HARD_CAP", key: "video_hard_cap", ramDefault: () => DEFAULT_VIDEO_HARD_CAP });
 }
 
+// Subject-compositing budget (v3.3): the total subject-clip SECONDS the host
+// should matte via remove-background. Per-frame inference is slow, so a large
+// subject set is the runtime cost — over budget WARNS (plan lint + the matte
+// summary echo), never blocks; the matte still runs. Default 60s on a low-RAM
+// (<10 GB) host, 600s otherwise. VOB_SUBJECT_SECONDS_MAX > host.json > tier > RAM.
+function ramSubjectSecondsMax() {
+  const m = totalRam();
+  return (m <= 0 || m < LOW_RAM_BYTES) ? 60 : 600;
+}
+
+function resolveSubjectSecondsMax() {
+  return resolvePosInt({ envVar: "VOB_SUBJECT_SECONDS_MAX", key: "subject_seconds_max", ramDefault: ramSubjectSecondsMax });
+}
+
+// Shader scene transitions (v3.3): WebGL pixel-shader transitions are a HOST
+// CAPABILITY gate (orthogonal to whether a shader lib is vendored — none ships
+// today). CSS-family transitions are ALWAYS allowed; only the SHADER_TRANSITIONS
+// subset consults this. Default: off on a low-RAM (<10 GB) host (the reference
+// 8GB Mac, where WebGL under SwiftShader is slow / page-side-compositing
+// disables for video scenes), on otherwise. VOB_SHADER_TRANSITIONS > host.json
+// shader_transitions > capacity tier > RAM default.
+function ramShaderTransitions() {
+  return totalRam() >= LOW_RAM_BYTES;
+}
+
+function resolveShaderTransitions() {
+  const e = envBool("VOB_SHADER_TRANSITIONS");
+  if (e !== undefined) return { value: e, source: "env" };
+  const f = fileBool("shader_transitions");
+  if (f !== undefined) return { value: f, source: "host.json" };
+  const t = tierValue("shader_transitions");
+  if (typeof t === "boolean") return { value: t, source: `capacity:${capacityTier()}` };
+  return { value: ramShaderTransitions(), source: "ram-default" };
+}
+
 // --- public value getters (used by the consuming modules) --------------------
 
 function encodeConcurrency() { return resolveEncodeConcurrency().value; }
@@ -208,6 +257,12 @@ function videoBudget() { return resolveVideoBudget().value; }
 // hard cap can never be below the warn budget — a partial override (budget up,
 // cap left at default) would otherwise error before it ever warns.
 function videoHardCap() { return Math.max(resolveVideoHardCap().value, videoBudget()); }
+function subjectSecondsMax() { return resolveSubjectSecondsMax().value; }
+function shaderTransitionsAllowed() { return resolveShaderTransitions().value; }  // boolean
+// The matte materializer reads this; the device is resolved in hyperframes-runner
+// (resolveRemoveBgDevice) — kept there so host-profile stays free of a runner
+// dependency (the runner imports host-profile, not the other way).
+function subjectBudget() { return { subjectSecondsMax: resolveSubjectSecondsMax().value }; }
 
 // --- introspection for vob_doctor -------------------------------------------
 
@@ -220,6 +275,8 @@ function describe() {
   const thumb = resolveThumbConcurrency();
   const vb = resolveVideoBudget();
   const vhc = resolveVideoHardCap();
+  const ssm = resolveSubjectSecondsMax();
+  const st = resolveShaderTransitions();
   return {
     capacity: capacityTier(),
     config_path: OVERRIDE_PATH,
@@ -233,6 +290,8 @@ function describe() {
       { setting: "browser_gpu", value: gpu.value || "(platform default)", source: gpu.source },
       { setting: "video_budget", value: vb.value, source: vb.source },
       { setting: "video_hard_cap", value: Math.max(vhc.value, vb.value), source: vhc.source },
+      { setting: "subject_seconds_max", value: ssm.value, source: ssm.source },
+      { setting: "shader_transitions", value: st.value, source: st.source },
     ],
   };
 }
@@ -245,6 +304,9 @@ module.exports = {
   browserGpuKnob,
   videoBudget,
   videoHardCap,
+  subjectBudget,
+  subjectSecondsMax,
+  shaderTransitionsAllowed,
   describe,
   CAPACITY_TIERS,
   _reset,

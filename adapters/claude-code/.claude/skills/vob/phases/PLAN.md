@@ -11,7 +11,7 @@ moment.
 ## Read sites
 | step | source | fields |
 |---|---|---|
-| 1 | `vob_read_state_summary` | `manifest{path,file_count,total_duration_seconds}`, `intent.answers`, `platform{...}`, `target_duration_seconds`, `inspect.classification` pool paths, `inspect.{clean_speech_path,digest_path,strips_legend_path,thumbs_dir,thumb_interval_seconds,thumb_count,transcript_path,segments_path}`, `brief`, `storyboard`, `style.derived_from` |
+| 1 | `vob_read_state_summary` | `manifest{path,file_count,total_duration_seconds}`, `intent.answers`, `platform{...}`, `video_type{canonical,source,lint_ruleset,segmentation,clean_cut,overlay_vocabulary,transition_vocabulary,design_default}`, `target_duration_seconds`, `inspect.classification` pool paths, `inspect.{clean_speech_path,digest_path,strips_legend_path,thumbs_dir,thumb_interval_seconds,thumb_count,transcript_path,transcript_aligned,audio,segments_path}`, `brief`, `storyboard{...,broll_gap_count,broll_gaps_path}`, `style.derived_from` |
 | 2 | `Read` `references/brief-design.md` | brief skeleton + tone→design table |
 | 7 | `vob_save_storyboard` result (via subagent) or summary | `storyboard.markdown_path`, `scene_count`, `plan_lint` |
 
@@ -32,8 +32,12 @@ moment.
    and draft the brief from its skeleton + tone table. Your INSPECT visual notes plus the
    A-roll/B-roll split are ground truth for Hook and Beats — do not invent visual content; if
    your visual sense has faded, Read the contact sheet(s) again first. The **Design language**
-   section is BINDING for the composer — fill it from the tone table, adjusted only where the
-   user's `captions_style` / rough idea / `--like` source brief say otherwise.
+   section is BINDING for the composer. **When `intent.answers.design_language` is present** (the
+   user already confirmed the concrete look at INTENT), transcribe it into the Design language
+   section verbatim — that IS the binding decision; do not re-derive from tone. Only when it is
+   absent, fill the section from the tone table. Either way, adjust only where the user's
+   `captions_style` / rough idea / `--like` source brief say otherwise, and keep the platform safe
+   bands + 56px caption floor as hard constraints (surface any forced adjustment at the gate).
 
    **Fan-out:** when the job is N shorts, the brief's Target section MUST name the deliverable
    count and per-short duration (e.g. `- Deliverables: 3 shorts, 20–35s each`) — the brief is the
@@ -41,11 +45,13 @@ moment.
    shape, but N lives only here). On a resume into PLAN before a storyboard exists, derive the
    `fan_out` spawn lines from the brief.
 
-   **Hook guidance:** Pick the verbal hook from `digest_path`'s `hook_candidates[]` (Read the
-   digest if it isn't in context). Prefer a mid-action, high-energy line that makes a claim or
-   asks a question; NEVER a greeting or wind-up. If the inspector tagged `hook_candidate`
-   segments in the pools, cross-check the candidate's segment is in the A-roll pool. For silent
-   sources, the hook is the most kinetic contact-sheet cell.
+   **Hook guidance:** If `intent.answers.hook_intent` is present, the user already chose the
+   opening at INTENT — build the Hook section around it (cross-check it is in the A-roll pool).
+   Otherwise pick the verbal hook from `digest_path`'s `hook_candidates[]` (Read the digest if it
+   isn't in context). Prefer a mid-action, high-energy line that makes a claim or asks a question;
+   NEVER a greeting or wind-up. If the inspector tagged `hook_candidate` segments in the pools,
+   cross-check the candidate's segment is in the A-roll pool. For silent sources, the hook is the
+   most kinetic contact-sheet cell.
 
 3. Call `mcp__vob__vob_save_brief { project_id, content }`. (Don't ask for approval yet — the
    brief and storyboard are presented together as one gate.)
@@ -72,13 +78,22 @@ moment.
    intent.target_platform: <canonical>            (raw: "<raw>")
    intent.platform_profile: width=<w> height=<h> fps=<fps> safe_top_px=<t> safe_bottom_px=<b> ideal_duration_s=<min>-<max> max_duration_s=<m>
    intent.target_duration_seconds: <seconds>
+   video_type: <summary.video_type.canonical>     (lint_ruleset=<lint_ruleset> clean_cut=<clean_cut> segmentation=<segmentation>)
+   overlay_vocabulary: <summary.video_type.overlay_vocabulary, comma-joined>
+   transition_vocabulary: <summary.video_type.transition_vocabulary, comma-joined>
+   design_default: <summary.video_type.design_default, compact: palette/typography/caption_style/motion/grade — the storyboarder mirrors the brief's Design language into target.design, falling back to these>
+
    fan_out: <N> shorts                            (omit the two fan_out lines entirely for a single video)
    fan_out.per_short_duration: <min>-<max>s       (from target_duration_range; or the single per-short figure)
    intent.tone: <tone>
+   intent.pacing_intent: <pacing_intent | none>
+   intent.hook_intent: <hook_intent | none>
+   intent.broll_intent: <broll_intent | none>
    intent.key_moments: <key_moments>
    intent.music_vo: <music_vo>
    intent.audio_treatment: <value | n/a>
    intent.captions_style: <value | n/a>
+   file_roles: <summary.inspect.classification.file_roles, compact "fileN=role" list | none>
    aroll_pool_path: <path | none>
    broll_index_path: <path | none>
    review_pool_path: <path | none>
@@ -86,6 +101,8 @@ moment.
    clean_speech_path: <inspect.clean_speech_path | none>
    digest_path: <inspect.digest_path | none>
    transcript_path: <path | none>
+   transcript_aligned: <inspect.transcript_aligned — true|false; false ⇒ word timing is approximate, so karaoke/word-by-word captions will drift>
+   audio_summary: <inspect.audio compact, or none — clean_audio_source_index, any_quiet/any_clip_risk, per-file layout/balance/dead_channel; informs the multi-file spine AUDIO choice. Leveling itself lands at PACKAGE — surface a quiet/clip concern at the gate, don't act on it here>
    thumbs_dir: <inspect.thumbs_dir>
    thumb_interval_seconds: <n>
    thumb_count: <n>
@@ -114,8 +131,15 @@ moment.
    re-clarify intent?"
 
 7b. If the save result carried plan-lint `warnings[]`, present them with the plan as
-   `⚠ plan-lint:` lines — they are exactly the drift/hook/B-roll problems the user should rule
-   on at this gate.
+   `⚠ plan-lint:` lines — they are exactly the drift/hook/B-roll/overlay problems the user
+   should rule on at this gate.
+
+7c. **B-roll gap shopping list** (the save result carries `broll_gap_count > 0`): `Read`
+   `broll_gaps_path` (`plan/broll_gaps.json`) and present it as a concrete ask — one line per
+   gap: _"scene <scene_ref> wants ~<desired_duration_seconds>s of: <description>"_. Frame the
+   choice: "upload these N shots and I'll re-derive the plan (the cut gets the coverage it
+   wants), or approve as-is and the cut holds on the spine there." Gaps are warnings, never
+   blockers — `PLAN_BROLL_GAP_UNFILLED` does not stop the sign-off.
 
 8. Handle the response:
    - **Approve** → `mcp__vob__vob_confirm_brief { project_id }` AND `mcp__vob__vob_confirm_storyboard
@@ -127,6 +151,14 @@ moment.
      markdown), re-present.
    - **Re-clarify intent** → `vob_transition_phase` to `INTENT`, record the updated answer,
      transition back to PLAN, re-draft both halves.
+   - **Fill the b-roll gaps** (the user has/uploads more footage) →
+     `mcp__vob__vob_transition_phase { project_id, to_phase: "INGEST" }` (the sanctioned gap-
+     resolution back-edge), then `vob_ingest_file` with the EXTENDED drop (a folder containing
+     old + new files works best — re-probing unchanged files is hash-cached), re-walk
+     INGEST→INSPECT (re-run inspect + classification + ack; detection/ASR caches make the old
+     footage cheap)→INTENT (answers persist — transition straight through)→PLAN, then loop to
+     step 4: the storyboarder re-derives against the extended B-roll index and drops the filled
+     gaps.
 
 9. Do not call either confirm tool until the user has explicitly approved the plan. A vague
    "sounds good" is fine; silence or "let me think" is not. If the gate blocks with

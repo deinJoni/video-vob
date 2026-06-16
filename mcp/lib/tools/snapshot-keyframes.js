@@ -10,6 +10,7 @@ const { readSessionStateStrict } = require("../session-state.js");
 const { runHyperframesWithRetry, buildSnapshotArgv } = require("../hyperframes-runner.js");
 const { stderrTail } = require("../spawn-with-shutdown.js");
 const { findTimeline } = require("../storyboard-schema.js");
+const { planSegmentById } = require("../render-segments.js");
 
 const SNAPSHOT_TIMEOUT_MS = 5 * 60 * 1000;
 const MAX_FRAMES = 16;
@@ -24,7 +25,7 @@ function nowIso() {
 // (either scene may render); 0.5s inside shows the scene's settled state
 // including entrance-animated captions, and the hook frame lands at ≈0.5s —
 // the cold-open moment the self-QC checklist inspects.
-function storyboardDefaultTimecodes(projectId, shortId) {
+function storyboardDefaultTimecodes(projectId, shortId, segmentSceneIds = null) {
   let sb = null;
   try {
     sb = JSON.parse(fs.readFileSync(storyboardPath(projectId), "utf8"));
@@ -33,8 +34,14 @@ function storyboardDefaultTimecodes(projectId, shortId) {
   }
   // Fan-out: the composition implements ONE short — default frames come from
   // that short's scenes (the singleton form resolves via findTimeline too).
+  // Segmented render: ONE render segment — its scenes, in segment-local time
+  // (the segment composition's own timeline starts at 0).
   const timeline = findTimeline(sb, shortId);
-  const scenes = timeline ? timeline.scenes : null;
+  let scenes = timeline ? timeline.scenes : null;
+  if (Array.isArray(segmentSceneIds) && segmentSceneIds.length > 0 && Array.isArray(scenes)) {
+    const wanted = new Set(segmentSceneIds);
+    scenes = scenes.filter((s) => s && typeof s.scene_id === "string" && wanted.has(s.scene_id));
+  }
   if (!Array.isArray(scenes) || scenes.length === 0) return null;
   const out = [];
   let cursor = 0;
@@ -92,7 +99,11 @@ async function snapshotKeyframes(args) {
     const activeShortId = typeof composition.short_id === "string" && composition.short_id !== ""
       ? composition.short_id
       : null;
-    const defaults = storyboardDefaultTimecodes(id, activeShortId);
+    const activeSegmentId = typeof composition.segment_id === "string" && composition.segment_id !== ""
+      ? composition.segment_id
+      : null;
+    const planSegment = activeSegmentId ? planSegmentById(state, activeSegmentId) : null;
+    const defaults = storyboardDefaultTimecodes(id, activeShortId, planSegment ? planSegment.scene_ids : null);
     if (defaults && defaults.length > 0) {
       timecodes = defaults;
       timecodeSource = "storyboard_scenes";

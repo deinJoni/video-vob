@@ -4,13 +4,24 @@ const fs = require("fs");
 const path = require("path");
 
 const { ERROR_CODES, ToolError } = require("../envelope.js");
-const { assertSafeProjectId, composeDir, renderStderrLogPath, rendersDir, statePath, storyboardPath } = require("../paths.js");
+const {
+  assertSafeProjectId,
+  composeDir,
+  renderStderrLogPath,
+  rendersDir,
+  segmentRenderLogPath,
+  segmentRenderPath,
+  segmentRendersDir,
+  statePath,
+  storyboardPath,
+} = require("../paths.js");
 const { withSessionLock, writeFileAtomic } = require("../storage.js");
 const { readSessionStateStrict } = require("../session-state.js");
 const { runHyperframesWithRetry, buildRenderArgv, renderTimeoutMs, defaultRenderQuality } = require("../hyperframes-runner.js");
 const { stderrTail } = require("../spawn-with-shutdown.js");
 const { verifyRenderedMp4 } = require("../render-verify.js");
 const { expectedTimelineDurationSeconds, findTimeline } = require("../storyboard-schema.js");
+const { planSegmentById } = require("../render-segments.js");
 
 function nowIso() {
   return new Date().toISOString();
@@ -76,33 +87,59 @@ async function renderFull(args) {
     );
   }
 
+  // Segmented render: the composition implements ONE render segment (stamped
+  // at save). Its partial lands in <session>/segment_renders/ — outside
+  // renders/, so the per-segment RENDER→COMPOSE back-edge's auto-archival
+  // can't sweep completed partials mid-cycle — and is recorded in the
+  // state.segment_renders registry for vob_assemble_video.
+  const segmentId = typeof composition.segment_id === "string" && composition.segment_id !== ""
+    ? composition.segment_id
+    : null;
+  const planSegment = segmentId ? planSegmentById(state, segmentId) : null;
+  if (segmentId && !planSegment) {
+    throw new ToolError(
+      ERROR_CODES.STATE_CONFLICT,
+      `composition implements segment "${segmentId}" but the render plan no longer defines it — re-enter COMPOSE to re-derive the plan, then re-save the composition`,
+    );
+  }
+
   const rendersRoot = rendersDir(id);
   fs.mkdirSync(rendersRoot, { recursive: true });
+  if (planSegment) fs.mkdirSync(segmentRendersDir(id), { recursive: true });
 
-  // Timeout scales with the ACTIVE timeline's total (the composition's short
-  // in fan-out; the document total otherwise), floored at the fixed 30-min
-  // cap. Drift verification only gets an expectation when the active timeline
-  // actually RESOLVED — the longest-short timeout fallback must never become a
-  // false silent-truncation flag.
+  // Timeout scales with the ACTIVE scope's total (the render segment in a
+  // segmented plan, the composition's short in fan-out, the document total
+  // otherwise), floored at the fixed 30-min cap. Drift verification only gets
+  // an expectation when the active scope actually RESOLVED — a timeout
+  // fallback must never become a false silent-truncation flag.
   let sbTotal = null;
   let expectedDurationSeconds = null;
-  try {
-    const sb = JSON.parse(fs.readFileSync(storyboardPath(id), "utf8"));
-    const shortId = typeof composition.short_id === "string" && composition.short_id !== ""
-      ? composition.short_id
-      : null;
-    sbTotal = expectedTimelineDurationSeconds(sb, shortId);
-    const timeline = findTimeline(sb, shortId);
-    expectedDurationSeconds = timeline
-      && Number.isFinite(timeline.total_target_duration_seconds) && timeline.total_target_duration_seconds > 0
-      ? timeline.total_target_duration_seconds
-      : null;
-  } catch {}
+  if (planSegment) {
+    sbTotal = Number.isFinite(planSegment.target_duration_seconds) ? planSegment.target_duration_seconds : null;
+    expectedDurationSeconds = sbTotal;
+  } else {
+    try {
+      const sb = JSON.parse(fs.readFileSync(storyboardPath(id), "utf8"));
+      const shortId = typeof composition.short_id === "string" && composition.short_id !== ""
+        ? composition.short_id
+        : null;
+      sbTotal = expectedTimelineDurationSeconds(sb, shortId);
+      const timeline = findTimeline(sb, shortId);
+      expectedDurationSeconds = timeline
+        && Number.isFinite(timeline.total_target_duration_seconds) && timeline.total_target_duration_seconds > 0
+        ? timeline.total_target_duration_seconds
+        : null;
+    } catch {}
+  }
   const timeoutMs = renderTimeoutMs("full", sbTotal);
 
   const ts = filenameSafeTimestamp();
-  const outPath = path.join(rendersRoot, `final-${ts}.mp4`);
-  const stderrLogPath = renderStderrLogPath(id, "render", ts);
+  const outPath = planSegment
+    ? segmentRenderPath(id, planSegment.segment_id, ts)
+    : path.join(rendersRoot, `final-${ts}.mp4`);
+  const stderrLogPath = planSegment
+    ? segmentRenderLogPath(id, planSegment.segment_id, ts)
+    : renderStderrLogPath(id, "render", ts);
 
   // Audit the start of the render before the (potentially long) spawn so
   // failed/aborted attempts leave a trace in history.
@@ -127,6 +164,7 @@ async function renderFull(args) {
           out_path: outPath,
           stderr_log_path: stderrLogPath,
           next_revision_count: prevRevisionCount + 1,
+          ...(planSegment ? { segment_id: planSegment.segment_id } : {}),
         },
       ],
     };
@@ -195,6 +233,7 @@ async function renderFull(args) {
         revision_count: revisionCount,
         quality,
         composition_revision_rendered: compositionRevisionRendered,
+        ...(planSegment ? { segment_id: planSegment.segment_id } : {}),
         verification,
       },
       last_updated: completedTs,
@@ -208,9 +247,43 @@ async function renderFull(args) {
           render_duration_seconds: renderDurationSeconds,
           file_size_bytes: sizeBytes,
           duration_drift_seconds: verification.duration_drift_seconds,
+          ...(planSegment ? { segment_id: planSegment.segment_id } : {}),
         },
       ],
     };
+    if (planSegment) {
+      // Segment registry entry — what vob_assemble_video consumes. Bound to
+      // the CURRENT storyboard revision + the plan segment's scene set, so a
+      // re-saved storyboard invalidates the partial instead of concatenating a
+      // stale cut. A fresh partial also invalidates any prior assembled final.
+      const sbRevision = stateNow.storyboard && Number.isInteger(stateNow.storyboard.revision_count)
+        ? stateNow.storyboard.revision_count
+        : null;
+      const prevRegistry = stateNow.segment_renders && typeof stateNow.segment_renders === "object" && !Array.isArray(stateNow.segment_renders)
+        ? stateNow.segment_renders
+        : {};
+      next.segment_renders = {
+        ...prevRegistry,
+        [planSegment.segment_id]: {
+          segment_id: planSegment.segment_id,
+          mp4_path: outPath,
+          rendered_at: completedTs,
+          render_duration_seconds: renderDurationSeconds,
+          file_size_bytes: sizeBytes,
+          stderr_log_path: stderrLogPath,
+          quality,
+          composition_revision_rendered: compositionRevisionRendered,
+          storyboard_revision: sbRevision,
+          scene_ids: planSegment.scene_ids.slice(),
+          target_duration_seconds: planSegment.target_duration_seconds,
+          transition_out: planSegment.transition_out || "cut",
+          verification,
+          confirmed: false,
+          confirmed_at: null,
+        },
+      };
+      delete next.assembly;
+    }
     writeFileAtomic(statePath(id), `${JSON.stringify(next, null, 2)}\n`);
 
     return {
@@ -222,6 +295,7 @@ async function renderFull(args) {
       revision_count: revisionCount,
       quality,
       composition_revision_rendered: compositionRevisionRendered,
+      ...(planSegment ? { segment_id: planSegment.segment_id } : {}),
       verification,
       exit_code: 0,
     };
@@ -230,7 +304,7 @@ async function renderFull(args) {
 
 module.exports = Object.freeze({
   name: "vob_render_full",
-  description: "Render the final MP4 to renders/final-<ts>.mp4, teeing stderr to renders/render-<ts>.log (tail -f for progress). Requires preview.confirmed:true. quality: explicit 'standard'|'high', else defaults to 'high' on ≥10GB-RAM hosts (VOB_RENDER_QUALITY overrides). BLOCKING; timeout scales with storyboard duration (≥30 min; VOB_FULL_RENDER_TIMEOUT_MS overrides). Success returns mp4_path, file_size_bytes, stderr_log_path + ffprobe `verification`, and resets render confirmation. Failure leaves only the render_started audit entry.",
+  description: "Render the final MP4 to renders/final-<ts>.mp4, teeing stderr to renders/render-<ts>.log (tail -f for progress). Requires preview.confirmed:true. quality: explicit 'standard'|'high', else defaults to 'high' on ≥10GB-RAM hosts (VOB_RENDER_QUALITY overrides). BLOCKING; timeout scales with the active scope's duration (≥30 min; VOB_FULL_RENDER_TIMEOUT_MS overrides). Segmented render (composition saved with segment_id): the output is a PARTIAL at segment_renders/<segment_id>-<ts>.mp4, recorded in the state.segment_renders registry (revision-bound; invalidates any prior assembly) — render every segment, then vob_assemble_video joins them into renders/final-<ts>.mp4. Success returns mp4_path, file_size_bytes, stderr_log_path + ffprobe `verification` (drift vs the segment/timeline target), and resets render confirmation. Failure leaves only the render_started audit entry.",
   inputSchema: {
     type: "object",
     properties: {
@@ -247,6 +321,6 @@ module.exports = Object.freeze({
   browser_access: false,
   scope_required: false,
   sensitive_output: false,
-  session_artifacts_written: ["renders/final-*.mp4", "renders/render-*.log", "state.json"],
+  session_artifacts_written: ["renders/final-*.mp4", "renders/render-*.log", "segment_renders/*", "state.json"],
   hook_required: false,
 });

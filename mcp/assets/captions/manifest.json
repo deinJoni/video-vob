@@ -1,0 +1,327 @@
+{
+  "kind": "video-vob-caption-kit",
+  "generated_with_hyperframes": "0.6.97",
+  "note": "Vetted REFERENCE caption compositions sourced from the hyperframes registry via `hyperframes add`. Adapt them (do NOT copy verbatim): use the vendored ./fonts.css kit instead of the Google-Fonts <link>, stamp data-vob-caption-id on bound captions, and feed real per-word timing to word-level/karaoke components. See README.md.",
+  "animations": {
+    "pop": {
+      "default": "caption-highlight",
+      "alternates": [
+        "caption-editorial-emphasis",
+        "caption-gradient-fill",
+        "caption-neon-glow",
+        "caption-clip-wipe",
+        "caption-matrix-decode",
+        "caption-particle-burst",
+        "caption-parallax-layers",
+        "caption-texture"
+      ]
+    },
+    "word-by-word": {
+      "default": "caption-kinetic-slam",
+      "alternates": [
+        "caption-weight-shift",
+        "caption-neon-accent",
+        "caption-glitch-rgb",
+        "caption-emoji-pop"
+      ]
+    },
+    "karaoke": {
+      "default": "caption-pill-karaoke",
+      "alternates": []
+    }
+  },
+  "components": {
+    "caption-pill-karaoke": {
+      "file": "caption-pill-karaoke/caption-pill-karaoke.html",
+      "files": [
+        "caption-pill-karaoke/caption-pill-karaoke.html"
+      ],
+      "suited_for": [
+        "karaoke"
+      ],
+      "word_level": true,
+      "consumes_transcript": true,
+      "font_family": "Poppins",
+      "font_in_kit": true,
+      "external": {
+        "gsap_cdn": true,
+        "google_fonts_link": true
+      },
+      "bytes": 13479,
+      "note": "Rounded pill; per-word karaoke highlight driven by an inline [{text,start,end}] transcript, with a hard tl.set() kill at exit."
+    },
+    "caption-kinetic-slam": {
+      "file": "caption-kinetic-slam/caption-kinetic-slam.html",
+      "files": [
+        "caption-kinetic-slam/caption-kinetic-slam.html"
+      ],
+      "suited_for": [
+        "word-by-word"
+      ],
+      "word_level": true,
+      "consumes_transcript": false,
+      "font_family": "Anton",
+      "font_in_kit": true,
+      "external": {
+        "gsap_cdn": true,
+        "google_fonts_link": true
+      },
+      "bytes": 6762,
+      "note": "Words slam in one at a time with a kinetic scale/impact — the word-by-word default."
+    },
+    "caption-weight-shift": {
+      "file": "caption-weight-shift/caption-weight-shift.html",
+      "files": [
+        "caption-weight-shift/caption-weight-shift.html"
+      ],
+      "suited_for": [
+        "word-by-word"
+      ],
+      "word_level": true,
+      "consumes_transcript": true,
+      "font_family": "Montserrat",
+      "font_in_kit": true,
+      "external": {
+        "gsap_cdn": true,
+        "google_fonts_link": true
+      },
+      "bytes": 13590,
+      "note": "Per-word weight shift as each word becomes active (variable-weight typography)."
+    },
+    "caption-neon-accent": {
+      "file": "caption-neon-accent/caption-neon-accent.html",
+      "files": [
+        "caption-neon-accent/caption-neon-accent.html"
+      ],
+      "suited_for": [
+        "word-by-word"
+      ],
+      "word_level": true,
+      "consumes_transcript": true,
+      "font_family": "Montserrat",
+      "font_in_kit": true,
+      "external": {
+        "gsap_cdn": true,
+        "google_fonts_link": true
+      },
+      "bytes": 16317,
+      "note": "Per-word neon accent reveal."
+    },
+    "caption-glitch-rgb": {
+      "file": "caption-glitch-rgb/caption-glitch-rgb.html",
+      "files": [
+        "caption-glitch-rgb/caption-glitch-rgb.html"
+      ],
+      "suited_for": [
+        "word-by-word"
+      ],
+      "word_level": true,
+      "consumes_transcript": true,
+      "font_family": "Space Grotesk",
+      "font_in_kit": false,
+      "external": {
+        "gsap_cdn": true,
+        "google_fonts_link": true
+      },
+      "bytes": 11238,
+      "note": "Per-word RGB-split glitch reveal."
+    },
+    "caption-emoji-pop": {
+      "file": "caption-emoji-pop/caption-emoji-pop.html",
+      "files": [
+        "caption-emoji-pop/caption-emoji-pop.html"
+      ],
+      "suited_for": [
+        "word-by-word",
+        "pop"
+      ],
+      "word_level": true,
+      "consumes_transcript": true,
+      "font_family": "Gabarito",
+      "font_in_kit": false,
+      "external": {
+        "gsap_cdn": true,
+        "google_fonts_link": true
+      },
+      "bytes": 14512,
+      "note": "Per-word reveal with emoji pops on keywords (mind the SwiftShader large-emoji artifact — keep emoji small)."
+    },
+    "caption-highlight": {
+      "file": "caption-highlight/caption-highlight.html",
+      "files": [
+        "caption-highlight/caption-highlight.html"
+      ],
+      "suited_for": [
+        "pop"
+      ],
+      "word_level": false,
+      "consumes_transcript": false,
+      "font_family": "Montserrat",
+      "font_in_kit": true,
+      "external": {
+        "gsap_cdn": true,
+        "google_fonts_link": true
+      },
+      "bytes": 8321,
+      "note": "Clean chunk caption with a sweeping highlight bar behind the active line — the pop default."
+    },
+    "caption-editorial-emphasis": {
+      "file": "caption-editorial-emphasis/caption-editorial-emphasis.html",
+      "files": [
+        "caption-editorial-emphasis/caption-editorial-emphasis.html"
+      ],
+      "suited_for": [
+        "pop"
+      ],
+      "word_level": false,
+      "consumes_transcript": false,
+      "font_family": "Inter",
+      "font_in_kit": true,
+      "external": {
+        "gsap_cdn": true,
+        "google_fonts_link": true
+      },
+      "bytes": 12498,
+      "note": "Editorial chunk caption; emphasis words get a distinct weight/color treatment (good for emphasis_words[])."
+    },
+    "caption-gradient-fill": {
+      "file": "caption-gradient-fill/caption-gradient-fill.html",
+      "files": [
+        "caption-gradient-fill/caption-gradient-fill.html"
+      ],
+      "suited_for": [
+        "pop"
+      ],
+      "word_level": false,
+      "consumes_transcript": false,
+      "font_family": "Montserrat",
+      "font_in_kit": true,
+      "external": {
+        "gsap_cdn": true,
+        "google_fonts_link": true
+      },
+      "bytes": 7919,
+      "note": "Chunk caption with an animated gradient text fill."
+    },
+    "caption-neon-glow": {
+      "file": "caption-neon-glow/caption-neon-glow.html",
+      "files": [
+        "caption-neon-glow/caption-neon-glow.html"
+      ],
+      "suited_for": [
+        "pop"
+      ],
+      "word_level": false,
+      "consumes_transcript": false,
+      "font_family": "Outfit",
+      "font_in_kit": true,
+      "external": {
+        "gsap_cdn": true,
+        "google_fonts_link": true
+      },
+      "bytes": 7800,
+      "note": "Chunk caption with a neon glow/bloom."
+    },
+    "caption-clip-wipe": {
+      "file": "caption-clip-wipe/caption-clip-wipe.html",
+      "files": [
+        "caption-clip-wipe/caption-clip-wipe.html"
+      ],
+      "suited_for": [
+        "pop"
+      ],
+      "word_level": false,
+      "consumes_transcript": false,
+      "font_family": "Poppins",
+      "font_in_kit": true,
+      "external": {
+        "gsap_cdn": true,
+        "google_fonts_link": true
+      },
+      "bytes": 7567,
+      "note": "Chunk caption revealed by a clip-path wipe."
+    },
+    "caption-matrix-decode": {
+      "file": "caption-matrix-decode/caption-matrix-decode.html",
+      "files": [
+        "caption-matrix-decode/caption-matrix-decode.html"
+      ],
+      "suited_for": [
+        "pop"
+      ],
+      "word_level": false,
+      "consumes_transcript": false,
+      "font_family": "Space Grotesk",
+      "font_in_kit": false,
+      "external": {
+        "gsap_cdn": true,
+        "google_fonts_link": true
+      },
+      "bytes": 8877,
+      "note": "Chunk caption that scrambles/decodes into place."
+    },
+    "caption-particle-burst": {
+      "file": "caption-particle-burst/caption-particle-burst.html",
+      "files": [
+        "caption-particle-burst/caption-particle-burst.html"
+      ],
+      "suited_for": [
+        "pop"
+      ],
+      "word_level": false,
+      "consumes_transcript": false,
+      "font_family": "Outfit",
+      "font_in_kit": true,
+      "external": {
+        "gsap_cdn": true,
+        "google_fonts_link": true
+      },
+      "bytes": 10143,
+      "note": "Chunk caption with a particle burst on entry."
+    },
+    "caption-parallax-layers": {
+      "file": "caption-parallax-layers/caption-parallax-layers.html",
+      "files": [
+        "caption-parallax-layers/caption-parallax-layers.html"
+      ],
+      "suited_for": [
+        "pop"
+      ],
+      "word_level": false,
+      "consumes_transcript": false,
+      "font_family": "Instrument Serif",
+      "font_in_kit": false,
+      "external": {
+        "gsap_cdn": true,
+        "google_fonts_link": true
+      },
+      "bytes": 11705,
+      "note": "Layered parallax chunk caption."
+    },
+    "caption-texture": {
+      "file": "caption-texture/caption-texture.html",
+      "files": [
+        "caption-texture/caption-texture.html",
+        "caption-texture/concrete-042-a.png",
+        "caption-texture/lava.png",
+        "caption-texture/marble-012.png",
+        "caption-texture/metal-046-b.png",
+        "caption-texture/rock-058.png",
+        "caption-texture/wood-066.png"
+      ],
+      "suited_for": [
+        "pop"
+      ],
+      "word_level": false,
+      "consumes_transcript": false,
+      "font_family": "Anton",
+      "font_in_kit": true,
+      "external": {
+        "gsap_cdn": true,
+        "google_fonts_link": true
+      },
+      "bytes": 528341,
+      "note": "Chunk caption with a textured material fill — ships sample texture PNGs as siblings."
+    }
+  }
+}

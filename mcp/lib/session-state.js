@@ -3,22 +3,30 @@
 const fs = require("fs");
 const { PHASE_VALUES, LEGACY_PHASE_ALIASES } = require("./constants.js");
 const { ERROR_CODES, ToolError } = require("./envelope.js");
-const { sessionDir, statePath, assertSafeProjectId, inspectSummaryPath, transcodedClipsDir } = require("./paths.js");
+const { sessionDir, statePath, assertSafeProjectId, inspectSummaryPath, storyboardPath, transcodedClipsDir } = require("./paths.js");
 const { withSessionLock, writeFileAtomic, readJsonFile } = require("./storage.js");
 const { getGate } = require("./phase-gates.js");
 const { archiveForIteration, currentIterationVersion, isArchivalTransition } = require("./archival.js");
 const { missingIntentKeys } = require("./intent-schema.js");
 const { materializeSceneClips } = require("./clip-materialize.js");
+const { materializeSubjectMattes } = require("./matte-materialize.js");
+const { materializeSceneLayouts } = require("./layout-materialize.js");
+const { summarizeActiveVideoType } = require("./video-types.js");
+const hostProfile = require("./host-profile.js");
+const { deriveRenderPlan, validSegmentRenders } = require("./render-segments.js");
 
 // INTENT -> PLAN -> COMPOSE: the former BRIEF and STORYBOARD phases are merged
 // into a single PLAN phase (one human gate that presents intent summary +
 // A-roll order + chosen takes + B-roll placements together). Back-edges that
-// used to target STORYBOARD now target PLAN.
+// used to target STORYBOARD now target PLAN. PLAN -> INGEST (v3) is the b-roll
+// gap-resolution back-edge: the user drops MORE footage, INGEST/INSPECT re-run
+// (content-hash caches make old files cheap), and PLAN re-derives with the
+// extended B-roll index — the sanctioned path for plan/broll_gaps.json.
 const ALLOWED_TRANSITIONS = Object.freeze({
   INGEST:   ["INSPECT"],
   INSPECT:  ["INTENT"],
   INTENT:   ["PLAN"],
-  PLAN:     ["COMPOSE", "INTENT"],
+  PLAN:     ["COMPOSE", "INTENT", "INGEST"],
   COMPOSE:  ["PREVIEW", "PLAN"],
   PREVIEW:  ["RENDER", "COMPOSE", "PLAN"],
   RENDER:   ["PACKAGE", "COMPOSE", "PLAN"],
@@ -172,6 +180,52 @@ function clipsDigest(projectId, transcodedClips) {
   };
 }
 
+// Lean digest of the subject-matte materialization (v3.3 subject compositing).
+// The full per-matte document persists in state.subject_mattes on disk; the
+// orchestrator reads this to know whether mattes are ready / over budget / on a
+// host without the backend, and falls back the composer accordingly.
+function summarizeSubjectMattes(slot) {
+  const m = asSlot(slot);
+  if (!m) return null;
+  const s = asSlot(m.summary) || {};
+  return {
+    count: Number(s.total) || 0,
+    matted: Number(s.matted) || 0,
+    cached: Number(s.cached) || 0,
+    failed: Number(s.failed) || 0,
+    skipped: Number(s.skipped) || 0,
+    unavailable: Number(s.unavailable) || 0,
+    over_budget: m.over_budget === true,
+    backend_available: typeof m.backend_available === "boolean" ? m.backend_available : null,
+  };
+}
+
+// Lean digest of the multi-cell layout materialization (v3.4 split-screen). The
+// orchestrator reads this to tell the composer which layout scenes have a
+// composited clip ready (reference ./source/<scene_id>-layout.mp4) vs which
+// degraded (fall back to CSS-positioned cells).
+function summarizeSceneLayouts(slot) {
+  const m = asSlot(slot);
+  if (!m) return null;
+  const s = asSlot(m.summary) || {};
+  const composited = [];
+  const fell_back = [];
+  for (const l of (Array.isArray(m.layouts) ? m.layouts : [])) {
+    if (!asSlot(l) || typeof l.scene_id !== "string") continue;
+    if (l.status === "composited" || l.status === "cached") composited.push(l.scene_id);
+    else fell_back.push(l.scene_id);
+  }
+  return {
+    count: Number(s.total) || 0,
+    composited: Number(s.composited) || 0,
+    cached: Number(s.cached) || 0,
+    skipped: Number(s.skipped) || 0,
+    failed: Number(s.failed) || 0,
+    composited_scenes: composited,
+    fell_back_scenes: fell_back,
+  };
+}
+
 // One entry per dependency preflight with ok === false. The full preflight
 // blobs stay on disk for the renderToPackage gate and vob_doctor.
 function dependencyFailuresDigest(dependencies) {
@@ -208,6 +262,11 @@ function summarizeClassification(slot) {
     review_pool_path: strOrNull(c.review_pool_path != null ? c.review_pool_path : c.review_path),
     visual_coverage: asSlot(c.visual_coverage),
     hook_tagged_count: intOr(c.hook_tagged_count, null),
+    // v3.2 P3 richer-tagging coverage notes + the multi-file role map.
+    content_tagged_count: intOr(c.content_tagged_count, 0),
+    on_screen_text_count: intOr(c.on_screen_text_count, 0),
+    file_role_count: intOr(c.file_role_count, 0),
+    file_roles: arrOr(c.file_roles),
   };
 }
 
@@ -225,6 +284,10 @@ function summarizeInspect(slot) {
     contact_sheet_paths: arrOr(i.contact_sheet_paths),
     audio_present: i.audio_present === true,
     speech_detected: i.speech_detected === true,
+    // v3.2 P1/P2 — karaoke-grade word timing marker + the audio-analysis summary.
+    transcript_aligned: i.transcript_aligned === true,
+    audio: asSlot(i.audio),
+    audio_analysis_path: strOrNull(i.audio_analysis_path),
     word_count: intOr(i.word_count, 0),
     paragraph_count: intOr(i.paragraph_count, 0),
     transcript_path: strOrNull(i.transcript_path),
@@ -244,10 +307,10 @@ function summarizeInspect(slot) {
   };
 }
 
-// Intent answers ride through verbatim with ONE projection: an object-shaped
-// (v2 canonicalized) target_platform loses its stored profile snapshot —
-// {raw, canonical} is what the orchestrator displays; the summary's `platform`
-// field carries the geometry.
+// Intent answers ride through verbatim with TWO projections: object-shaped
+// (canonicalized) target_platform / video_type lose their stored snapshot
+// blobs — {raw, canonical} is what the orchestrator displays; the summary's
+// `platform` / `video_type` fields carry the resolved geometry/preset.
 function summarizeIntentAnswers(answers) {
   const a = asSlot(answers);
   if (!a) return {};
@@ -255,6 +318,10 @@ function summarizeIntentAnswers(answers) {
   const platform = asSlot(a.target_platform);
   if (platform && typeof platform.raw === "string") {
     out.target_platform = { raw: platform.raw, canonical: strOrNull(platform.canonical) };
+  }
+  const videoType = asSlot(a.video_type);
+  if (videoType && typeof videoType.raw === "string") {
+    out.video_type = { raw: videoType.raw, canonical: strOrNull(videoType.canonical) };
   }
   return out;
 }
@@ -360,6 +427,12 @@ function summarizeStoryboard(slot) {
         }),
       }
       : {}),
+    // B-roll gap shopping list (v3): >0 means the plan wants coverage the
+    // ingested footage can't supply — surface the list at the plan gate.
+    broll_gap_count: intOr(s.broll_gap_count, 0),
+    ...(intOr(s.broll_gap_count, 0) > 0 && strOrNull(s.broll_gaps_path)
+      ? { broll_gaps_path: s.broll_gaps_path }
+      : {}),
     plan_lint: planLint
       ? { error_count: intOr(planLint.error_count, 0), warning_count: intOr(planLint.warning_count, 0) }
       : null,
@@ -378,6 +451,57 @@ function summarizeComposition(slot) {
     revision_count: intOr(c.revision_count, 0),
     // Fan-out: which short the current composition implements.
     short_id: strOrNull(c.short_id),
+    // Segmented render: which render segment it implements.
+    segment_id: strOrNull(c.segment_id),
+  };
+}
+
+// Segmented-render plan digest: per-segment rendered/confirmed/stale flags so
+// the orchestrator computes the active segment on resume without re-deriving.
+function summarizeRenderPlan(state) {
+  const plan = asSlot(state.render_plan);
+  if (!plan || plan.mode !== "segmented") return null;
+  const { byId, missing } = validSegmentRenders(state);
+  const registry = asSlot(state.segment_renders) || {};
+  return {
+    mode: "segmented",
+    segmentation: strOrNull(plan.segmentation),
+    video_budget: intOr(plan.video_budget, null),
+    segment_count: arrOr(plan.segments).length,
+    segments: arrOr(plan.segments).map((s) => {
+      const seg = asSlot(s) || {};
+      const valid = typeof seg.segment_id === "string" ? byId.get(seg.segment_id) || null : null;
+      const raw = typeof seg.segment_id === "string" ? asSlot(registry[seg.segment_id]) : null;
+      return {
+        segment_id: strOrNull(seg.segment_id),
+        title: strOrNull(seg.title),
+        scene_count: arrOr(seg.scene_ids).length,
+        target_duration_seconds: numOr(seg.target_duration_seconds, null),
+        video_count: intOr(seg.video_count, null),
+        transition_out: strOrNull(seg.transition_out) || "cut",
+        rendered: Boolean(valid),
+        confirmed: Boolean(valid && valid.confirmed === true),
+        // had a partial but it no longer counts (storyboard revision / scene
+        // set changed, or the file vanished)
+        stale: Boolean(!valid && raw),
+      };
+    }),
+    missing_segment_ids: missing,
+  };
+}
+
+function summarizeAssembly(state) {
+  const a = asSlot(state.assembly);
+  if (!a) return null;
+  const render = asSlot(state.render);
+  return {
+    final_path: strOrNull(a.final_path),
+    assembled_at: strOrNull(a.assembled_at),
+    segment_count: arrOr(a.segment_ids).length,
+    // The RENDER->PACKAGE gate requires the assembled final to BE the current
+    // render — false here means a segment was re-rendered since assembly.
+    is_current_render: Boolean(render && strOrNull(render.mp4_path) && a.final_path === render.mp4_path),
+    verification: asSlot(a.verification),
   };
 }
 
@@ -422,6 +546,11 @@ function summarizePackage(slot) {
     readme_path: strOrNull(p.readme_path),
     packaged_at: strOrNull(p.packaged_at),
     iteration_version: intOr(p.iteration_version, 0),
+    captions_srt_path: strOrNull(p.captions_srt_path),
+    captions_vtt_path: strOrNull(p.captions_vtt_path),
+    posters_dir: strOrNull(p.posters_dir),
+    posters_count: intOr(p.posters_count, 0),
+    variants: arrOr(p.variants).filter((v) => typeof v === "string"),
   };
 }
 
@@ -456,6 +585,12 @@ function buildStateSummary(state, projectId) {
         }
       : null,
     platform: summarizePlatform(answers),
+    // Resolved video-type preset (env > intent > derived > default) — the
+    // orchestrator reads this instead of re-deriving; `source` says which
+    // precedence level won.
+    // ...+ shader_transitions_allowed: the host-capability gate for shader scene
+    // transitions, surfaced here so the composer spawn carries it (v3.3 §7.8).
+    video_type: { ...summarizeActiveVideoType(state), shader_transitions_allowed: hostProfile.shaderTransitionsAllowed() },
     target_duration_seconds: summarizeTargetDurationSeconds(answers),
     target_duration_range: summarizeTargetDurationRange(answers),
     brief: summarizeBrief(state.brief),
@@ -463,7 +598,11 @@ function buildStateSummary(state, projectId) {
     clips: transcoded
       ? { generated_at: strOrNull(transcoded.generated_at), ...clipsDigest(projectId, transcoded) }
       : null,
+    subject_mattes: summarizeSubjectMattes(state.subject_mattes),
+    scene_layouts: summarizeSceneLayouts(state.scene_layouts),
     composition: summarizeComposition(state.composition),
+    render_plan: summarizeRenderPlan(state),
+    assembly: summarizeAssembly(state),
     preview: summarizePreview(state.preview),
     render: summarizeRender(state.render),
     package: summarizePackage(state.package),
@@ -565,11 +704,45 @@ async function transitionPhase(args) {
     // changed. Cutting before the state write means the user is never advanced
     // into COMPOSE with a half-prepared compose/source/ tree.
     let transcodedClips = null;
+    let subjectMattes = null;
+    let sceneLayouts = null;
+    let renderPlan = null;
     if (toPhase === "COMPOSE") {
       transcodedClips = await materializeSceneClips({
         projectId: id,
         audioTreatment: readAudioTreatment(state),
       });
+      // Read the storyboard ONCE for the subject-matte + render-plan steps.
+      let sbDoc = null;
+      try {
+        sbDoc = readJsonFile(storyboardPath(id));
+      } catch {
+        sbDoc = null;
+      }
+      // Matte every render_mode:"subject" placement (alpha .webm per subject
+      // clip) right AFTER the scene clips — the matte INPUT is the already-pre-cut
+      // clip — and BEFORE the render plan. Content-hash cached, so a back-edge
+      // COMPOSE re-entry is a no-op; DEGRADES (never throws) on a matte failure so
+      // a missing/uncached model can't strand the user mid-COMPOSE.
+      subjectMattes = await materializeSubjectMattes({ projectId: id, storyboard: sbDoc });
+      // Composite every scene.layout (split-screen / multi-crop) into ONE clip per
+      // scene — its inputs are the already-pre-cut cell clips, so this runs AFTER
+      // materializeSceneClips. Content-hash cached (back-edge re-entry is a no-op)
+      // and DEGRADES (never throws) on a malformed/failed composite so a layout
+      // can't strand COMPOSE — the composer then falls back to CSS-positioned cells.
+      sceneLayouts = await materializeSceneLayouts({ projectId: id, storyboard: sbDoc });
+      // Derive the render plan (v3 segmented render) from the storyboard on
+      // disk + the active preset. Recomputed on EVERY COMPOSE entry: same
+      // storyboard + same budget => same plan; a changed storyboard re-chunks
+      // and the registry's revision binding invalidates stale partials. A layout
+      // scene whose composite DEGRADED this entry is budgeted at its fallback
+      // cell count (the composer will render N <video> cells, not 1 composite).
+      const fellBackLayoutScenes = new Set(
+        (sceneLayouts && Array.isArray(sceneLayouts.layouts) ? sceneLayouts.layouts : [])
+          .filter((l) => l && typeof l.scene_id === "string" && l.status !== "composited" && l.status !== "cached")
+          .map((l) => l.scene_id),
+      );
+      renderPlan = deriveRenderPlan({ storyboard: sbDoc, state, fellBackLayoutScenes });
     }
 
     const ts = nowIso();
@@ -594,6 +767,38 @@ async function transitionPhase(args) {
     if (transcodedClips) {
       next.transcoded_clips = transcodedClips;
     }
+    if (toPhase === "COMPOSE") {
+      // Stamp the matte materialization only when this entry actually mattes
+      // something; with no subject placements, DROP any stale slot from a prior
+      // COMPOSE entry (the matte set is recomputed fresh on every COMPOSE entry,
+      // and a non-COMPOSE transition never reaches here, so the COMPOSE value
+      // persists across the cycle).
+      if (subjectMattes && subjectMattes.summary && subjectMattes.summary.total > 0) {
+        next.subject_mattes = subjectMattes;
+      } else {
+        delete next.subject_mattes;
+      }
+      // Same discipline for multi-cell layouts: stamp only when this entry
+      // composited something; otherwise DROP any stale slot from a prior entry.
+      if (sceneLayouts && sceneLayouts.summary && sceneLayouts.summary.total > 0) {
+        next.scene_layouts = sceneLayouts;
+      } else {
+        delete next.scene_layouts;
+      }
+      if (renderPlan && renderPlan.mode === "segmented") {
+        const sbRevision = state.storyboard && Number.isInteger(state.storyboard.revision_count)
+          ? state.storyboard.revision_count
+          : null;
+        next.render_plan = { ...renderPlan, derived_at: ts, storyboard_revision: sbRevision };
+      } else {
+        // The plan resolved to a single continuous render — drop any stale
+        // segmented machinery from a prior storyboard shape so gates and the
+        // summary never reason from a dead plan.
+        delete next.render_plan;
+        delete next.segment_renders;
+        delete next.assembly;
+      }
+    }
     const archiveEvents = archive
       ? [{
           kind: "iteration_archived",
@@ -610,10 +815,39 @@ async function transitionPhase(args) {
           summary: transcodedClips.summary,
         }]
       : [];
+    const matteEvents = subjectMattes && subjectMattes.summary && subjectMattes.summary.total > 0
+      ? [{
+          kind: "subject_mattes_materialized",
+          at: ts,
+          device: subjectMattes.device,
+          backend_available: subjectMattes.backend_available,
+          over_budget: subjectMattes.over_budget,
+          summary: subjectMattes.summary,
+        }]
+      : [];
+    const layoutEvents = sceneLayouts && sceneLayouts.summary && sceneLayouts.summary.total > 0
+      ? [{
+          kind: "scene_layouts_materialized",
+          at: ts,
+          summary: sceneLayouts.summary,
+        }]
+      : [];
+    const renderPlanEvents = renderPlan && renderPlan.mode === "segmented"
+      ? [{
+          kind: "render_plan_derived",
+          at: ts,
+          segmentation: renderPlan.segmentation,
+          segment_count: renderPlan.segments.length,
+          segment_ids: renderPlan.segments.map((s) => s.segment_id),
+        }]
+      : [];
     next.history = [
       ...(Array.isArray(state.history) ? state.history : []),
       ...archiveEvents,
       ...clipEvents,
+      ...matteEvents,
+      ...layoutEvents,
+      ...renderPlanEvents,
       {
         kind: "transition",
         from,

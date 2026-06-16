@@ -42,9 +42,30 @@ function confirmRender(args) {
       last_updated: ts,
       history: [
         ...(Array.isArray(state.history) ? state.history : []),
-        { kind: "render_confirmed", at: ts, revision_count: render.revision_count },
+        {
+          kind: "render_confirmed",
+          at: ts,
+          revision_count: render.revision_count,
+          ...(typeof render.segment_id === "string" && render.segment_id ? { segment_id: render.segment_id } : {}),
+        },
       ],
     };
+    // Segmented render: the confirmed render is a segment PARTIAL — mirror the
+    // confirmation into its registry entry (matched by segment_id + mp4_path so
+    // a stale slot can never confirm a different partial).
+    const segmentId = typeof render.segment_id === "string" && render.segment_id ? render.segment_id : null;
+    const registry = state.segment_renders && typeof state.segment_renders === "object" && !Array.isArray(state.segment_renders)
+      ? state.segment_renders
+      : null;
+    const registryEntry = segmentId && registry && registry[segmentId] && typeof registry[segmentId] === "object"
+      ? registry[segmentId]
+      : null;
+    if (registryEntry && registryEntry.mp4_path === render.mp4_path) {
+      next.segment_renders = {
+        ...registry,
+        [segmentId]: { ...registryEntry, confirmed: true, confirmed_at: ts },
+      };
+    }
     writeFileAtomic(statePath(id), `${JSON.stringify(next, null, 2)}\n`);
 
     return {
@@ -52,6 +73,7 @@ function confirmRender(args) {
       confirmed: true,
       confirmed_at: ts,
       revision_count: render.revision_count,
+      ...(segmentId ? { segment_id: segmentId } : {}),
     };
   });
 }

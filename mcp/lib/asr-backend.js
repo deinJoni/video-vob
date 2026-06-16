@@ -35,6 +35,7 @@ const { runHyperframesWithRetry, buildTranscribeArgv } = require("./hyperframes-
 const ASR_DRIVER_DIR = path.join(__dirname, "asr");
 const FASTER_WHISPER_DRIVER = path.join(ASR_DRIVER_DIR, "faster_whisper_transcribe.py");
 const OPENAI_WHISPER_DRIVER = path.join(ASR_DRIVER_DIR, "openai_whisper_transcribe.py");
+const WHISPERX_DRIVER = path.join(ASR_DRIVER_DIR, "whisperx_transcribe.py");
 
 const DEFAULT_MODEL = "small.en";
 const DETECT_TIMEOUT_MS = 20 * 1000;
@@ -43,8 +44,20 @@ const DEFAULT_TRANSCRIBE_TIMEOUT_MS = 15 * 60 * 1000;
 // Backends that this module can actually RUN (whisper.cpp standalone is detected
 // for diagnostics but not driven directly — its JSON lacks reliable word
 // timings; install faster-whisper instead). `auto` tries them in this order.
-const RUNNABLE_BACKENDS = Object.freeze(["faster-whisper", "openai-whisper", "hyperframes"]);
-const ALL_BACKENDS = Object.freeze(["faster-whisper", "openai-whisper", "hyperframes", "whisper-cpp"]);
+// whisperx is FIRST when present: it is faster-whisper PLUS wav2vec2 forced
+// alignment, giving karaoke-grade word timing (a real per-word `p`). It is the
+// only backend that emits `aligned:true`; everything else is native-timestamp.
+const RUNNABLE_BACKENDS = Object.freeze(["whisperx", "faster-whisper", "openai-whisper", "hyperframes"]);
+const ALL_BACKENDS = Object.freeze(["whisperx", "faster-whisper", "openai-whisper", "hyperframes", "whisper-cpp"]);
+
+// Forced alignment is ON by default and only turned off by an explicit knob.
+// Read at order-resolution AND inside the whisperx driver (same env contract),
+// so `VOB_ALIGN=0` makes `auto` skip whisperx entirely (→ faster-whisper native
+// timings) rather than running whisperx in a pointless transcribe-only mode.
+function wantAlignment() {
+  const knob = (process.env.VOB_ALIGN || "").trim().toLowerCase();
+  return !(knob === "0" || knob === "off" || knob === "false" || knob === "no");
+}
 
 function nowIso() {
   return new Date().toISOString();
@@ -132,11 +145,23 @@ function whisperCppBinary() {
 // reported as "present but unverified" when the hyperframes binary resolves.
 function detectAsrBackends() {
   const py = resolvePython();
+  const whisperX = pythonModuleAvailable(py, "whisperx");
   const fasterWhisper = pythonModuleAvailable(py, "faster_whisper");
   const openaiWhisper = pythonModuleAvailable(py, "whisper");
   const whisperCpp = whisperCppBinary();
 
   const backends = [
+    {
+      name: "whisperx",
+      available: whisperX,
+      // `runnable` is pure availability (module present). Whether `auto` actually
+      // USES it also depends on wantAlignment() — gated in resolveBackendOrder —
+      // so VOB_ALIGN=0 doesn't have to fight the detection layer.
+      runnable: whisperX,
+      aligns: true,
+      requires: "python3 + `pip install whisperx`",
+      detail: whisperX ? `python module present (${py ? py.cmd : "python"}); wav2vec2 forced alignment` : (py ? "python present, whisperx module not importable" : "no python interpreter found"),
+    },
     {
       name: "faster-whisper",
       available: fasterWhisper,
@@ -174,6 +199,12 @@ function resolveBackendOrder(backend, detectedBackends) {
       // auto and let a runtime failure fall through. Treat as "attemptable".
       return true;
     }
+    if (name === "whisperx") {
+      // whisperx is only worth picking for its alignment; with VOB_ALIGN off it
+      // would run transcribe-only (coarser than faster-whisper native timings),
+      // so auto skips it. An EXPLICIT backend:"whisperx" still forces it below.
+      return availability.get("whisperx") === true && wantAlignment();
+    }
     return availability.get(name) === true;
   };
 
@@ -205,6 +236,11 @@ function checkAsrAvailable() {
   const runnableAvailable = detection.backends.filter((b) => b.runnable && b.available).map((b) => b.name);
   const order = resolveBackendOrder(cfg, detection.backends);
   const selected = order[0] || null;
+  // Alignment (karaoke-grade word timing) is available iff an alignment-capable
+  // backend (whisperx) is present. Reported so the orchestrator/doctor can warn
+  // "word timing will be approximate (no alignment backend) — pip install whisperx".
+  const alignBackend = detection.backends.find((b) => b.aligns && b.runnable && b.available);
+  const alignmentAvailable = Boolean(alignBackend);
   // "ok" = we have at least one attemptable backend. hyperframes is attemptable
   // but unverified, so ok-via-hyperframes-only is a soft yes with a caveat.
   const haveRunnable = runnableAvailable.length > 0;
@@ -222,6 +258,9 @@ function checkAsrAvailable() {
     selected,
     available_backends: runnableAvailable,
     all_backends: detection.backends,
+    alignment_available: alignmentAvailable,
+    alignment_backend: alignBackend ? alignBackend.name : null,
+    alignment_enabled: wantAlignment(),
     python: detection.python ? { cmd: detection.python.cmd, version: detection.python.version } : null,
     error,
     checked_at: nowIso(),
@@ -274,7 +313,10 @@ async function runPythonDriver({ driver, audioPath, outPath, model, language, pr
   }
   if (!fs.existsSync(outPath)) return { ok: false, reason: "transcription_file_missing", expected_path: outPath };
   const wordCount = Number.isFinite(envelope.wordCount) ? Number(envelope.wordCount) : countWordsInFile(outPath);
-  return { ok: true, word_count: wordCount, model: envelope.model || model, language: envelope.language || null };
+  // `aligned` is the karaoke-grade marker: only the whisperx driver sets it true
+  // (forced alignment ran). faster-whisper/openai-whisper omit it → native
+  // timings → aligned:false.
+  return { ok: true, word_count: wordCount, model: envelope.model || model, language: envelope.language || null, aligned: envelope.aligned === true };
 }
 
 // hyperframes transcribe writes transcript.json into its `-d <dir>` (= projectDir);
@@ -302,6 +344,7 @@ async function runHyperframesBackend({ audioPath, outPath, projectDir, timeoutMs
 }
 
 async function runBackend(name, ctx) {
+  if (name === "whisperx") return runPythonDriver({ driver: WHISPERX_DRIVER, ...ctx });
   if (name === "faster-whisper") return runPythonDriver({ driver: FASTER_WHISPER_DRIVER, ...ctx });
   if (name === "openai-whisper") return runPythonDriver({ driver: OPENAI_WHISPER_DRIVER, ...ctx });
   if (name === "hyperframes") return runHyperframesBackend(ctx);
@@ -336,7 +379,7 @@ async function asrTranscribe({ audioPath, outPath, projectDir, durationSeconds =
     }
     attempts.push({ backend: name, ok: res.ok, reason: res.ok ? null : res.reason, detail: res.detail || null });
     if (res.ok) {
-      return { ok: true, backend: name, word_count: res.word_count || 0, model: resolvedModel, language: res.language || resolvedLanguage || null, attempts };
+      return { ok: true, backend: name, word_count: res.word_count || 0, model: resolvedModel, language: res.language || resolvedLanguage || null, aligned: res.aligned === true, attempts };
     }
   }
   return { ok: false, reason: attempts.length ? attempts[attempts.length - 1].reason : "no_asr_backend", attempts, requested_backend: cfg };
@@ -347,10 +390,28 @@ async function asrTranscribe({ audioPath, outPath, projectDir, durationSeconds =
 // LANGUAGE). With backend "auto", a host that switches engines between runs
 // reuses the cache — acceptable: every backend writes the same canonical contract.
 function resolvedAsrParams() {
+  const backend = configuredBackend();
+  // `align` keys the transcript cache so a non-aligned transcript is never
+  // served as aligned. When whisperx becomes available on a host that earlier
+  // cached faster-whisper output, `align` flips true and busts the stale slot;
+  // a host with no alignment backend keeps align:false and reuses its cache.
+  let align = false;
+  try {
+    if (wantAlignment()) {
+      if (backend === "whisperx") {
+        align = true;
+      } else if (backend === "auto") {
+        const det = detectAsrBackends();
+        const wx = (det.backends || []).find((b) => b.name === "whisperx");
+        align = Boolean(wx && wx.runnable);
+      }
+    }
+  } catch { align = false; }
   return {
-    backend: configuredBackend(),
+    backend,
     model: configuredModel(null),
     language: configuredLanguage(null) || "auto",
+    align,
   };
 }
 

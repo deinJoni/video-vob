@@ -19,6 +19,19 @@ const FULL_RENDER_TIMEOUT_MS = 30 * 60 * 1000;
 const PREFLIGHT_TIMEOUT_MS = 30 * 1000;
 const MAX_OUTPUT_BYTES = DEFAULT_MAX_OUTPUT_BYTES;
 
+// `hyperframes inspect` is a BROWSER render (a handful of sample frames), not a
+// pure-Node call like `lint`. Its whole-job spawn deadline is generous: a
+// captioned composition with several <video> elements on a low-RAM/software-GPU
+// Mac renders slowly. Floored at 5 min; override with VOB_INSPECT_TIMEOUT_MS.
+// INSPECT_RUNTIME_INIT_TIMEOUT_MS is inspect's OWN `--timeout` (ms to wait for
+// the runtime to initialize, default 5000) — raised to match the readiness
+// window hyperframesChildEnv() sets (PRODUCER_*_READY_TIMEOUT_MS = 120000), so a
+// slow first multi-video frame seek doesn't false-fail the layout pass.
+const INSPECT_TIMEOUT_MS = 5 * 60 * 1000;
+const INSPECT_RUNTIME_INIT_TIMEOUT_MS = 120 * 1000;
+const INSPECT_DEFAULT_SAMPLES = 6;
+const INSPECT_MAX_TRANSITION_SAMPLES = 8;
+
 const RENDER_TIMEOUT_PER_COMPOSITION_SECOND_MS = 20 * 1000;       // preview (draft)
 const FULL_RENDER_TIMEOUT_PER_COMPOSITION_SECOND_MS = 40 * 1000;  // full
 const RENDER_TIMEOUT_CEILING_MS = 2 * 60 * 60 * 1000;             // preview ceiling 2h
@@ -249,6 +262,179 @@ function buildTranscribeArgv({ inspectDirAbs, audioPath }) {
   return ["transcribe", "--json", "-d", inspectDirAbs, audioPath];
 }
 
+// --- remove-background (subject compositing, v3.3) ---------------------------
+//
+// hyperframes ships a LOCAL background-removal model (u2net_human_seg; coreml on
+// Apple Silicon, cpu fallback) that mattes a foreground subject off its filmed
+// background to transparent media. We use it to lift a talking-head/subject and
+// composite it over a designed or ingested backdrop (render_mode:"subject"). It
+// is media PREPROCESSING (not a render/snapshot), but it IS still the hyperframes
+// binary, so every call MUST go through resolveHyperframesCmd()/hyperframesChildEnv()
+// — the one-runner invariant (no npx re-resolution, pinned engine, no mid-pipeline
+// auto-update), exactly like render/snapshot/transcribe.
+
+// Device: VOB_REMOVE_BG_DEVICE (auto|cpu|coreml|cuda) > darwin default "coreml"
+// (Neural Engine/GPU) > "auto". cpu is the safe fallback everywhere.
+function resolveRemoveBgDevice() {
+  const knob = (process.env.VOB_REMOVE_BG_DEVICE || "").trim().toLowerCase();
+  if (["auto", "cpu", "coreml", "cuda"].includes(knob)) return knob;
+  return process.platform === "darwin" ? "coreml" : "auto";
+}
+
+// Operational kill-switch: VOB_REMOVE_BG_DISABLE skips ALL subject matting (the
+// materializer records each subject as "skipped"; the composer falls back to a
+// rectangular pip). For a host that never wants the per-frame matte cost — or to
+// keep a run from downloading the model weights.
+function removeBackgroundDisabled() {
+  const v = (process.env.VOB_REMOVE_BG_DISABLE || "").trim().toLowerCase();
+  return v === "1" || v === "on" || v === "true" || v === "yes";
+}
+
+function buildRemoveBackgroundArgv({ inPath, outPath, quality = "balanced", device = resolveRemoveBgDevice() }) {
+  // --json => machine-readable result; the output format is inferred from the
+  // outPath extension (.webm = VP9 alpha; --quality applies to .webm only).
+  return ["remove-background", "--json", "--device", device, "--quality", quality, "-o", outPath, inPath];
+}
+
+// Per-frame inference is the cost, so the matte timeout scales with clip
+// duration: 1 min wall per 1s of clip, floored at 10 min and ceilinged at 3h,
+// fully overridable (VOB_REMOVE_BG_TIMEOUT_MS). A fixed cap would guarantee a
+// timeout on a 20-minute podcast clip (sibling of renderTimeoutMs above).
+const REMOVE_BG_TIMEOUT_FLOOR_MS = 10 * 60 * 1000;
+const REMOVE_BG_TIMEOUT_PER_SECOND_MS = 60 * 1000;
+const REMOVE_BG_TIMEOUT_CEILING_MS = 3 * 60 * 60 * 1000;
+function removeBackgroundTimeoutMs(clipSeconds) {
+  const env = Number.parseInt((process.env.VOB_REMOVE_BG_TIMEOUT_MS || "").trim(), 10);
+  if (Number.isInteger(env) && env > 0) return env;
+  if (!Number.isFinite(clipSeconds) || clipSeconds <= 0) return REMOVE_BG_TIMEOUT_FLOOR_MS;
+  return Math.min(
+    REMOVE_BG_TIMEOUT_CEILING_MS,
+    Math.max(REMOVE_BG_TIMEOUT_FLOOR_MS, Math.round(clipSeconds * REMOVE_BG_TIMEOUT_PER_SECOND_MS)),
+  );
+}
+
+// remove-background is deterministic per input, but the SPAWN can still hit the
+// ESM/launch flakes the render path sees, so reuse the bounded retry — with
+// retryTimedOut:false (a long matte that timed out shouldn't be blindly re-run,
+// same discipline as a long render). Returns the structured spawn result.
+async function runRemoveBackground(argv, { timeoutMs = REMOVE_BG_TIMEOUT_FLOOR_MS, stderrLogPath = null } = {}) {
+  return runHyperframesWithRetry(argv, { timeoutMs, stderrLogPath, maxAttempts: 2, retryTimedOut: false });
+}
+
+// Preflight: `remove-background --info` prints the detected execution providers
+// and whether the model weights are cached, doing NO work — used by vob_doctor
+// and the INGEST dependency probe so a missing backend / un-downloaded model
+// surfaces in seconds, not after COMPOSE burns minutes. Mirrors
+// checkHyperframesAvailable. ok:true means the binary + a provider exist;
+// model_cached:false is a WARNING signal (the first real matte downloads the
+// weights), NEVER a failure.
+function checkRemoveBackgroundAvailable({ timeoutMs = PREFLIGHT_TIMEOUT_MS } = {}) {
+  let result;
+  try {
+    result = runHyperframesSync(["remove-background", "--info", "--json"], { timeoutMs });
+  } catch (error) {
+    return { ok: false, providers: [], model_cached: null, error: error.message || String(error), checked_at: new Date().toISOString() };
+  }
+  if (result.timed_out) {
+    return { ok: false, providers: [], model_cached: null, error: "preflight timed out", checked_at: new Date().toISOString() };
+  }
+  if (!result.ok) {
+    const stderrPreview = (result.stderr || "").trim().slice(0, 500);
+    return {
+      ok: false,
+      providers: [],
+      model_cached: null,
+      error: stderrPreview || `remove-background --info exited with status ${result.exit_code}`,
+      checked_at: new Date().toISOString(),
+    };
+  }
+  let info = null;
+  try {
+    info = JSON.parse((result.stdout || "").trim());
+  } catch {
+    info = null;
+  }
+  const providers = info && Array.isArray(info.availableProviders) ? info.availableProviders : [];
+  return {
+    ok: true,
+    providers,
+    model_cached: info && typeof info.modelCached === "boolean" ? info.modelCached : null,
+    default_model: info && typeof info.defaultModel === "string" ? info.defaultModel : null,
+    model_path: info && typeof info.modelPath === "string" ? info.modelPath : null,
+    auto_provider: info && typeof info.autoProvider === "string" ? info.autoProvider : null,
+    peak_memory_mb: info && Number.isFinite(info.peakMemoryMb) ? info.peakMemoryMb : null,
+    device: resolveRemoveBgDevice(),
+    error: null,
+    checked_at: new Date().toISOString(),
+  };
+}
+
+// `inspect` renders the composition at sampled timestamps and reports text /
+// container / canvas overflow as agent-readable JSON. We always sample at tween
+// boundaries (--at-transitions) — exactly where captions/overlays enter and
+// exit — capped (--max-transition-samples) so a long segmented composition can't
+// explode the frame count, plus a small midpoint spread (--samples) OR explicit
+// timecodes. We NEVER pass --strict: the engine folds the findings itself (as
+// warnings), mirroring how the lint path owns its own error/warning gating.
+function buildInspectArgv({
+  composeRoot,
+  samples = INSPECT_DEFAULT_SAMPLES,
+  timecodes = null,
+  tolerancePx = 2,
+  maxTransitionSamples = INSPECT_MAX_TRANSITION_SAMPLES,
+  runtimeInitTimeoutMs = INSPECT_RUNTIME_INIT_TIMEOUT_MS,
+} = {}) {
+  const argv = [
+    "inspect",
+    "--json",
+    "--at-transitions",
+    "--tolerance", String(tolerancePx),
+    "--timeout", String(runtimeInitTimeoutMs),
+  ];
+  if (Number.isInteger(maxTransitionSamples) && maxTransitionSamples > 0) {
+    argv.push("--max-transition-samples", String(maxTransitionSamples));
+  }
+  if (Array.isArray(timecodes) && timecodes.length > 0) {
+    argv.push("--at", timecodes.map((t) => String(t)).join(","));
+  } else {
+    argv.push("--samples", String(samples));
+  }
+  argv.push(composeRoot);
+  return argv;
+}
+
+// Whole-job spawn deadline for an inspect run. Env override (positive int ms)
+// wins outright; otherwise the 5-min floor.
+function inspectTimeoutMs() {
+  const env = Number.parseInt((process.env.VOB_INSPECT_TIMEOUT_MS || "").trim(), 10);
+  return Number.isInteger(env) && env > 0 ? env : INSPECT_TIMEOUT_MS;
+}
+
+// Run an inspect pass. Like the lint runner, it returns the structured result of
+// the last attempt WITHOUT throwing on a non-zero exit — `inspect` exits 1 when
+// it FINDS an error-severity issue (deterministic, valid JSON) just as `lint`
+// does, so the caller parses stdout regardless of exit code. Transient launch /
+// Chrome flakes retry (snapshot-like budget); a found-issues report and a
+// timeout do NOT (retryTimedOut:false — a render that stalled mid-capture isn't
+// blindly re-run). captureStdoutViaFile: the JSON report can exceed the 8 KiB
+// sync-pipe trap (same fix as lint).
+async function runInspect({ composeRoot, samples, timecodes = null, tolerancePx = 2, timeoutMs = null } = {}) {
+  return runHyperframesWithRetry(
+    buildInspectArgv({ composeRoot, samples, timecodes, tolerancePx }),
+    {
+      cwd: composeRoot,
+      timeoutMs: timeoutMs || inspectTimeoutMs(),
+      captureStdoutViaFile: true,
+      maxAttempts: 3,
+      retryTimedOut: false,
+      // inspect's stdout IS the JSON report (echoes rendered caption text) — a
+      // found-issues run must never content-match a retry pattern. Decide
+      // retries from stderr only (genuine Chrome/CDP transients land there).
+      decideRetryFromStdout: false,
+    },
+  );
+}
+
 function runHyperframesSync(subArgv, { cwd, timeoutMs = LINT_TIMEOUT_MS } = {}) {
   const { cmd, baseArgs } = resolveHyperframesCmd();
   let result;
@@ -383,6 +569,14 @@ async function runHyperframesWithRetry(subArgv, opts = {}) {
     backoffMs = [1500, 4000],
     retryTimedOut = false,
     retryPatterns = RETRYABLE_PATTERNS,
+    // When a tool's STDOUT is its data report (e.g. `inspect --json`, whose
+    // issues[].text/fixHint echo rendered caption/overlay copy), grepping stdout
+    // for transient patterns can false-match developer-jargon caption text
+    // ("Target closed the deal", "net::ERR is a weird name") and trigger wasted
+    // deterministic re-renders. Real transient/infra failures surface on STDERR
+    // (Chrome/CDP), so such callers pass decideRetryFromStdout:false. Default
+    // true preserves every existing caller byte-for-byte.
+    decideRetryFromStdout = true,
     ...spawnOpts
   } = opts;
 
@@ -391,7 +585,9 @@ async function runHyperframesWithRetry(subArgv, opts = {}) {
     last = await runHyperframesBlocking(subArgv, spawnOpts);
     if (last.ok) return last;
 
-    const blob = `${last.stderr || ""}\n${last.stdout || ""}`;
+    const blob = decideRetryFromStdout
+      ? `${last.stderr || ""}\n${last.stdout || ""}`
+      : `${last.stderr || ""}`;
     if (NON_RETRYABLE_PATTERNS.some((re) => re.test(blob))) return last;
 
     const transient = last.timed_out
@@ -433,14 +629,42 @@ function checkHyperframesAvailable({ timeoutMs = PREFLIGHT_TIMEOUT_MS } = {}) {
   };
 }
 
+// The EXACT hyperframes invocation the engine uses, surfaced so a human doing
+// sanctioned bespoke work under <session>/work/ runs the SAME pinned binary
+// instead of hunting down `~/.npm-global/bin/hyperframes` or shelling `npx`
+// (which re-resolves the package graph and can float the version — see the
+// resolveHyperframesCmd note). Returns the runnable command + the pin env vars
+// the engine sets (no-auto-update + raised CDP timeouts + GPU backend), so a
+// work/ build matches the in-pipeline render exactly. Surfaced via vob_doctor.
+function describeHyperframesInvocation() {
+  const { cmd, baseArgs } = resolveHyperframesCmd();
+  const gpu = resolveBrowserGpuMode();
+  return {
+    command: [cmd, ...baseArgs].join(" "),
+    cmd,
+    base_args: baseArgs,
+    resolution: cmd === "npx" ? "npx-fallback" : "resolved-bin",
+    pin_env: {
+      HYPERFRAMES_NO_UPDATE_CHECK: "1",
+      HYPERFRAMES_NO_AUTO_INSTALL: "1",
+      PRODUCER_PUPPETEER_PROTOCOL_TIMEOUT_MS: String(DEFAULT_PROTOCOL_TIMEOUT_MS),
+      PRODUCER_PLAYER_READY_TIMEOUT_MS: String(DEFAULT_READY_TIMEOUT_MS),
+      PRODUCER_RENDER_READY_TIMEOUT_MS: String(DEFAULT_READY_TIMEOUT_MS),
+      ...(gpu !== null ? { PRODUCER_BROWSER_GPU_MODE: gpu } : {}),
+    },
+  };
+}
+
 module.exports = {
   HYPERFRAMES_INSTALL_HINT,
   LINT_TIMEOUT_MS,
   RENDER_TIMEOUT_MS,
   FULL_RENDER_TIMEOUT_MS,
   PREFLIGHT_TIMEOUT_MS,
+  INSPECT_TIMEOUT_MS,
   MAX_OUTPUT_BYTES,
   checkHyperframesAvailable,
+  describeHyperframesInvocation,
   resolveHyperframesCmd,
   runHyperframesBlocking,
   runHyperframesWithRetry,
@@ -454,4 +678,13 @@ module.exports = {
   buildLintArgv,
   buildSnapshotArgv,
   buildTranscribeArgv,
+  buildInspectArgv,
+  runInspect,
+  inspectTimeoutMs,
+  resolveRemoveBgDevice,
+  removeBackgroundDisabled,
+  buildRemoveBackgroundArgv,
+  removeBackgroundTimeoutMs,
+  runRemoveBackground,
+  checkRemoveBackgroundAvailable,
 };

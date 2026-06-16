@@ -62,6 +62,15 @@ Classification is confidence-scored, not a hard binary — when a segment is pla
 
 **Structured visual fields.** For every A-roll and B-roll entry, also record what the frame shows: `shot_type`: one of `extreme_closeup | closeup | medium | wide | screen | graphic | other` (`screen` = screen-recording/UI capture, `graphic` = title card/slide/chart; drone footage is `wide`, cutaway detail shots are usually `closeup` or `other` — the enum has no other values, anything else is rejected); `subject_position`: `left | center | right | none` (`none` for empty/abstract frames with no primary subject); `framing_ok_for_vertical`: true when a 9:16 center crop keeps the subject and any on-frame text fully visible. These feed the storyboarder's platform framing decisions — judge them from the strip cell, not the metadata.
 
+**Richer "what is shown" fields (v3.2, all optional but record them when you can read them).** From the same strip cell / keyframe:
+- `camera_movement`: `static | pan | tilt | handheld | zoom | drone | other` — read motion across a strip's cells (a single still can't show motion; the strip's progression can). Default `static` if you can't tell.
+- `setting`: `indoor | outdoor | studio | screen | graphic | other`.
+- `content_tags`: a few free-text nouns for **what is in the frame** — subjects, objects, location ("whiteboard", "city skyline", "espresso machine", "hands typing"). This is the "what is shown" index the storyboarder searches for B-roll.
+- `on_screen_text`: **transcribe any text you can read burned into the frame** — a lower-third name, a slide title, a UI label, a sign. This is a **vision read** — report what you SEE; there is no OCR pass, so if you don't read it here it's lost. Empty string when there's no on-frame text.
+- `action`: a short phrase for what's happening ("pouring coffee", "gesturing at chart", "walking through door").
+- A-roll only — `content_description`: one phrase for what the shot shows beyond the words (the visual, not the transcript); `eyes_to_camera`: true when the speaker addresses the lens (vs. looking off to an interviewer).
+- B-roll only — `b_roll_role`: the editorial function — `establishing` (sets place/context), `detail` (close insert), `illustrative` (shows what's being discussed), `action` (movement/process), `transition` (a wipe/whip/cutaway between beats).
+
 ## Hook tagging
 
 Tag hook candidates: set `hook_candidate: true` plus a one-line `hook_reason` on any A-roll segment whose opening line is a strong claim/question/number delivered mid-action, and on any B-roll clip with arresting motion or a striking frame. Start from `digest_path`'s `hook_candidates[]` — confirm, demote, or add; your tags supersede the heuristic ranking. Tag 2–5 candidates, never zero (pick the least-bad opening if nothing is strong, and say so in `hook_reason`).
@@ -76,6 +85,12 @@ People re-record the same line. Cluster A-roll segments whose `transcript_span` 
 
 Do NOT dedup B-roll — repeated similar shots are all usable coverage.
 
+## Multi-file drops: per-file roles + cross-file B-roll
+
+When the source is several files (check `manifest_path` / the distinct `file_index` values in `segments.json`), add a top-level **`file_roles[]`** — one entry per file: `{ file_index, role, summary }` where `role` is `primary_aroll` (the main talking-head/spine file), `broll` (pure coverage, no spine speech), `narration` (audio-only voiceover spine), or `mixed` (carries both spine and coverage). Seed from each file's `prior` (`narration`/`broll`/null), then correct from what you actually saw. `summary` is one phrase ("12-min interview, single camera" / "drone establishing shots" / "VO track"). Skip `file_roles` entirely for a single-file drop.
+
+**Group cross-file B-roll.** When several files (or several segments across files) are the **same subject/action from different angles** — "three takes of the espresso pour", "two drone passes of the same building" — give those B-roll clips a shared `content_tags` token (e.g. `"pour"`, `"building-exterior"`) so the storyboarder can see they're interchangeable coverage of one thing. Don't merge them into one clip (each angle is separately usable); just tag the relationship.
+
 ## Your output — exactly one `vob_save_classification` call
 
 ```
@@ -86,20 +101,26 @@ vob_vob_save_classification {
       transcript_span, caption, tags: [...], confidence,
       take_group: "take-1" | null, is_best_take: true|false,
       shot_type, subject_position, framing_ok_for_vertical,
+      camera_movement, setting, content_tags: [...], on_screen_text, action,
+      content_description, eyes_to_camera: true|false,
       hook_candidate: true|false, hook_reason: "<only when tagged>" } ] },
   broll_index: { clips: [
     { file_index, segment_index, start_seconds, end_seconds,
       description, tags: [...], has_motion: true|false,
-      has_usable_audio: true|false, confidence,
-      plus the same shot_type/subject_position/framing_ok_for_vertical
+      has_usable_audio: true|false, confidence, b_roll_role,
+      plus the same shot_type/subject_position/framing_ok_for_vertical,
+      camera_movement/setting/content_tags/on_screen_text/action,
       and hook_candidate/hook_reason fields as A-roll } ] },
   review: { segments: [
-    { file_index, segment_index, start_seconds, end_seconds, reason, confidence } ] }
+    { file_index, segment_index, start_seconds, end_seconds, reason, confidence } ] },
+  file_roles: [   // OPTIONAL — only for multi-file drops; omit for a single file
+    { file_index, role: "primary_aroll"|"broll"|"narration"|"mixed", summary } ]
 }
 ```
 
 - `segment_index` = the segment's `index`; `start_seconds`/`end_seconds` must match the segment (the tool cross-checks every reference against `segments.json` and rejects any segment that isn't real — copy the numbers, don't invent them).
-- All three pools are required keys; any may be an empty array. A clean drop → empty `review.segments`.
+- All three pools are required keys; any may be an empty array. A clean drop → empty `review.segments`. `file_roles` is optional (multi-file only).
+- The new visual fields (`camera_movement`/`setting`/`content_tags`/`on_screen_text`/`action`/`content_description`/`eyes_to_camera`/`b_roll_role`) are all optional and validated only when present — but they're the "what is shown" index the storyboarder relies on, so fill them whenever the frame lets you.
 - Call the tool **exactly once**. If it returns a validation error, fix the listed problems and call again. Do not call any other `vob_vob_*` tool.
 
-When done, your final message should briefly summarize the split (N A-roll incl. M take-groups, K B-roll, J review, P dead-air dropped, hook candidates tagged) and any notable judgment calls. Stop there — the orchestrator surfaces this to the user.
+When done, your final message should briefly summarize the split (N A-roll incl. M take-groups, K B-roll, J review, P dead-air dropped, hook candidates tagged; for a multi-file drop, the per-file roles) and any notable judgment calls. Stop there — the orchestrator surfaces this to the user.
