@@ -88,6 +88,11 @@ moment.
    intent.pacing_intent: <pacing_intent | none>
    intent.hook_intent: <hook_intent | none>
    intent.broll_intent: <broll_intent | none>
+   intent.caption_animation_intent: <caption_animation_intent | none>
+   intent.editorial_intent: <editorial_intent | none>
+   intent.speed_intent: <speed_intent | none>
+   intent.transition_intent: <transition_intent | none>
+   intent.layout_intent: <layout_intent | none>
    intent.key_moments: <key_moments>
    intent.music_vo: <music_vo>
    intent.audio_treatment: <value | n/a>
@@ -124,7 +129,12 @@ moment.
    `storyboard.markdown_path` — show it, don't paraphrase. Present BOTH halves together: the
    brief, then the storyboard markdown. Call out the editorial decisions the user is most likely
    to override: which **best take** was auto-picked per retake group (alternates available), and
-   any **B-roll placements**. Fan-out: the markdown has one `## Short k of N` section per short —
+   any **B-roll placements**. **Recap the creative spec** so the human sees the full decision set
+   before sign-off — both what they steered at INTENT and what the preset silently defaulted:
+   captions + animation (pop / karaoke), any **speed-ups**, **scene transitions**, **split-screen
+   layouts**, clean-cut **snapping**, and the silent technical defaults (render **fps**, −14 LUFS
+   **loudness**, render **segmentation**). Any of these is fair game to change here rather than
+   discovering it at PREVIEW. Fan-out: the markdown has one `## Short k of N` section per short —
    this ONE sign-off approves the whole set, so say so explicitly ("approving covers all N
    shorts"). Ask one question: "Approve the plan, revise the brief, revise the storyboard, or
    re-clarify intent?"

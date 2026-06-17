@@ -235,11 +235,16 @@ dependency FAILURES the result carries (ASR dead, rotation warning); transition 
 sheet(s). Delegate classification to the inspector. Surface findings + pool split; wait for an
 explicit human acknowledgement; `vob_vob_acknowledge_inspect`; transition. Never override the ack.
 
-**INTENT** — infer-then-confirm. Propose the five keys from the rough idea + digest +
-classification; pre-record confident ones; batch the gaps + the review-bucket question.
+**INTENT** — the fixed, mode-aware clarifying-question framework (read
+`.opencode/vob/references/clarifying-questions.md`). Resolve every catalog row in 5 passes (Pass 0
+mode → pre-fill from prompt/INSPECT → default per mode → triage ASK/CONDITIONAL/SILENT → ask),
+surfacing only genuine gaps as grouped multiple-choice chat prompts (recommended default first,
+free-text escape — OpenCode has no AskUserQuestion tool). Silently record OPTIONAL keys (incl. the
+v3.7 creative knobs `caption_animation_intent` / `editorial_intent` / `speed_intent` /
+`transition_intent` / `layout_intent`); pre-select required/conditional for one-tap confirm.
 Conditional keys (`audio_treatment` enum, `captions_style`) come from `missing_required_keys`.
-Propose the derived video-type preset as one skippable beat (`video_type` is optional — never
-blocks). `--like`: pre-record stylistic keys from the source project; never `key_moments`.
+`video_type` is reactive (pin only on re-route / podcast). `--like`: pre-record stylistic keys from
+the source project; never `key_moments`.
 
 **PLAN** — draft the brief (template incl. the BINDING Design language section), `vob_vob_save_brief`;
 delegate the storyboard (data-only spawn carries the video-type/editorial/overlay-vocabulary

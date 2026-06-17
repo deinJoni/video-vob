@@ -1,3 +1,38 @@
+# video-vob v3.7 — mode-aware clarifying-question framework (INTENT)
+
+**One line:** INTENT becomes a fixed, mode-aware clarifying-question framework — every question is
+resolved from the rough idea + INSPECT signal or asked with selectable suggestions
+(`AskUserQuestion`, recommended default first), smart-triaged (ASK / CONDITIONAL / SILENT), and
+recapped at the PLAN sign-off — so the creative-knob surface the engine already drives becomes
+steerable BEFORE the storyboarder runs. Built per `docs/v3.7/{BRAINSTORM,PRD}.md`. Additive; no new
+FSM phase/gate; the five required intent keys stay frozen.
+
+## What's new
+
+- **The catalog** (`skills/vob/references/clarifying-questions.md`): universal + mode-specific
+  questions, a per-mode default matrix keyed off the active video-type preset, triage tiers, per-row
+  `maps_to` + auto-from-prompt heuristics. Read at INTENT entry.
+- **The 5-pass loop** (`phases/INTENT.md`): resolve mode → pre-fill from evidence (silently record
+  OPTIONAL keys only; pre-select required/conditional for one-tap confirm) → default per mode →
+  triage → ask the gaps as grouped `AskUserQuestion` cards. `video_type` stays reactive (pinned only
+  on an explicit re-route, or for the underivable `podcast`). PLAN recaps the silently-defaulted
+  creative spec.
+- **5 new OPTIONAL intent keys** (`intent-schema.js`; free-text, never-gating): `caption_animation_intent`,
+  `editorial_intent`, `speed_intent`, `transition_intent`, `layout_intent`. `speed_intent` →
+  `source_clips[].speed` and `layout_intent` → `scene.layout` HARD-materialize at COMPOSE; the other
+  three are advisory (the storyboarder/composer may honor). Each threads into the storyboarder spawn;
+  none touches a gate.
+- **AskUserQuestion** added to the orchestrator allowed-tools (claude-code); OpenCode degrades to
+  grouped multiple-choice chat prompts. Both adapters stay in lockstep via `port-adapter-docs.js`.
+
+## Deferred (not in v3.7)
+
+Filler-word aggressiveness (computed in INSPECT, pre-INTENT), explicit fan-out N, multi-aspect
+fan-out (all shorts inherit one project aspect/platform), and a custom loudness target — each needs
+real engine work; INTENT flags the multi-aspect limit so it isn't reported as a bug.
+
+---
+
 # video-vob v3.3 — hyperframes-leverage creative layer (on top of v3.2)
 
 **One line:** additive creative layers that lean on hyperframes capabilities the engine already
