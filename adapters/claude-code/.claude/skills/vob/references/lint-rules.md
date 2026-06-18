@@ -238,6 +238,13 @@ A bound caption element lacks `data-start` (it renders static — re-time scene-
 an element carries a `data-vob-caption-id` the plan's active scope never declared (typo'd id, or a
 caption the storyboard didn't ask to bind — remove it or fix the id).
 
+### `vob/caption_emphasis_generic` (info)
+The plan declares `emphasis_words` on one or more `caption_segment`s but the composition stamps NO
+`data-vob-emphasis` anywhere — the load-bearing word isn't accented, so captions read generic.
+ADVISORY (info; never gates). Fix: wrap each emphasis word in `<span class="emph" data-vob-emphasis>`
+styled with the design accent (`color: var(--vob-accent)` + heavier weight / slight scale) — the
+emphasis_words-driven realization (see §Caption components, §Cold-open). One global note, not per-caption.
+
 ### `vob/caption_overflow` (warning)
 A caption (or typed-overlay) element's text overflows its container box — it spills past the box on
 render (attributed to the caption/overlay id when resolvable). ADVISORY: it never gates
@@ -398,6 +405,11 @@ implementing chunk div with `data-vob-caption-id="<id>"` plus `class="clip"` and
 
 ### Caption components
 
+**First choice for the everyday burned-in caption: the design-system kit's `caption` slot** (see
+§Design system kit) — pure-CSS, token-driven (it reads `--vob-accent` for emphasis), renders
+reliably, and matches the rest of the look. Reach for the GSAP `./captions/` kit below for an effect
+the design-system caption can't do (notably true per-word `karaoke` fill).
+
 The kit in `compose/captions/` realizes the `caption_segment.animation` enum. Read
 `./captions/manifest.json` (placed next to `./fonts.css`), take the default component for the
 segment's `animation` (or an alternate named by `style_ref` / `target.design`), and ADAPT the
@@ -439,10 +451,12 @@ window.__timelines["master"] = (window.__timelines["master"] || gsap.timeline({ 
   .to(".cap-karaoke .kw:nth-child(3)", { duration: 0.01, className: "+=on" }, 15.2);
 ```
 
-- **Emphasis words.** Map `caption_segment.emphasis_words[]` to the component's per-word emphasis
-  hook — wrap each emphasized word in the component's emphasis span/class (e.g. `.emph` above) so it
-  gets the louder weight/scale/color the reference defines. Emphasis is ADVISORY at QC — there is no
-  binding error if you realize it differently.
+- **Emphasis words (REQUIRED when planned).** Render each `caption_segment.emphasis_words[]` word in a
+  distinct `<span class="emph" data-vob-emphasis>…</span>` styled with the look's accent
+  (`color: var(--vob-accent)` + heavier weight / slight scale). This is the highest-leverage caption
+  detail — a caption with the load-bearing word popped in the brand accent reads as crafted, not
+  generic. Emphasis stays ADVISORY at QC (no binding error), but a scope that plans `emphasis_words`
+  and stamps zero `data-vob-emphasis` draws the `vob/caption_emphasis_generic` info note — realize it.
 - **Karaoke wiring.** Inline the `[{text,start,end}]` per-word entries from `per_clip_transcripts`
   (re-timed source→master); register the highlight timeline at `window.__timelines["<comp-id>"]`
   (`{paused:true}`) — never play it. One word-span per word, in order.
@@ -452,6 +466,33 @@ window.__timelines["master"] = (window.__timelines["master"] || gsap.timeline({ 
   word-level component on an unaligned transcript.
 - Captions stay ADVISORY at COMPOSE-QC (no hard binding beyond the id stamp); the only caption ERROR
   is the `exact:true` `vob/caption_missing_element` contract.
+
+### Cold-open: punch-in + kinetic claim (scene 0, `purpose:"hook"`)
+
+Scene 0 is the retention make-or-break; realize it with a PUNCH, never like a beat. Two parts:
+
+**1. Punch-in on the scene video.** A CSS `transform: scale` settle (energy on the first frame),
+scrubbed by the runtime — DURATION-EXACT (it paints over the scene's own frames; the master
+`data-duration` is unchanged, exactly like a transition). `transform: scale` only — NEVER animate
+`width`/`height` (anti-pattern). End at `scale(1.0)` so it's edge-safe under `object-fit: cover`.
+Reuse the look's `motion` ease; a calmer video-type uses a slow push (`1.0→1.05`) instead of a punch.
+```css
+.punch-in { transform-origin: 50% 42%; animation: hook-punch 2.4s cubic-bezier(.2,.9,.2,1) both paused; }
+@keyframes hook-punch { 0% { transform: scale(1.12); } 22% { transform: scale(1.0); } 100% { transform: scale(1.0); } }
+```
+(`animation-duration` == the scene's `data-duration`; `paused` + `both` so the runtime scrubs it.)
+
+**2. Kinetic claim.** Adapt the design-system `cold_open` slot (`./design-system/manifest.json` →
+`video_types[<vt>].slots.cold_open`): the hook LINE in large headline type, the load-bearing word in
+`--vob-accent`. Stagger lines/words as SEPARATE `class="clip"` elements at increasing `data-start`
+(NEVER `animation-delay`). Bind to the plan's `caption_segment` id if it carries one.
+```html
+<div id="s001-claim-1" class="clip cold-open-claim" data-start="0.10" data-duration="2.3" data-track-index="3">
+  <span class="claim-line">Most dogs</span></div>
+<div id="s001-claim-2" class="clip cold-open-claim" data-start="0.34" data-duration="2.06" data-track-index="3">
+  <span class="claim-line"><span class="emph" data-vob-emphasis>never</span> do this</span></div>
+```
+The kinetic claim is just the strongest caption — the emphasis/accent/animation rules above all apply.
 
 ## Scene transition recipes (v3.3) — CSS `@keyframes`, NO GSAP
 
@@ -541,6 +582,68 @@ conic `clip-path`/mask; `shutter` = `inset()` bars.)
 un-vendored) and never appear in your `transition_vocabulary`. If one is planned, or
 `shader_transitions_allowed:false`, substitute the nearest CSS transition: `glitch`→`whip_pan`,
 `light_leak`→`crossfade`, `chromatic`→`whip_pan`, `cross_warp`→`crossfade`, `swirl`→`zoom_punch`.
+
+## Scene motion / punch-ins (v3.9) — CSS `scale`, NO GSAP
+
+Realize `scene.motion` as a CSS `@keyframes` **transform** animation on the scene's `<video class="clip">`
+element (or a wrapping clip element) — an intra-scene CAMERA MOVE on the A-roll spine (a punch-in / push-in /
+slow Ken Burns drift over an otherwise-static talking head). It is THE no-b-roll visual-variety device.
+hyperframes' native **css adapter** scrubs a paused CSS animation deterministically to every rendered frame
+(per seek it sets `animation-play-state: paused` and `animation-delay = -(T − element's data-start)s`), so
+**GSAP is not needed and is not loaded at render** — same proven, lint-clean approach as the scene-transition
+recipes above. Contract (mirrors transitions):
+
+- `transform: scale`/`translate` ONLY — **NEVER** animate `width`/`height` (the documented anti-pattern); end
+  inside the frame so it stays edge-safe under `object-fit: cover`.
+- **`animation-fill-mode: both` is MANDATORY** + keep `animation-play-state: paused` — without `both` the element
+  snaps to its un-animated state outside the window and the scrub shows the wrong frame (the runtime sets both each
+  seek; presetting them keeps a plain browser preview deterministic).
+- **`animation-duration` == the element's `data-duration`** (or the motion window `end_seconds − start_seconds`).
+- **Reuse the video_type's motion-preset ease** from `./design-system/manifest.json` (`video_types[<vt>].slots.motion`
+  → fast-snap / medium-soft / slow-cinematic) so the move is TUNED to the format — a calmer video-type drifts slowly,
+  a punchy one snaps.
+- **DURATION-EXACT** (the load-bearing rule, same as transitions): a punch-in only re-paints frames the scene
+  ALREADY owns — **never** change the scene's `data-duration` or the master root `data-duration`. Lengthening the
+  timeline poisons drift verification.
+- Set `transform-origin` to the focal point — the speaker, usually `50% 40%` (eye-line slightly above center).
+- **ADVISORY QC marker** (like transitions, NOT a hard binding): stamp `data-vob-motion="<type>"` +
+  `data-vob-motion-scene="<scene_id>"` on the animated element. There is NO QC error for motion — realize the
+  intent your way; the marker is a courtesy.
+
+Storyboard field shape: a string (`"punch_in"` | `"push_in"` | `"ken_burns"`; `"none"`/`"static"` = opt out) OR an
+object `{ type, scale (1.0–2.0, default ~1.12), ease? (a motion-preset ease name), start_seconds?, end_seconds? }`
+(the window is SCENE-relative; default = the whole scene). It is loose/fail-safe — a bad value never rejects the save
+(plan-lint warns `PLAN_MOTION_INVALID`) and you fall back to a static frame.
+
+### punch_in — a held push that snaps/eases early then HOLDS (emphasis on a key line)
+```html
+<style>
+  /* animation-duration == the scene's data-duration; reuse the look's motion ease */
+  @keyframes vob-punch-in { 0% { transform: scale(1.0); } 18% { transform: scale(1.12); } 100% { transform: scale(1.12); } }
+  [data-vob-motion="punch_in"] { transform-origin: 50% 40%; animation: vob-punch-in 6s cubic-bezier(.2,.9,.2,1) both; animation-play-state: paused; }
+</style>
+<video id="s003-0-video" class="clip full-bleed" src="./source/s003-0.mp4" data-has-audio="true"
+       data-start="8" data-duration="6" data-track-index="0" data-media-start="0"
+       data-vob-motion="punch_in" data-vob-motion-scene="s003"></video>
+```
+
+### push_in — a slow continuous scale across the whole window (gentle life on a static head)
+```css
+@keyframes vob-push-in { from { transform: scale(1.0); } to { transform: scale(1.08); } }
+[data-vob-motion="push_in"] { transform-origin: 50% 40%; animation: vob-push-in 6s linear both; animation-play-state: paused; }
+```
+(Linear for a continuous drift; swap the ease for the slow-cinematic preset on a cinematic look.)
+
+### ken_burns — scale WITH a small translate drift (stills / long holds)
+```css
+@keyframes vob-ken-burns { from { transform: scale(1.05) translate(0, 0); } to { transform: scale(1.12) translate(-2%, -1.5%); } }
+[data-vob-motion="ken_burns"] { transform-origin: 50% 40%; animation: vob-ken-burns 6s ease-in-out both; animation-play-state: paused; }
+```
+(The `scale ≥ 1.05` throughout hides the `translate` drift's exposed edges under `object-fit: cover`.)
+
+A custom `{ scale }` overrides the `~1.12` peak; a `{ start_seconds, end_seconds }` window sets the
+`animation-duration` (= the window length) on a wrapping `class="clip"` element timed to that sub-window
+instead of the whole scene.
 
 ## Design system kit — component usage (v3.9)
 

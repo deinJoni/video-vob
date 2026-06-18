@@ -79,6 +79,7 @@ moment.
    intent.platform_profile: width=<w> height=<h> fps=<fps> safe_top_px=<t> safe_bottom_px=<b> ideal_duration_s=<min>-<max> max_duration_s=<m>
    intent.target_duration_seconds: <seconds>
    video_type: <summary.video_type.canonical>     (lint_ruleset=<lint_ruleset> clean_cut=<clean_cut> segmentation=<segmentation>)
+   variety_budget: <summary.video_type.variety_budget.max_static_stretch_seconds + "s" | none>   (longest static A-roll stretch before a visual beat is due — PLAN_STATIC_STRETCH)
    overlay_vocabulary: <summary.video_type.overlay_vocabulary, comma-joined>
    transition_vocabulary: <summary.video_type.transition_vocabulary, comma-joined>
    design_default: <summary.video_type.design_default, compact: palette/typography/caption_style/motion/grade — the storyboarder mirrors the brief's Design language into target.design, falling back to these>
@@ -138,6 +139,7 @@ moment.
    storyboard_json_path: <storyboard.artifact_path>
    storyboard_markdown_path: <storyboard.markdown_path>
    video_type: <summary.video_type.canonical>   (lint_ruleset=<lint_ruleset>)
+   variety_budget: <summary.video_type.variety_budget.max_static_stretch_seconds + "s" | none>   (grounds the Visual variety dimension — PLAN_STATIC_STRETCH)
    intent.target_duration_seconds: <seconds>     (range: <min>-<max> | none)
    intent.tone: <tone>
    intent.key_moments: <key_moments>

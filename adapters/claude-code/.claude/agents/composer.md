@@ -154,6 +154,19 @@ The contract:
 
 ## Caption components / kit
 
+In short-form, captions are on screen ~the whole time — they are a PRIMARY design surface, not an
+afterthought. Realize them ON-BRAND, ANIMATED, and EMPHASIS-DRIVEN, never as flat default text:
+1. **On-brand** — caption type/colour come from `target.design` (`caption_style` + `typography.caption`
+   + `palette`), via the `--vob-*` tokens. The everyday burned-in caption is part of the look: prefer
+   the **design-system kit's `caption` slot** (`./design-system/` — pure-CSS, token-driven, renders
+   reliably; see Design system kit below) and adapt it. Reach for the GSAP `./captions/` kit below only
+   for an effect the design-system caption can't do (e.g. true per-word karaoke fill).
+2. **Animated** — every chunk enters (`pop` / word reveal); never a static text block.
+3. **Emphasis-driven (REQUIRED)** — render each `caption_segment.emphasis_words[]` word in a distinct
+   `<span class="emph" data-vob-emphasis>` styled with the look's accent (`--vob-accent`) + heavier
+   weight / slight scale. This is the single highest-leverage caption detail; do not skip it when the
+   plan provides emphasis words.
+
 A vendored caption-component **kit** ships in `compose/captions/` — placed there by the MCP server
 on every save, a read-only sibling of `./fonts.css` and `./source/` (you never author or copy it).
 It carries `./captions/manifest.json` plus 15 self-contained per-component REFERENCE compositions
@@ -203,8 +216,9 @@ reference verbatim.
   your spawn data and read `video_types[<video_type>]` (fall back to `video_types.general`). That LOOK
   BUNDLE carries: `look` (one-line intent), `principles[]` (TASTE GUARDRAILS — follow them), `slots`
   (the recommended component per role: `title`, `lower_third`, `grade`, `motion`, `backdrop`,
-  `end_card`, `callout` — each `{default, alternates[]}`), and `transition_guidance`. The `components`
-  map describes each: `kind`, `file`, `dims`, `fonts`, `tokens_used`, `note`.
+  `end_card`, `callout`, `caption`, `cold_open` — each `{default, alternates[]}`), and
+  `transition_guidance`. The `components` map describes each: `kind`, `file`, `dims`, `fonts`,
+  `tokens_used`, `note`.
 - **Set the design tokens ONCE on your composition root.** Map `target.design` → the `--vob-*` custom
   properties in a `:root{}` (or `#master{}`) block: `palette.bg→--vob-bg`, `palette.text→--vob-text`,
   `palette.accent→--vob-accent` (+ derive/seed `--vob-surface` / `--vob-text-muted` / `--vob-accent-2`),
@@ -218,6 +232,12 @@ reference verbatim.
   to your scene window, and stamp the binding `data-vob-overlay-id="<id>"` where the plan declared a
   typed overlay (QC errors `vob/overlay_missing_element` otherwise). When `target.design` is sparse,
   the bundle's default + `principles` ARE the design — lean on them.
+- **Captions and the cold-open are part of the look.** The bundle's `caption` slot is the on-brand
+  burned-in caption — adopt it for every `caption_segment` (its `emph` class is the `--vob-accent`
+  emphasis treatment; map `emphasis_words[]` onto it). The `cold_open` slot is the marquee HOOK claim
+  for scene 0 (`purpose:"hook"`) — adapt it for the kinetic claim, pairing it with the punch-in on the
+  scene video (see the hook worked example). These render in pure CSS, so they're reliable AND match
+  the rest of the system; prefer them over the GSAP `./captions/` kit except for true karaoke.
 - **Apply the grade.** Open the look's `grade` component; its top comment documents the exact `filter:`
   string + overlay layers. Put that `filter:` on your scene `<video class="clip">` element(s), and add
   the overlay layers (vignette / tint / grain) as full-frame `class="clip"` divs on tracks ABOVE the
@@ -290,47 +310,73 @@ The master root's `data-duration` is the sum of all `target_duration_seconds` (e
 - **Duration-exact: NEVER add time.** A transition paints over frames the scenes already own — the outgoing scene's tail and the incoming scene's head. The master `data-duration` and every scene's `target_duration_seconds` are unchanged. For a true crossfade (the outgoing must stay visible), start the incoming scene's window `dur` EARLIER on a higher track so it overlaps the outgoing's tail — the incoming still ends at its natural time, so the total is unchanged. Lengthening or shortening the timeline poisons drift verification.
 - **Mark it for QC.** Stamp the transition element with `data-vob-transition="<type>"` and `data-vob-transition-scene="<incoming scene_id>"`. QC's `vob/transition_not_realized` is ADVISORY (it never blocks), but the marker lets it confirm you realized the plan. Transitions are advisory — realize the intent your way; the marker is a courtesy, not a hard binding like a typed overlay's `data-vob-overlay-id`.
 
-### Worked example: a hook scene
+### Scene motion / punch-ins (v3.9)
 
-Storyboard JSON:
+`scene.motion` is an intra-scene CAMERA MOVE on the A-roll spine (punch-in / push-in / slow Ken Burns drift) — THE no-b-roll visual-variety device for an otherwise-static talking head.
+
+- **Realize it as a CSS `scale` `@keyframes` animation on the scene `<video class="clip">`** (per `lint-rules.md` §"Scene motion / punch-ins") — the css adapter scrubs a paused CSS animation per frame, so NO GSAP (and none is loaded at render). `transform: scale`/`translate` only — never `width`/`height`; `transform-origin` at the focal point (`50% 40%`).
+- **Reuse the design-system motion-preset ease** (`./design-system/manifest.json` → `video_types[<vt>].slots.motion`) so the move is tuned to the format; `animation-fill-mode: both` + `animation-play-state: paused`, `animation-duration == data-duration`.
+- **DURATION-EXACT — never add time:** a punch-in only repaints frames the scene already owns; the master `data-duration` and the scene's `target_duration_seconds` are unchanged (same rule as a transition).
+- **Stamp the advisory marker** `data-vob-motion="<type>"` + `data-vob-motion-scene="<scene_id>"`. It's ADVISORY at QC (no hard binding); a bad/absent `scene.motion` falls back to a static frame.
+- The field is a string (`"punch_in"`|`"push_in"`|`"ken_burns"`; `"none"`/`"static"` = opt out) OR `{ type, scale, ease?, start_seconds?, end_seconds? }`. Per-type `@keyframes` recipes live in `lint-rules.md` §"Scene motion / punch-ins".
+
+### Worked example: a hook scene — punch-in + kinetic claim (the COLD-OPEN treatment)
+
+Scene 0 (`purpose:"hook"`) is the highest-leverage 2 seconds in the whole video; realize it with a
+PUNCH, not like any other beat. Two ingredients, keyed off `purpose:"hook"`:
+1. **Punch-in on the scene video** — a CSS scale settle (energy in the first frame). Duration-EXACT:
+   it paints over the scene's own frames, so the master `data-duration` is unchanged (same rule as a
+   transition). transform: scale only — never animate width/height. Reuse the look's `motion` ease.
+2. **Kinetic claim** — the hook line, realized as the design-system `cold_open` slot: large headline
+   type, the `hook_type` (from the INSPECT digest) shaping the wording, and the ONE emphasis word in
+   `--vob-accent`. Lines slam in via SEPARATE `class="clip"` elements at staggered `data-start`.
+
+Storyboard JSON (the storyboarder grounds the hook on a ranked candidate + plans emphasis):
 ```json
 {
-  "scene_id": "s001",
-  "sequence": 1,
-  "purpose": "hook",
-  "target_duration_seconds": 2.0,
-  "summary": "Open on the dog leaping into the pool — the most kinetic frame in the source.",
+  "scene_id": "s001", "sequence": 1, "purpose": "hook",
+  "target_duration_seconds": 2.4,
+  "summary": "Open on the dog mid-leap — grounded on the rank-1 hook candidate (a bold_claim).",
   "source_clips": [
-    {
-      "manifest_file_index": 0,
-      "source_path": "/Users/jonas/footage/pool_day.mov",
-      "in_seconds": 14.2,
-      "out_seconds": 16.2
-    }
+    { "manifest_file_index": 0, "source_path": "/Users/jonas/footage/pool_day.mov",
+      "in_seconds": 14.2, "out_seconds": 16.6 }
   ],
-  "overlays": ["text overlay: 'Wait for it'"],
-  "captions": null,
-  "pacing": "fast",
-  "notes": "Cold open, no easing"
+  "overlays": [],
+  "caption_segments": [
+    { "text": "Most dogs never do this", "start_seconds": 14.2, "end_seconds": 16.4,
+      "emphasis_words": ["never"], "animation": "pop" }
+  ],
+  "pacing": "fast", "notes": "Cold open — kinetic claim + punch-in"
 }
 ```
 
-HTML rendition (inside `#master-root`):
+HTML rendition (inside `#master-root`; `--vob-accent` etc. set once on the root from `target.design`):
 ```html
-<!-- Scene s001 — hook -->
-<video id="s001-video" class="full-bleed scene-hook" src="./source/s001-0.mp4" muted
-       data-start="0" data-duration="2.0" data-track-index="0"
+<!-- Scene s001 — hook: punch-in on the video + kinetic claim -->
+<video id="s001-video" class="full-bleed scene-hook punch-in" src="./source/s001-0.mp4" muted
+       data-start="0" data-duration="2.4" data-track-index="0"
        data-media-start="0" data-playback-start="0"></video>
 
-<div class="clip overlay overlay-hook"
-     data-start="0.2"
-     data-duration="1.6"
-     data-track-index="2">
-  <h1 class="hook-title">Wait for it</h1>
+<!-- kinetic claim — design-system cold_open slot; one clip per line for the stagger -->
+<div id="s001-claim-1" class="clip cold-open-claim" data-start="0.10" data-duration="2.3" data-track-index="3">
+  <span class="claim-line">Most dogs</span>
+</div>
+<div id="s001-claim-2" class="clip cold-open-claim" data-start="0.34" data-duration="2.06" data-track-index="3">
+  <span class="claim-line"><span class="emph" data-vob-emphasis>never</span> do this</span>
 </div>
 ```
+```css
+/* punch-in: scale settle over the scene, paused + scrubbed by the runtime (duration-exact) */
+.punch-in { transform-origin: 50% 42%; animation: hook-punch 2.4s cubic-bezier(.2,.9,.2,1) both paused; }
+@keyframes hook-punch { 0% { transform: scale(1.12); } 22% { transform: scale(1.0); } 100% { transform: scale(1.0); } }
+.cold-open-claim .emph { color: var(--vob-accent); font-weight: 800; }
+```
 
-Note: the overlay starts 0.2s into the scene and ends before it, so it pops in and out cleanly; its higher track renders above the video.
+Notes: the claim's two lines are SEPARATE `class="clip"` elements at staggered `data-start` (never
+`animation-delay`); the emphasis word carries `data-vob-emphasis` + the accent; the punch-in's
+`animation-duration` equals the scene's `data-duration` and ends at scale 1.0 (edge-safe under
+`object-fit: cover`). A calmer video-type (cinematic/podcast) uses a slow push (`scale(1.0)→scale(1.05)`)
+instead of a fast punch — let the look's `cold_open`/`motion` slot guide intensity.
 
 ### Worked example: a beat with a B-roll cutaway over an on-camera A-roll spine
 

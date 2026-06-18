@@ -88,7 +88,9 @@ const LINT_RULESETS = Object.freeze({
   montage: Object.freeze({
     // PLAN_TRANSITION_INCONSISTENT off: a montage WANTS varied transitions, so
     // ">3 distinct types" is a feature, not a smell (PRD-02 §7.6).
-    disabled_rules: Object.freeze(["PLAN_HOOK_NOT_FIRST", "PLAN_HOOK_TOO_LONG", "PLAN_HOOK_NO_SPEECH", "PLAN_HOOK_NOT_GROUNDED", "PLAN_OPENING_LOW_ENERGY", "PLAN_RHYTHM_ARC_INVERTED", "PLAN_TRANSITION_INCONSISTENT"]),
+    // PLAN_STATIC_STRETCH off: a montage IS visual variety (cut to the beat), and
+    // a cinematic hold is an intentional choice, not monotony.
+    disabled_rules: Object.freeze(["PLAN_HOOK_NOT_FIRST", "PLAN_HOOK_TOO_LONG", "PLAN_HOOK_NO_SPEECH", "PLAN_HOOK_NOT_GROUNDED", "PLAN_OPENING_LOW_ENERGY", "PLAN_RHYTHM_ARC_INVERTED", "PLAN_TRANSITION_INCONSISTENT", "PLAN_STATIC_STRETCH"]),
     chapter_rules: false,
   }),
   general: Object.freeze({
@@ -104,6 +106,10 @@ const BUILT_IN_VIDEO_TYPES = Object.freeze({
   // continuous composition.
   "social-short": Object.freeze({
     platform_default: "tiktok",
+    // (v3.9) longest acceptable run of uninterrupted static A-roll before a
+    // visual beat is due — the storyboarder's visual-variety budget, read by the
+    // PLAN_STATIC_STRETCH lint. Short-form needs a beat soon; a podcast breathes.
+    variety_budget: Object.freeze({ max_static_stretch_seconds: 10 }),
     // Loudness delivery target (PACKAGE). −14 LUFS is the short-form social
     // reference (TikTok/Reels/Shorts). −14 keeps existing output byte-identical.
     loudness_target: Object.freeze({ i: -14, tp: -1, lra: 11 }),
@@ -123,6 +129,7 @@ const BUILT_IN_VIDEO_TYPES = Object.freeze({
   "long-form": Object.freeze({
     platform_default: "youtube_long",
     loudness_target: Object.freeze({ i: -14, tp: -1, lra: 11 }), // YouTube normalizes ~−14
+    variety_budget: Object.freeze({ max_static_stretch_seconds: 18 }),
     editorial: Object.freeze({ clean_cut: true, scene_detect: true }),
     lint_ruleset: "chaptered",
     overlay_vocabulary: Object.freeze([
@@ -144,6 +151,9 @@ const BUILT_IN_VIDEO_TYPES = Object.freeze({
     loudness_target: Object.freeze({ i: -16, tp: -1.5, lra: 16 }),
     // No filler/dead-air surgery on a montage — pacing is the edit.
     editorial: Object.freeze({ clean_cut: false, scene_detect: true }),
+    // Carried for user-preset overrides / doctor; the montage ruleset gates
+    // PLAN_STATIC_STRETCH off, so a cinematic hold is never flagged.
+    variety_budget: Object.freeze({ max_static_stretch_seconds: 30 }),
     lint_ruleset: "montage",
     overlay_vocabulary: Object.freeze(["title_card", "section_title", "caption_block", "end_card"]),
     transition_vocabulary: Object.freeze(["cut", "dip", "crossfade", "focus_pull"]),
@@ -156,6 +166,7 @@ const BUILT_IN_VIDEO_TYPES = Object.freeze({
   }),
   tutorial: Object.freeze({
     platform_default: "tutorial",
+    variety_budget: Object.freeze({ max_static_stretch_seconds: 22 }),
     loudness_target: Object.freeze({ i: -14, tp: -1, lra: 11 }), // YouTube
     editorial: Object.freeze({ clean_cut: true, scene_detect: true }),
     lint_ruleset: "chaptered",
@@ -174,6 +185,7 @@ const BUILT_IN_VIDEO_TYPES = Object.freeze({
   podcast: Object.freeze({
     platform_default: "youtube_long",
     loudness_target: Object.freeze({ i: -16, tp: -1.5, lra: 11 }), // spoken-word podcast standard ~−16
+    variety_budget: Object.freeze({ max_static_stretch_seconds: 24 }),
     // Long static shots: scene detection contributes nothing (skippable at
     // INSPECT); clean-cut still helps a rambling conversation.
     editorial: Object.freeze({ clean_cut: true, scene_detect: false }),
@@ -193,6 +205,7 @@ const BUILT_IN_VIDEO_TYPES = Object.freeze({
   // The generalized default an unknown preset name falls back to.
   general: Object.freeze({
     platform_default: "landscape",
+    variety_budget: Object.freeze({ max_static_stretch_seconds: 14 }),
     loudness_target: Object.freeze({ i: -14, tp: -1, lra: 11 }),
     editorial: Object.freeze({ clean_cut: true, scene_detect: true }),
     lint_ruleset: "general",
@@ -347,6 +360,14 @@ function mergePreset(base, override) {
       ...ovD,
       palette: Object.freeze({ ...(isPlainObject(baseD.palette) ? baseD.palette : {}), ...(isPlainObject(ovD.palette) ? ovD.palette : {}) }),
       typography: Object.freeze({ ...(isPlainObject(baseD.typography) ? baseD.typography : {}), ...(isPlainObject(ovD.typography) ? ovD.typography : {}) }),
+    });
+  }
+  // variety_budget: shallow-merge so a user preset can tweak the static-stretch
+  // threshold without redeclaring the whole block (mirrors editorial/render).
+  if (isPlainObject(override.variety_budget)) {
+    merged.variety_budget = Object.freeze({
+      ...(isPlainObject(base.variety_budget) ? base.variety_budget : {}),
+      ...override.variety_budget,
     });
   }
   return Object.freeze(merged);
@@ -515,6 +536,9 @@ function activeLintRules(state) {
     disabled: new Set(ruleset.disabled_rules),
     chapter_rules: ruleset.chapter_rules === true,
     clean_cut: vt.preset.editorial.clean_cut === true,
+    // (v3.9) the visual-variety budget the PLAN_STATIC_STRETCH lint reads; null
+    // when VOB_VARIETY_BUDGET=off (the lint then skips, fail-safe).
+    variety_budget: resolveVarietyBudget(vt.preset),
   };
 }
 
@@ -530,6 +554,28 @@ function resolveLoudnessTarget(state) {
   return (t && typeof t === "object" && Number.isFinite(t.i))
     ? { i: t.i, tp: t.tp, lra: t.lra }
     : { ...DEFAULT_LOUDNESS_TARGET };
+}
+
+// Resolve the visual-variety / cutaway-rhythm budget for a preset — the longest
+// run of uninterrupted static A-roll the storyboarder should plan before a visual
+// beat (a punch-in, b-roll cutaway, text card, layout shift, kinetic caption).
+// The plan-lint PLAN_STATIC_STRETCH reads max_static_stretch_seconds. Env knobs:
+//   VOB_VARIETY_BUDGET=off            -> null (the lint skips entirely)
+//   VOB_VARIETY_MAX_STATIC_SECONDS=n  -> force the threshold for every type
+// A preset with no variety_budget falls back to DEFAULT_VARIETY_BUDGET, so an
+// older user preset (or an unknown name → general) still gets a sane budget.
+const DEFAULT_VARIETY_BUDGET = Object.freeze({ max_static_stretch_seconds: 14 });
+function resolveVarietyBudget(preset) {
+  if ((process.env.VOB_VARIETY_BUDGET || "").trim().toLowerCase() === "off") return null;
+  const envMax = Number.parseFloat(process.env.VOB_VARIETY_MAX_STATIC_SECONDS || "");
+  if (Number.isFinite(envMax) && envMax > 0) {
+    return Object.freeze({ max_static_stretch_seconds: envMax });
+  }
+  const b = preset && isPlainObject(preset.variety_budget) ? preset.variety_budget : null;
+  const max = b && Number.isFinite(b.max_static_stretch_seconds) && b.max_static_stretch_seconds > 0
+    ? b.max_static_stretch_seconds
+    : DEFAULT_VARIETY_BUDGET.max_static_stretch_seconds;
+  return Object.freeze({ max_static_stretch_seconds: max });
 }
 
 // --- introspection (vob_doctor / read_state_summary) --------------------------
@@ -557,6 +603,7 @@ function presetDigest(name, preset) {
     overlay_vocabulary: [...preset.overlay_vocabulary],
     transition_vocabulary: [...preset.transition_vocabulary],
     design_default: designDigest(preset),
+    variety_budget: isPlainObject(preset.variety_budget) ? { ...preset.variety_budget } : null,
   };
 }
 
@@ -591,6 +638,9 @@ function summarizeActiveVideoType(state) {
     // language from these (then adjusts by tone), and the storyboarder mirrors
     // the resolved look into storyboard target.design.
     design_default: designDigest(vt.preset),
+    // (v3.9) the resolved visual-variety budget (env-overridable) the
+    // storyboarder plans against — null when disabled.
+    variety_budget: resolveVarietyBudget(vt.preset),
   };
 }
 
