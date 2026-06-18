@@ -17,6 +17,7 @@ const { readSessionStateStrict } = require("../session-state.js");
 const { probeFile, summarizeProbe } = require("../ffprobe.js");
 const { compositeOverlayOverBase } = require("../overlay-compositor.js");
 const { normalizeLoudnessInPlace } = require("../loudnorm.js");
+const { resolveLoudnessTarget } = require("../video-types.js");
 const { buildCaptionSidecar } = require("../caption-sidecar.js");
 const { buildTranscriptResolver, distributionFromStoryboard, findTimeline, loadTranscript, storyboardHasShorts, storyboardTimelines } = require("../storyboard-schema.js");
 
@@ -299,7 +300,7 @@ async function importDeliverable(args) {
         summaryPre = null;
       }
       loudnorm = summaryPre
-        ? await normalizeLoudnessInPlace({ mp4Path: finalAbs, summaryPre })
+        ? await normalizeLoudnessInPlace({ mp4Path: finalAbs, summaryPre, target: resolveLoudnessTarget(statePre) })
         : { applied: false, skipped_reason: "probe_failed", error: null, measured_input_i: null, measured_input_tp: null };
     }
     // Derive the id from the ACTUAL materialized filename (post-dedup), not the

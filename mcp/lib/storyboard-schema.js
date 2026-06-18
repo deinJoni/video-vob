@@ -1877,9 +1877,12 @@ function warnIntentUnmet(parsed, scenes, ctx, warnings) {
     }
   }
 
-  // 4) Caption-animation intent vs any planned caption animation.
+  // 4) Caption-animation intent vs any planned caption animation. The regex
+  // word-boundary-matches every CAPTION_ANIMATIONS value (pop/karaoke/word-by-
+  // word) — a substring `includes("pop")` would also fire on "popular", so it's
+  // intentionally NOT used here.
   const capIntent = txt("caption_animation_intent");
-  if (INTENT_CAPTION_ANIM_RE.test(capIntent) || CAPTION_ANIMATIONS.some((a) => capIntent.includes(a))) {
+  if (INTENT_CAPTION_ANIM_RE.test(capIntent)) {
     const anyAnimated = scenes.some((s) => captionSegmentsOf(s)
       .some((seg) => isPlainObject(seg) && isNonEmptyString(seg.animation)));
     if (!anyAnimated) {

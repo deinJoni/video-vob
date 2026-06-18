@@ -153,9 +153,10 @@ async function materializeSceneLayouts({ projectId, storyboard = null } = {}) {
   for (const l of byScene.values()) {
     const outPath = layoutPath(id, l.scene_id);
     const sidecarPath = layoutSidecarPath(id, l.scene_id);
+    const cellCount = Array.isArray(l.cells) ? l.cells.length : null;
     if (!l.resolved) {
       summary.layouts.push({
-        scene_id: l.scene_id, layout_path: outPath, type: l.type,
+        scene_id: l.scene_id, layout_path: outPath, type: l.type, cells: cellCount,
         status: "skipped", reason: "cell_clip_index_out_of_range",
       });
       summary.summary.skipped += 1;
@@ -167,7 +168,7 @@ async function materializeSceneLayouts({ projectId, storyboard = null } = {}) {
       // A cell's pre-cut clip isn't on disk — materializeSceneClips runs first and
       // should have produced it. Warn-by-status, don't throw (degrade).
       summary.layouts.push({
-        scene_id: l.scene_id, layout_path: outPath, type: l.type,
+        scene_id: l.scene_id, layout_path: outPath, type: l.type, cells: cellCount,
         status: "skipped", reason: "cell_clip_not_materialized", missing_input: missing,
       });
       summary.summary.skipped += 1;
@@ -206,6 +207,7 @@ async function materializeSceneLayouts({ projectId, storyboard = null } = {}) {
     } catch (error) {
       summary.layouts.push({
         scene_id: task.scene_id, layout_path: task.outPath, type: task.type,
+        cells: Array.isArray(task.cells) ? task.cells.length : null,
         status: "failed", error: `layout composite threw: ${error.message || error}`,
       });
       summary.summary.failed += 1;
@@ -214,6 +216,7 @@ async function materializeSceneLayouts({ projectId, storyboard = null } = {}) {
     if (result.timed_out || result.exit_code !== 0 || !fs.existsSync(task.outPath)) {
       summary.layouts.push({
         scene_id: task.scene_id, layout_path: task.outPath, type: task.type,
+        cells: Array.isArray(task.cells) ? task.cells.length : null,
         status: "failed",
         error: result.timed_out
           ? "layout composite timed out"

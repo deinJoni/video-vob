@@ -203,7 +203,10 @@ _(record non-obvious choices here as they're made)_
 ## FINALIZE status
 - ✅ ALL 9 FSM stages + cross-cutting CORE improved & committed (19 commits, `main..HEAD`).
 - ✅ Version 3.7.0→3.8.0 (package.json + server.js); `docs/v3.8/CHANGELOG.md`; CLAUDE.md invariants refreshed (d313732).
-- ⏳ Two adversarial reviews running (engine-logic + FSM/robustness halves over the full diff). **On wake: triage findings → fix real ones → commit → then STOP the loop** (goal met) with a PushNotification outcome.
+- Adversarial reviews:
+  - ✅ ENGINE-LOGIC review back (7 findings, 0 high). Fixed: word-level VTT inline tags could fall outside the cue window → malformed VTT (clamp to [cueStart,cueEnd]); per-video-type loudness target not threaded through import-deliverable; scene-basis mislabel on retry-fail; `-inf dB` regex miss; dead `cells` hint (record cells on skipped/failed layout records); `pop` substring over-match in caption-anim intent. Doc-scoped #1 (ASR default deliberately not byte-identical — CLAUDE.md wording refined). All verified (subset-caption VTT clamp, -inf parse, boot, spans).
+  - ⏳ FSM/robustness review still running.
+- **On FSM review: triage → fix → commit → STOP the loop (goal met), PushNotification the outcome.**
 
 ## Loop bookkeeping
 

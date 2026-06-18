@@ -650,10 +650,11 @@ async function segmentSourceFiles({ projectId, manifest, transcriptsByFile, skip
           sceneCuts = rc.cuts;
           sceneBasis = "low_threshold_retry";
         } else {
-          // Even the lower threshold found nothing: genuinely single-shot, so the
-          // file will be partitioned on silence alone.
+          // rc.ok + 0 cuts = genuinely single-shot (silence-only segmentation);
+          // rc not-ok = the retry itself failed/timed out (the primary already
+          // found 0), so the basis is detect_failed, not a successful "scene".
           sceneCuts = [];
-          sceneBasis = rc.ok ? "single_shot" : "scene";
+          sceneBasis = rc.ok ? "single_shot" : "detect_failed";
         }
       } else {
         // Short clip with no cuts — silence/whole-clip segmentation is expected.

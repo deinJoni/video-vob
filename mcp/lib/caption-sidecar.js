@@ -70,9 +70,12 @@ function alignedWindow(words, seg) {
 // segment window, each prefixed with its OUTPUT-time tag (<HH:MM:SS.mmm>word) so
 // a player/editor can highlight per word — the karaoke export the engine already
 // pays for alignment to produce but used to discard. `words` is the file's
-// {text,start,end} array; offsets map SOURCE→OUTPUT via cursor − inSec, clamped.
-// Returns the tagged string, or null when no aligned word falls in the window.
-function wordTaggedCue(words, seg, inSec, cursor, durationSeconds) {
+// {text,start,end} array; offsets map SOURCE→OUTPUT via cursor − inSec. Every tag
+// is CLAMPED to the cue's [cueStart,cueEnd] window — WebVTT requires inline
+// timestamps within the cue and non-decreasing, and the cue window can be the
+// alignedWindow (matched words only) while a non-matching word maps earlier.
+// Returns the tagged string, or null when no word falls in the window.
+function wordTaggedCue(words, seg, inSec, cursor, cueStart, cueEnd) {
   if (!Array.isArray(words) || !Number.isFinite(seg.start_seconds) || !Number.isFinite(seg.end_seconds)) return null;
   const pad = 0.3;
   const parts = [];
@@ -82,8 +85,8 @@ function wordTaggedCue(words, seg, inSec, cursor, durationSeconds) {
     const tok = String(w.text == null ? "" : w.text).trim();
     if (!tok) continue;
     let t = cursor + (w.start - inSec);
-    if (t < 0) t = 0;
-    if (t >= durationSeconds) break;
+    if (t < cueStart) t = cueStart; // keep inline tags within the cue (non-decreasing)
+    if (t > cueEnd) break; // past the cue end
     parts.push(`<${stampVtt(t)}>${tok}`);
   }
   return parts.length > 0 ? parts.join(" ") : null;
@@ -178,7 +181,7 @@ function buildCaptionSidecar(storyboard, options) {
       // per-word times, so spend them on the sidecar too. SRT stays chunk-level.
       let wordVtt = null;
       if (Array.isArray(words) && WORD_LEVEL_ANIMS.has(seg.animation)) {
-        wordVtt = wordTaggedCue(words, seg, inSec, cursor, durationSeconds);
+        wordVtt = wordTaggedCue(words, seg, inSec, cursor, cueStart, cueEnd);
         if (wordVtt) usedWordLevel = true;
       }
       cues.push({ start: cueStart, end: cueEnd, text: String(seg.text).trim(), wordVtt });

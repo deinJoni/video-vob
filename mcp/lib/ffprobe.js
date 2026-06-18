@@ -284,11 +284,14 @@ function measureMaxVolumeDb(filePath, { timeoutMs = VOLUMEDETECT_TIMEOUT_MS } = 
   }
   if (result && result.error) return { measured: false, error: result.error.message || String(result.error) };
   // volumedetect writes to stderr: "[Parsed_volumedetect_0 @ ..] max_volume: -3.2 dB".
+  // Match `-inf` too — perfect digital silence (a dead mux) reads as `-inf dB` on
+  // some ffmpeg builds, and that's the case the silent-audio flag most needs.
   const text = `${(result && result.stderr) || ""}`;
-  const max = text.match(/max_volume:\s*(-?\d+(?:\.\d+)?)\s*dB/i);
-  const mean = text.match(/mean_volume:\s*(-?\d+(?:\.\d+)?)\s*dB/i);
+  const max = text.match(/max_volume:\s*(-?(?:inf|\d+(?:\.\d+)?))\s*dB/i);
+  const mean = text.match(/mean_volume:\s*(-?(?:inf|\d+(?:\.\d+)?))\s*dB/i);
   if (!max) return { measured: false, error: "could not parse max_volume" };
-  return { measured: true, max_volume_db: Number(max[1]), mean_volume_db: mean ? Number(mean[1]) : null };
+  const parseDb = (s) => (/inf/i.test(s) ? -Infinity : Number(s));
+  return { measured: true, max_volume_db: parseDb(max[1]), mean_volume_db: mean ? parseDb(mean[1]) : null };
 }
 
 // Per-audio-stream detail for the v3.2 audio-analysis pass (channels/layout/
