@@ -166,21 +166,26 @@ function inspectToIntent(state) {
 function intentToPlan(state) {
   const answers = state && state.intent && state.intent.answers;
   let inspectSummary = null;
-  if (state && state.inspect && typeof state.inspect.summary_path === "string" && state.inspect.summary_path) {
-    if (fs.existsSync(state.inspect.summary_path)) {
-      try {
-        inspectSummary = readJsonFile(state.inspect.summary_path);
-      } catch (error) {
-        // A corrupt inspect.json must surface, not silently drop the
-        // conditional intent keys it gates (audio_treatment, captions_style).
-        return block([
-          blocker(
-            "inspect_summary_unreadable",
-            `inspect.json exists but could not be parsed (${error.message || String(error)}) — re-run vob_inspect_source; conditional intent keys (audio_treatment, captions_style) cannot be derived from a corrupt summary`,
-            { summary_path: state.inspect.summary_path },
-          ),
-        ]);
-      }
+  // Read the CANONICAL inspect path (not the state-recorded slot path) so a stale
+  // state slot can't silently drop the conditional intent keys it gates
+  // (audio_treatment, captions_style) — mirrors inspectToIntent's disk-truth check.
+  let summaryPath = null;
+  try {
+    summaryPath = state && typeof state.project_id === "string" ? inspectSummaryPath(state.project_id) : null;
+  } catch { summaryPath = null; }
+  if (summaryPath && fs.existsSync(summaryPath)) {
+    try {
+      inspectSummary = readJsonFile(summaryPath);
+    } catch (error) {
+      // A corrupt inspect.json must surface, not silently drop the conditional
+      // intent keys it gates.
+      return block([
+        blocker(
+          "inspect_summary_unreadable",
+          `inspect.json exists but could not be parsed (${error.message || String(error)}) — re-run vob_inspect_source; conditional intent keys (audio_treatment, captions_style) cannot be derived from a corrupt summary`,
+          { summary_path: summaryPath },
+        ),
+      ]);
     }
   }
   const missing = missingIntentKeys(answers, inspectSummary);
@@ -397,6 +402,26 @@ function previewToRender(state) {
   const previewRev = Number.isInteger(preview.composition_revision_rendered)
     ? preview.composition_revision_rendered
     : null;
+  // Cross-short/segment guard: the confirmed preview must be OF the same short/
+  // segment as the active composition. On resume mid-fan-out the singleton
+  // preview slot can hold a PRIOR short's confirmed preview while the composition
+  // has moved on — proceeding would ship the wrong short unverified. The revision
+  // check usually also catches this (re-save bumps revision_count), but this is
+  // the precise, overridable:false guard.
+  const previewShort = typeof preview.short_id === "string" && preview.short_id !== "" ? preview.short_id : null;
+  const compShort = composition && typeof composition.short_id === "string" && composition.short_id !== "" ? composition.short_id : null;
+  const previewSeg = typeof preview.segment_id === "string" && preview.segment_id !== "" ? preview.segment_id : null;
+  const compSeg = composition && typeof composition.segment_id === "string" && composition.segment_id !== "" ? composition.segment_id : null;
+  if ((compShort !== null && previewShort !== null && previewShort !== compShort)
+    || (compSeg !== null && previewSeg !== null && previewSeg !== compSeg)) {
+    return block([
+      blocker(
+        "preview_wrong_scope",
+        `the confirmed preview is for ${previewShort ? `short "${previewShort}"` : `segment "${previewSeg}"`} but the active composition is ${compShort ? `short "${compShort}"` : `segment "${compSeg}"`} — re-run vob_render_preview for the active ${compShort ? "short" : "segment"} and re-confirm before rendering`,
+        { preview_short_id: previewShort, composition_short_id: compShort, preview_segment_id: previewSeg, composition_segment_id: compSeg, overridable: false },
+      ),
+    ]);
+  }
   if (compRev !== null && previewRev !== null && previewRev !== compRev) {
     return block([
       blocker(

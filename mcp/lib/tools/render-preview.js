@@ -164,6 +164,10 @@ async function renderPreview(args) {
         revision_count: revisionCount,
         stderr_log_path: stderrLogPath,
         composition_revision_rendered: compositionRevisionRendered,
+        // Which short/segment this preview is OF — so a resume mid-fan-out can't
+        // confirm short A's preview while the active composition is short B.
+        short_id: typeof composition.short_id === "string" && composition.short_id !== "" ? composition.short_id : null,
+        segment_id: typeof composition.segment_id === "string" && composition.segment_id !== "" ? composition.segment_id : null,
         verification,
       },
       last_updated: ts,

@@ -37,7 +37,7 @@ Bump VERSION + CHANGELOG + CLAUDE.md invariants as changes land. Commit per cohe
 | 7 | RENDER | **done** ✓ | XC-1/XC-2 + segment-confirm-at-assembly + music-duck surfacing/warning + screenshot-path timeout fallback |
 | 8 | PACKAGE | **done** ✓ | per-video-type loudness + LRA + word-level VTT; LOW efficiency nits (#8/#4a) deferred |
 | 9 | ITERATE | **done** ✓ | compare quality deltas (from archived manifest) + archival sweeps segment_renders + finalize fan-out backstop |
-| X | FSM core / cross-cutting | pending | |
+| X | FSM core / cross-cutting | high-value done; nits next | short_id slots+guard, lock release, intentToPlan canonical path ✓; PREVIEW#9/CORE#9/#12/INTENT#9 next |
 
 Status legend: pending → designed → implementing → verifying → reviewed → **done**
 
@@ -186,6 +186,12 @@ _(record non-obvious choices here as they're made)_
 - **Archival sweeps `segment_renders/`** (ITERATE#10): a full ITERATE cycle moves the per-segment partials into `archive/v<N>/segment_renders/` (they live outside `renders/` so the per-segment back-edge can't sweep them) — bounds disk growth on the length-unlock path.
 - **Finalize fan-out backstop** (ITERATE#11): `finalize_iteration` calls the shared `missingShortDeliverables` (now exported from phase-gates) and refuses on a partial short set — closes the `import_deliverable{set_phase:true}`→PACKAGE→finalize bypass of the gate.
 - _Verified: module load (no finalize→phase-gates require cycle), helper export, boot, spans walker._
+
+### Stage X — FSM CORE high-value (commit) ✓
+- **short_id/segment_id on preview+render slots + wrong-scope guard** (CORE#1, HIGH): both slots now stamp + summarize `short_id`/`segment_id`; `previewToRender` gate + `render_full` refuse (overridable:false / STATE_CONFLICT) when the confirmed preview's scope ≠ the active composition's scope — stops shipping the WRONG short unverified on a resume mid-fan-out.
+- **Process-level lock release** (CORE#2): `storage.js` tracks held lock tokens in a module Map + registers exit/SIGINT/SIGTERM handlers that release the locks we own (token-precise) — a killed long render no longer strands the session for the 5-min stale timeout.
+- **`intentToPlan` reads canonical inspect path** (CORE#4): uses `inspectSummaryPath(project_id)` not the state-slot path, so a stale slot can't silently drop the conditional intent keys (audio_treatment/captions_style). Mirrors `inspectToIntent`.
+- _Verified: wrong-scope gate test (mismatch→blocked overridable:false, match→allowed), lock acquire/release/re-acquire cycle, module load, boot, spans walker._
 
 ## Loop bookkeeping
 

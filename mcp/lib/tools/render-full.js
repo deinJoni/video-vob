@@ -101,6 +101,22 @@ async function renderFull(args) {
       "preview has not been confirmed — call vob_confirm_preview before vob_render_full",
     );
   }
+  // Cross-short/segment guard (defense-in-depth; render_full gates on
+  // preview.confirmed independently of the PREVIEW→RENDER gate): the confirmed
+  // preview must be OF the active composition's short/segment, else a resume
+  // mid-fan-out would render the wrong short blessed by another short's preview.
+  const previewShort = typeof preview.short_id === "string" && preview.short_id !== "" ? preview.short_id : null;
+  const compShort = typeof composition.short_id === "string" && composition.short_id !== "" ? composition.short_id : null;
+  const previewSeg = typeof preview.segment_id === "string" && preview.segment_id !== "" ? preview.segment_id : null;
+  const compSeg = typeof composition.segment_id === "string" && composition.segment_id !== "" ? composition.segment_id : null;
+  if ((compShort !== null && previewShort !== null && previewShort !== compShort)
+    || (compSeg !== null && previewSeg !== null && previewSeg !== compSeg)) {
+    throw new ToolError(
+      ERROR_CODES.STATE_CONFLICT,
+      `the confirmed preview is for ${previewShort ? `short "${previewShort}"` : `segment "${previewSeg}"`} but the active composition is ${compShort ? `short "${compShort}"` : `segment "${compSeg}"`} — re-run vob_render_preview + vob_confirm_preview for the active ${compShort ? "short" : "segment"} before rendering`,
+      { preview_short_id: previewShort, composition_short_id: compShort, preview_segment_id: previewSeg, composition_segment_id: compSeg },
+    );
+  }
 
   // Segmented render: the composition implements ONE render segment (stamped
   // at save). Its partial lands in <session>/segment_renders/ — outside
@@ -281,6 +297,9 @@ async function renderFull(args) {
         quality,
         composition_revision_rendered: compositionRevisionRendered,
         ...(planSegment ? { segment_id: planSegment.segment_id } : {}),
+        // Stamp the short this render is OF (segmented path already stamps
+        // segment_id above) so resume mid-fan-out can't ship the wrong short.
+        ...(typeof composition.short_id === "string" && composition.short_id !== "" ? { short_id: composition.short_id } : {}),
         verification,
       },
       last_updated: completedTs,

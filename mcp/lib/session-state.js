@@ -516,6 +516,11 @@ function summarizePreview(slot) {
     confirmed_at: strOrNull(p.confirmed_at),
     revision_count: intOr(p.revision_count, 0),
     composition_revision_rendered: intOr(p.composition_revision_rendered, null),
+    // WHICH short/segment this singleton slot belongs to (the per-short/-segment
+    // cycle overwrites it) — so resume mid-fan-out can't read a confirmed preview
+    // for short A while the active composition is short B.
+    short_id: strOrNull(p.short_id),
+    segment_id: strOrNull(p.segment_id),
   };
 }
 
@@ -532,6 +537,8 @@ function summarizeRender(slot) {
     confirmed_at: strOrNull(r.confirmed_at),
     revision_count: intOr(r.revision_count, 0),
     composition_revision_rendered: intOr(r.composition_revision_rendered, null),
+    short_id: strOrNull(r.short_id),
+    segment_id: strOrNull(r.segment_id),
   };
 }
 
