@@ -34,7 +34,7 @@ Bump VERSION + CHANGELOG + CLAUDE.md invariants as changes land. Commit per cohe
 | 4 | PLAN (FSM gate) | pending | |
 | 5 | COMPOSE | **done** ✓ | master_duration_long, design_font_partial, broadened+aimed inspect QC, layout_degraded_fallback; safe-band stays PLAN-side (no bbox from inspect) |
 | 6 | PREVIEW | **done** ✓ | XC-1 realized-cut drift + XC-2 content QC (black-frame/silent-audio); confirm-revision cross-check (P3) deferred |
-| 7 | RENDER | shared done; P2 next | XC-1/XC-2 done (shared w/ PREVIEW); segment-confirm + music-duck + screenshot-fallback pending |
+| 7 | RENDER | **done** ✓ | XC-1/XC-2 + segment-confirm-at-assembly + music-duck surfacing/warning + screenshot-path timeout fallback |
 | 8 | PACKAGE | pending | |
 | 9 | ITERATE | pending | |
 | X | FSM core / cross-cutting | pending | |
@@ -165,6 +165,12 @@ _(record non-obvious choices here as they're made)_
 - **XC-2 content QC**: `verifyRenderedMp4({checkContent:true})` now samples peak luma across the output (`signalstatsLuma` w/ new `seekSeconds`) → `black_frame_count`/`all_black`, and measures `max_volume_db` (new `measureMaxVolumeDb`, audio-only volumedetect) → `silent_audio`. Advisory, never gates. Catches the dropped-`<video>` all-black / failed-audio-mux class that duration drift can't. Wired into preview + full render. (RENDER#12 = PREVIEW#1)
 - _Verified on REAL generated videos: black+silent → all_black/silent flagged; normal → clean; realized 7 ≠ declared 14; module load; boot. Existing still-QC path untouched (seek only added on a video seek)._
 - _Deferred: PREVIEW confirm-revision cross-check (PREVIEW#9, P3) → fold into CORE stage._
+
+### Stage 7 — RENDER P2 (commit) ✓
+- **Segment-confirm at assembly** (RENDER#1): `validSegmentRenders` now requires `entry.confirmed===true` → an unconfirmed partial counts as missing (new `unconfirmed[]`); `assemble_video` + the RENDER→PACKAGE gate name unconfirmed segments. Closes the segmented-path bypass of the overridable:false confirm contract.
+- **Music duck surfaced** (RENDER#3): `ducked` was computed but invisible — `assemble_video` now emits a `warnings[]` on flat-mix fallback (+ silent-audio), and the PACKAGE manifest/README spell out the bed + `ducked` status (basename, gain).
+- **Screenshot-path timeout fallback** (RENDER#2): on a render timeout when `<video>` count > `hostProfile.videoBudget()`, retry ONCE with `PRODUCER_FORCE_SCREENSHOT=1` (race-free `forceScreenshot` threaded `runHyperframesWithRetry`→`runHyperframesBlocking`→`hyperframesChildEnv`; no process.env mutation) before throwing. degrade-don't-die for the low-RAM many-video BeginFrame wall.
+- _Verified: validSegmentRenders unit test (unconfirmed→missing, confirm→ready), forceScreenshot env (set/unset), module load, boot, spans walker. Music duck/timeout paths logic-reviewed (need a live render to exercise)._
 
 ## Loop bookkeeping
 

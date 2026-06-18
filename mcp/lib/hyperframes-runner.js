@@ -112,7 +112,7 @@ const DEFAULT_READY_TIMEOUT_MS = 2 * 60 * 1000;
 // is applied as a DEFAULT only — an operator who exported the underlying
 // PRODUCER_*/HYPERFRAMES_* var wins. This is the single place hyperframes env is
 // built, so render/snapshot/lint/transcribe all share one policy.
-function hyperframesChildEnv() {
+function hyperframesChildEnv({ forceScreenshot = false } = {}) {
   const env = { ...process.env };
 
   // GPU backend (see resolveBrowserGpuMode). null => leave hyperframes' default.
@@ -141,8 +141,10 @@ function hyperframesChildEnv() {
   // Optional escape hatch: force the screenshot capture path (what `snapshot`
   // uses) instead of BeginFrame, via VOB_FORCE_SCREENSHOT. Off by default —
   // BeginFrame is higher-fidelity and works once the protocol timeout is raised.
+  // The per-call `forceScreenshot` arg is the in-process equivalent (used by the
+  // render-timeout fallback) and is race-free — it never mutates process.env.
   const forceShot = (process.env.VOB_FORCE_SCREENSHOT || "").trim().toLowerCase();
-  if (forceShot === "1" || forceShot === "on" || forceShot === "true" || forceShot === "yes") {
+  if (forceScreenshot === true || forceShot === "1" || forceShot === "on" || forceShot === "true" || forceShot === "yes") {
     env.PRODUCER_FORCE_SCREENSHOT = "1";
   }
 
@@ -490,14 +492,14 @@ function runHyperframesSync(subArgv, { cwd, timeoutMs = LINT_TIMEOUT_MS } = {}) 
   };
 }
 
-function runHyperframesBlocking(subArgv, { cwd, timeoutMs = RENDER_TIMEOUT_MS, stderrLogPath = null, captureStdoutViaFile = false } = {}) {
+function runHyperframesBlocking(subArgv, { cwd, timeoutMs = RENDER_TIMEOUT_MS, stderrLogPath = null, captureStdoutViaFile = false, forceScreenshot = false } = {}) {
   const { cmd, baseArgs } = resolveHyperframesCmd();
   return spawnWithShutdown(
     cmd,
     [...baseArgs, ...subArgv],
     {
       cwd,
-      env: hyperframesChildEnv(),
+      env: hyperframesChildEnv({ forceScreenshot }),
       timeoutMs,
       maxOutputBytes: MAX_OUTPUT_BYTES,
       stderrLogPath,

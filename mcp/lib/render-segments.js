@@ -209,7 +209,8 @@ function validSegmentRenders(state) {
   const byId = new Map();
   const missing = [];
   const stale = [];
-  if (!plan) return { plan: null, byId, missing, stale };
+  const unconfirmed = [];
+  if (!plan) return { plan: null, byId, missing, stale, unconfirmed };
   for (const segment of plan.segments) {
     const entry = isPlainObject(registry[segment.segment_id]) ? registry[segment.segment_id] : null;
     if (!entry || typeof entry.mp4_path !== "string" || !entry.mp4_path || !fs.existsSync(entry.mp4_path)) {
@@ -224,9 +225,18 @@ function validSegmentRenders(state) {
       stale.push(segment.segment_id);
       continue;
     }
+    // A fresh partial that was never confirmed must NOT be silently assembled —
+    // the segmented path honors the same overridable:false confirm contract as a
+    // single-timeline render (confirm_render mirrors confirmed:true into the
+    // registry). Treat unconfirmed as missing-with-a-distinct-reason.
+    if (entry.confirmed !== true) {
+      missing.push(segment.segment_id);
+      unconfirmed.push(segment.segment_id);
+      continue;
+    }
     byId.set(segment.segment_id, entry);
   }
-  return { plan, byId, missing, stale };
+  return { plan, byId, missing, stale, unconfirmed };
 }
 
 module.exports = {

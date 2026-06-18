@@ -490,13 +490,15 @@ function renderToPackage(state) {
   // decision), mirroring the fan-out backstop below.
   const renderPlan = renderPlanOf(state);
   if (renderPlan) {
-    const { missing, stale } = validSegmentRenders(state);
+    const { missing, stale, unconfirmed } = validSegmentRenders(state);
     if (missing.length > 0) {
+      const staleNote = stale.length > 0 ? ` — ${stale.join(", ")} are stale (storyboard changed since they rendered)` : "";
+      const unconfNote = unconfirmed.length > 0 ? ` — ${unconfirmed.join(", ")} rendered but UNCONFIRMED (run vob_confirm_render)` : "";
       return block([
         blocker(
           "segments_missing_render",
-          `segmented render: ${missing.length} segment(s) have no valid rendered partial (${missing.join(", ")})${stale.length > 0 ? ` — ${stale.join(", ")} are stale (storyboard changed since they rendered)` : ""}. Cycle COMPOSE→PREVIEW→RENDER per segment (vob_save_composition {segment_id} → vob_render_preview → vob_confirm_preview → vob_render_full → vob_confirm_render → back-edge RENDER→COMPOSE), then vob_assemble_video.`,
-          { missing_segment_ids: missing, stale_segment_ids: stale },
+          `segmented render: ${missing.length} segment(s) not assembly-ready (${missing.join(", ")})${staleNote}${unconfNote}. Cycle COMPOSE→PREVIEW→RENDER per segment (vob_save_composition {segment_id} → vob_render_preview → vob_confirm_preview → vob_render_full → vob_confirm_render → back-edge RENDER→COMPOSE), then vob_assemble_video.`,
+          { missing_segment_ids: missing, stale_segment_ids: stale, unconfirmed_segment_ids: unconfirmed },
         ),
       ]);
     }

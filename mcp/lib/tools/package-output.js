@@ -713,7 +713,15 @@ async function packageOutput(args) {
           segment_ids: Array.isArray(assemblySlot.segment_ids) ? assemblySlot.segment_ids : [],
           concat_path: assemblySlot.concat_path || null,
           assembled_at: assemblySlot.assembled_at || null,
-          music: assemblySlot.music || null,
+          music: assemblySlot.music
+            ? {
+              file: typeof assemblySlot.music.path === "string" ? path.basename(assemblySlot.music.path) : null,
+              gain_db: Number.isFinite(assemblySlot.music.gain_db) ? assemblySlot.music.gain_db : null,
+              // ducked:false = the sidechain duck failed and music was mixed flat
+              // (dialogue may be masked) — surfaced so a reviewer can hear-check it.
+              ducked: assemblySlot.music.ducked === true,
+            }
+            : null,
         },
       }
       : {}),

@@ -18,6 +18,21 @@ const {
 const { withSessionLock, writeFileAtomic } = require("../storage.js");
 const { readSessionStateStrict } = require("../session-state.js");
 const { runHyperframesWithRetry, buildRenderArgv, renderTimeoutMs, defaultRenderQuality } = require("../hyperframes-runner.js");
+const hostProfile = require("../host-profile.js");
+
+// Count <video> elements across the composition's root HTML (best-effort) — the
+// signal for the screenshot-capture timeout fallback below.
+function countVideoElements(root) {
+  let count = 0;
+  try {
+    for (const ent of fs.readdirSync(root, { withFileTypes: true })) {
+      if (!ent.isFile() || !/\.html$/i.test(ent.name)) continue;
+      const m = fs.readFileSync(path.join(root, ent.name), "utf8").match(/<video[\s>]/gi);
+      if (m) count += m.length;
+    }
+  } catch { /* best-effort */ }
+  return count;
+}
 const { stderrTail } = require("../spawn-with-shutdown.js");
 const { verifyRenderedMp4 } = require("../render-verify.js");
 const { expectedTimelineDurationSeconds, findTimeline, allStoryboardScenes, realizedScopeDurationSeconds } = require("../storyboard-schema.js");
@@ -184,16 +199,34 @@ async function renderFull(args) {
   });
 
   const start = Date.now();
-  const result = await runHyperframesWithRetry(
+  let result = await runHyperframesWithRetry(
     buildRenderArgv({ composeRoot, outPath, quality }),
     { timeoutMs, stderrLogPath, maxAttempts: 2 },
   );
 
+  // Screenshot-path fallback (degrade-don't-die): a render that timed out on a
+  // composition with MORE <video> elements than the host budget most likely
+  // stalled in BeginFrame capture (the documented low-RAM many-video wall). Retry
+  // ONCE via the screenshot capture path (PRODUCER_FORCE_SCREENSHOT) before giving
+  // up. Scoped to over-budget timeouts so a genuinely-too-long render doesn't pay
+  // a second full timeout. Race-free (no process.env mutation).
+  let screenshotFallbackUsed = false;
+  if (result.timed_out) {
+    const videoCount = countVideoElements(composeRoot);
+    if (videoCount > hostProfile.videoBudget()) {
+      screenshotFallbackUsed = true;
+      result = await runHyperframesWithRetry(
+        buildRenderArgv({ composeRoot, outPath, quality }),
+        { timeoutMs, stderrLogPath, maxAttempts: 1, forceScreenshot: true },
+      );
+    }
+  }
+
   if (result.timed_out) {
     throw new ToolError(
       ERROR_CODES.INTERNAL_ERROR,
-      `hyperframes render timed out after ${Math.round(timeoutMs / 1000)}s — partial log at ${stderrLogPath}`,
-      { stderr_log_path: stderrLogPath, stderr_preview: stderrTail(result.stderr, 1000) },
+      `hyperframes render timed out after ${Math.round(timeoutMs / 1000)}s${screenshotFallbackUsed ? " (the screenshot-capture fallback also timed out)" : ""} — partial log at ${stderrLogPath}`,
+      { stderr_log_path: stderrLogPath, stderr_preview: stderrTail(result.stderr, 1000), screenshot_fallback_used: screenshotFallbackUsed },
     );
   }
   if (result.exit_code !== 0) {
