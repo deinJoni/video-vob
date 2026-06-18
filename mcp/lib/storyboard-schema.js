@@ -5,7 +5,7 @@ const path = require("path");
 const { removedWithin } = require("./clean-cut.js");
 const { intentAnswerRaw } = require("./intent-schema.js");
 const { inspectCleanSpeechPath } = require("./paths.js");
-const { parseDurationSpec, parseDurationToSeconds, parseSingleDuration } = require("./platform-profiles.js");
+const { parseDurationSpec, parseDurationToSeconds, parseSingleDuration, canonicalizePlatform } = require("./platform-profiles.js");
 const { readJsonFile } = require("./storage.js");
 const {
   activeLintRules,
@@ -1519,6 +1519,30 @@ function warnHookShape(scenes, warnings, disabledRules) {
   }
 }
 
+// (v3.8) Retention-only: a hook scene that opens on footage with NO spoken words
+// rarely retains — the first ~3s want a verbal claim/question. Ruleset-gated
+// (off for chaptered/montage/general, like the other hook rules) and fail-safe
+// (no transcript → skip; overlay-only hook → skip).
+function warnHookNoSpeech(scenes, ctx, disabledRules, warnings) {
+  const disabled = disabledRules instanceof Set ? disabledRules : new Set();
+  if (disabled.has("PLAN_HOOK_NO_SPEECH")) return;
+  const first = scenes.length > 0 && isPlainObject(scenes[0]) ? scenes[0] : null;
+  if (!first || first.purpose !== "hook") return;
+  if (!Array.isArray(ctx.transcript) || ctx.transcript.length === 0) return;
+  if (!Array.isArray(first.source_clips) || first.source_clips.length === 0) return;
+  const resolveTranscript = typeof ctx.transcriptForFileIndex === "function"
+    ? ctx.transcriptForFileIndex
+    : () => ctx.transcript;
+  if (!clipHasSpokenWords(first, resolveTranscript)) {
+    warnings.push({
+      code: "PLAN_HOOK_NO_SPEECH",
+      message: `the hook scene (scenes[0]) opens on footage with no spoken words — under retention, a verbal claim/question in the first ~3s is the strongest hook; open on a spoken line, or add a caption/VO that states the hook`,
+      scene_index: 0,
+      scene_id: sceneIdOf(first),
+    });
+  }
+}
+
 // Rhythm-arc lints over the existing scene `pacing` field (no schema change).
 //   PLAN_PACING_MONOTONE — ≥4 scenes all the SAME pace read as a flat edit
 //     (universal: an all-identical pacing track is monotonous in any format).
@@ -1885,6 +1909,117 @@ function platformProfileFromState(state) {
   return isPlainObject(tp) && isPlainObject(tp.profile) ? tp.profile : null;
 }
 
+// Shared safe-band check for any positioned element (typed overlay OR caption
+// segment). offset_px[1] is the inset from the anchored edge, so a top-anchored
+// element inside safe_top_px (or bottom inside safe_bottom_px) gets occluded by
+// platform UI chrome. Returns {band, safe_px} or null (fail-safe on any missing
+// field). Generalizes the old bottom-only overlay check to the top band too —
+// the profiles already ship safe_top_px.
+function safeBandIntrusion(profile, position) {
+  if (!profile || !isPlainObject(position) || typeof position.anchor !== "string"
+    || !Array.isArray(position.offset_px) || !isFiniteNumber(position.offset_px[1])) return null;
+  const y = position.offset_px[1];
+  if (position.anchor.startsWith("bottom") && isFiniteNumber(profile.safe_bottom_px) && y < profile.safe_bottom_px) {
+    return { band: "bottom", safe_px: profile.safe_bottom_px };
+  }
+  if (position.anchor.startsWith("top") && isFiniteNumber(profile.safe_top_px) && y < profile.safe_top_px) {
+    return { band: "top", safe_px: profile.safe_top_px };
+  }
+  return null;
+}
+
+// caption_segments[].position safe-band check (companion to the overlay one in
+// lintOverlays). WARNING — captions in a platform UI band get occluded.
+function warnCaptionPositionSafeArea(scenes, ctx, warnings) {
+  const profile = platformProfileFromState(ctx.state);
+  if (!profile) return;
+  scenes.forEach((scene, ix) => {
+    captionSegmentsOf(scene).forEach((seg, segIx) => {
+      const sa = safeBandIntrusion(profile, seg.position);
+      if (sa) {
+        warnings.push({
+          code: "PLAN_CAPTION_SAFE_AREA",
+          message: `scenes[${ix}].caption_segments[${segIx}] anchors ${seg.position.anchor} at y-offset ${seg.position.offset_px[1]}px — inside the platform's ${sa.safe_px}px ${sa.band} safe band (platform UI covers it); move it clear of the band`,
+          scene_index: ix,
+          scene_id: sceneIdOf(scene),
+          data: { offset_px: seg.position.offset_px, band: sa.band, safe_px: sa.safe_px },
+        });
+      }
+    });
+  });
+}
+
+// (v3.8) Floor lints: A-roll has a b_roll-hold floor but no scene/output floor.
+// PLAN_SCENE_EMPTY — a scene with no footage AND no overlays AND no layout
+// renders nothing. PLAN_SCENE_TOO_SHORT — a clip-bearing scene that realizes a
+// sub-readable flash of footage reads as a glitch. Both WARNINGS, universal.
+const SCENE_MIN_OUTPUT_S = 0.7;
+function warnSceneFloors(scenes, warnings) {
+  scenes.forEach((scene, ix) => {
+    if (!isPlainObject(scene)) return;
+    const hasClips = Array.isArray(scene.source_clips) && scene.source_clips.length > 0;
+    const hasOverlays = typedOverlaysOf(scene).length > 0
+      || (Array.isArray(scene.overlays) && scene.overlays.length > 0);
+    const hasLayout = Boolean(sceneLayoutOf(scene));
+    if (!hasClips && !hasOverlays && !hasLayout) {
+      warnings.push({
+        code: "PLAN_SCENE_EMPTY",
+        message: `scenes[${ix}] has no source_clips, no overlays, and no layout — it would render nothing; give it footage/overlays or remove it`,
+        scene_index: ix,
+        scene_id: sceneIdOf(scene),
+      });
+      return;
+    }
+    if (hasClips) {
+      const out = sceneOutputSeconds(scene);
+      if (isFiniteNumber(out) && out > 0 && out < SCENE_MIN_OUTPUT_S) {
+        warnings.push({
+          code: "PLAN_SCENE_TOO_SHORT",
+          message: `scenes[${ix}] realizes only ${round1(out)}s of footage — under ~${SCENE_MIN_OUTPUT_S}s reads as a glitch; lengthen it or merge it into a neighbor`,
+          scene_index: ix,
+          scene_id: sceneIdOf(scene),
+          data: { output_seconds: out },
+        });
+      }
+    }
+  });
+}
+
+// (v3.8) Target-vs-intent consistency: the storyboarder is INSTRUCTED to copy
+// the canonical platform + profile fps into target, but nothing verified it —
+// platform/duration drift was caught NEVER at PLAN, fps only at COMPOSE. Both
+// WARNINGS, fail-safe (skip when intent has no canonical platform/profile, or
+// when target.platform doesn't canonicalize to a recognized platform).
+// Document-global (one target block) — runs once, gated by suppress_intent_check.
+function warnTargetVsIntent(parsed, ctx, warnings) {
+  const state = isPlainObject(ctx) ? ctx.state : null;
+  const answers = state && isPlainObject(state.intent) && isPlainObject(state.intent.answers)
+    ? state.intent.answers : null;
+  const tp = answers && isPlainObject(answers.target_platform) ? answers.target_platform : null;
+  const target = isPlainObject(parsed.target) ? parsed.target : null;
+  if (!tp || !target) return;
+  const intentCanonical = isNonEmptyString(tp.canonical) ? tp.canonical : null;
+  if (intentCanonical && isNonEmptyString(target.platform)) {
+    let c = null;
+    try { c = canonicalizePlatform(target.platform); } catch { c = null; }
+    if (c && c.recognized === true && c.canonical !== intentCanonical) {
+      warnings.push({
+        code: "PLAN_TARGET_PLATFORM_DRIFT",
+        message: `storyboard target.platform "${target.platform}" (→ ${c.canonical}) differs from the chosen platform "${intentCanonical}" — downstream geometry / safe bands / caption defaults follow target.platform; set it to match the intent`,
+        data: { target_platform: target.platform, target_canonical: c.canonical, intent_canonical: intentCanonical },
+      });
+    }
+  }
+  const profileFps = isPlainObject(tp.profile) && isFiniteNumber(tp.profile.fps) ? tp.profile.fps : null;
+  if (profileFps && isFiniteNumber(target.fps) && Math.abs(target.fps - profileFps) > 0.01) {
+    warnings.push({
+      code: "PLAN_TARGET_FPS_DRIFT",
+      message: `storyboard target.fps ${target.fps} differs from the platform profile fps ${profileFps}${intentCanonical ? ` (${intentCanonical})` : ""} — the composer renders at target.fps; align them so motion/caption timing match the platform`,
+      data: { target_fps: target.fps, profile_fps: profileFps },
+    });
+  }
+}
+
 function lintOverlays(scenes, ctx, errors, warnings) {
   const resolveTranscript = typeof ctx.transcriptForFileIndex === "function" ? ctx.transcriptForFileIndex : null;
   const hasTranscript = Array.isArray(ctx.transcript) && ctx.transcript.length > 0;
@@ -1925,20 +2060,17 @@ function lintOverlays(scenes, ctx, errors, warnings) {
           data: { duration_seconds: dur, dwell_min_s: dwellMin },
         });
       }
-      // Safe-area (warning): a bottom-anchored overlay with a y-offset inside
-      // the platform's bottom UI band gets eaten by platform chrome.
-      if (profile && isPlainObject(overlay.position) && typeof overlay.position.anchor === "string"
-        && overlay.position.anchor.startsWith("bottom")
-        && Array.isArray(overlay.position.offset_px) && isFiniteNumber(overlay.position.offset_px[1])
-        && isFiniteNumber(profile.safe_bottom_px)
-        && overlay.position.offset_px[1] < profile.safe_bottom_px) {
+      // Safe-area (warning): a top- OR bottom-anchored overlay with a y-offset
+      // inside the platform's UI band gets eaten by platform chrome.
+      const overlaySa = safeBandIntrusion(profile, overlay.position);
+      if (overlaySa) {
         warnings.push({
           code: "PLAN_OVERLAY_SAFE_AREA",
-          message: `scenes[${ix}] overlay ${overlayLabel(overlay)} anchors ${overlay.position.anchor} at y-offset ${overlay.position.offset_px[1]}px — inside the platform's ${profile.safe_bottom_px}px bottom safe band (platform UI covers it)`,
+          message: `scenes[${ix}] overlay ${overlayLabel(overlay)} anchors ${overlay.position.anchor} at y-offset ${overlay.position.offset_px[1]}px — inside the platform's ${overlaySa.safe_px}px ${overlaySa.band} safe band (platform UI covers it)`,
           scene_index: ix,
           scene_id: sceneIdOf(scene),
           overlay_id: overlay.id || null,
-          data: { offset_px: overlay.position.offset_px, safe_bottom_px: profile.safe_bottom_px },
+          data: { offset_px: overlay.position.offset_px, band: overlaySa.band, safe_px: overlaySa.safe_px },
         });
       }
       // Kinetic captions sync to the transcript — a scene with no spoken words
@@ -2594,6 +2726,7 @@ function lintStoryboardPlan(parsed, context) {
   lintOverlays(scenes, ctx, errors, warnings);
   lintCaptionSegments(scenes, warnings, transcriptAligned);
   warnCaptionSegmentsOnSilent(scenes, ctx, warnings);
+  warnCaptionPositionSafeArea(scenes, ctx, warnings);
   lintTransitions(parsed, scenes, ctx, disabled, warnings);
   lintSubjectPlacements(parsed, sceneById, warnings);
   // (v3.4) Span / caption content vs the transcript + multi-cell layout — all
@@ -2621,7 +2754,9 @@ function lintStoryboardPlan(parsed, context) {
   });
 
   warnHookShape(scenes, warnings, disabled);
+  warnHookNoSpeech(scenes, ctx, disabled, warnings);
   warnPacingArc(scenes, warnings, disabled);
+  warnSceneFloors(scenes, warnings);
   warnDurations(parsed, scenes, ctx.targetSeconds, warnings);
   warnDurationFeasibility(scenes, ctx, warnings);
   warnBrollHolds(scenes, warnings);
@@ -2642,6 +2777,7 @@ function lintStoryboardPlan(parsed, context) {
   // the per-short call and re-runs once over all scenes.
   if (ctx.suppress_intent_check !== true) {
     warnIntentUnmet(parsed, scenes, ctx, warnings);
+    warnTargetVsIntent(parsed, ctx, warnings);
   }
   if (cleanCutOn) {
     warnCleanSpeechStraddles(scenes, ctx.cleanSpeech, warnings);
@@ -2907,6 +3043,7 @@ function validateStoryboardContent(parsed, state) {
   }
   warnKeyMomentCoverage(allStoryboardScenes(parsed), state, warnings);
   warnIntentUnmet(parsed, allStoryboardScenes(parsed), baseContext, warnings);
+  warnTargetVsIntent(parsed, baseContext, warnings);
 
   return { ok: errors.length === 0, errors, warnings };
 }

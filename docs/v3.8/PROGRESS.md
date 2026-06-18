@@ -30,7 +30,7 @@ Bump VERSION + CHANGELOG + CLAUDE.md invariants as changes land. Commit per cohe
 | 0 | PLAN (this effort) | **done** | 5/5 audits in; PRD.md written + committed |
 | 1 | INGEST | folded into INSPECT (preflight note) | ASR `.en` advisory in checkAsrAvailable |
 | 2 | INSPECT | **done** ✓ | ASR multilingual default + VAD + scene-detect fallback + crosslingual hooks + openai lang + balance penalty; verified |
-| 3 | INTENT→PLAN | P1 done ✓, P2 next | intent teeth + caption-on-silent + key-moment parser shipped; target-drift/floors/safe-area pending |
+| 3 | INTENT→PLAN | **done** ✓ | P1 (teeth/caption-silent/key-moment) + P2 (target-drift/floors/safe-area) + P3 (hook-no-speech); brief-validator audio + stale-vs-intent gate deferred |
 | 4 | PLAN (FSM gate) | pending | |
 | 5 | COMPOSE | pending | |
 | 6 | PREVIEW | pending | |
@@ -142,7 +142,13 @@ _(record non-obvious choices here as they're made)_
 - `PLAN_CAPTION_SEGMENTS_ON_SILENT` (`warnCaptionSegmentsOnSilent`) — captions-on-silent for the first-class caption_segments layer (legacy string already errored); skips legacy-covered scenes; fail-safe when no transcript. (INTENT#2)
 - **Broadened key-moment parser** (`parseKeyMoments`): single points (`42s`, `1:05`), `mm:ss` ranges, "X to Y seconds" — was exact-`N–Ns`-only (silently skipped most phrasings). `parseSingleDuration` now exported from platform-profiles. (INTENT#3)
 - _Verified: 5-case targeted test (all teeth + single-point + mm:ss + no-intent regression + "no transitions" negative guard), classic `N–Ns` range regression, server boot, `spans` walker (existing lint negative paths intact)._
-- _P2 PENDING: `PLAN_TARGET_PLATFORM_DRIFT`/`PLAN_TARGET_FPS_DRIFT` (INTENT#4), safe-area top+caption (INTENT#6, XC-3), floor lints `PLAN_SCENE_TOO_SHORT`/`PLAN_SCENE_EMPTY` (INTENT#7). P3: hook-no-speech, brief-validator audio, stale-vs-intent gate._
+### Stage 2/3 — INTENT→PLAN (P2+P3, commit) ✓
+- `PLAN_TARGET_PLATFORM_DRIFT` + `PLAN_TARGET_FPS_DRIFT` (`warnTargetVsIntent`, document-global, fail-safe; only warns on a RECOGNIZED canonical mismatch / fps delta). (INTENT#4)
+- Safe-area generalized to the **top** band + extended to `caption_segments[].position` — shared `safeBandIntrusion` helper; new `PLAN_CAPTION_SAFE_AREA`; profiles' `safe_top_px` now consulted at PLAN. (INTENT#6, XC-3 plan-side)
+- Floor lints `PLAN_SCENE_EMPTY` (no footage+overlays+layout) / `PLAN_SCENE_TOO_SHORT` (<0.7s realized via `sceneOutputSeconds`). (INTENT#7)
+- `PLAN_HOOK_NO_SPEECH` (retention-gated, in non-retention `disabled_rules`) — hook scene opening on silent footage. (INTENT#8)
+- _Verified: targeted tests (drift+match-no-drift, floors, top safe-area overlay+caption, hook-no-speech retention-on/general-off), boot, spans walker._
+- _Deferred (low): brief-validator manifest audio count (INTENT#5); stale-vs-intent gate `plan_stale_vs_intent` (INTENT#9 — touches phase-gates, will fold into CORE stage)._
 
 ## Loop bookkeeping
 
