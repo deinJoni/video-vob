@@ -50,6 +50,9 @@ const {
   buildSegmentStrips,
   extractSegmentKeyframes,
 } = require("./segment-signals.js");
+const { attachVisualFeatures } = require("./visual-quality.js");
+const { attachFaceFeatures } = require("./face-backend.js");
+const { attachCleanliness, attachTakeStrength, summarizeTakeQuality } = require("./take-quality.js");
 const { mapWithConcurrency } = require("./concurrency.js");
 const { thumbConcurrency } = require("./host-profile.js");
 const { probeKeyframeInterval } = require("./ffprobe.js");
@@ -90,9 +93,11 @@ const CLEAN_SPEECH_MIN_SILENCE = 0.4;
 // invalidates the per-file detection cache.
 const SEGMENT_SCHEMA_VERSION = "1.0";
 // segments.json document version (additive v1.1 fields: energy/speech-rate/
-// loudness/transcript per file). The CACHE check stays on SEGMENT_SCHEMA_VERSION
-// — bumping that would force a re-run of the expensive scene decode.
-const SEGMENTS_DOC_VERSION = "1.1";
+// loudness/transcript per file; v1.2 adds the per-segment take-quality layer:
+// visual heuristics `luma_mean`/`sharpness`, `clean_fraction`, and the composite
+// `strength` block). The CACHE check stays on SEGMENT_SCHEMA_VERSION — bumping
+// that would force a re-run of the expensive scene decode.
+const SEGMENTS_DOC_VERSION = "1.2";
 const FEATURES_VERSION = 1; // audio_features cache slot version
 const SCENE_THRESHOLD = 0.4;
 // Adaptive fallback: a long, video-bearing file that yields ZERO cuts at the
@@ -584,7 +589,7 @@ function writeDetectionCache(projectId, hash, sceneCuts, silences, sceneDetected
 // scene-cut + silence detection (cached) -> buildSegments -> transcript overlap
 // + energy aggregates -> representative keyframes -> contact strips. Returns a
 // per-file summary + roll-up counts + strip legend entries.
-async function segmentSourceFiles({ projectId, manifest, transcriptsByFile, skipSceneDetection = false, seekModeByFile = new Map() }) {
+async function segmentSourceFiles({ projectId, manifest, transcriptsByFile, skipSceneDetection = false, seekModeByFile = new Map(), cleanByFile = null }) {
   const fileSummaries = [];
   const stripEntries = [];
   const featuresByFile = new Map();
@@ -592,6 +597,10 @@ async function segmentSourceFiles({ projectId, manifest, transcriptsByFile, skip
   let totalKeyframes = 0;
   let truncatedKeyframes = 0;
   let stripFailures = 0;
+  let visualScored = 0;
+  let visualFailed = 0;
+  let visualBackend = null;
+  let faceBackend = null;
 
   for (let i = 0; i < manifest.files.length; i += 1) {
     const file = manifest.files[i];
@@ -734,6 +743,25 @@ async function segmentSourceFiles({ projectId, manifest, transcriptsByFile, skip
     truncatedKeyframes += kf.truncated;
     totalSegments += segments.length;
 
+    // Take-quality layer (v3.9): cheap visual heuristics on the already-extracted
+    // keyframes (exposure + sharpness — no video re-decode), per-segment
+    // cleanliness from the winner file's clean-cut removed spans, then a composite
+    // per-segment `strength` score so the storyboarder can pick the BEST take of a
+    // moment, not just a spoken one. All degrade-don't-die: any missing input →
+    // null fields, never aborts INSPECT.
+    const vq = await attachVisualFeatures(segments, { hasVideo });
+    segments = vq.segments;
+    visualScored += vq.scored;
+    visualFailed += vq.failed;
+    if (vq.backend) visualBackend = vq.backend;
+    // Optional face-presence (pluggable; degrades to face:null when no backend).
+    const fq = await attachFaceFeatures(segments, { hasVideo });
+    segments = fq.segments;
+    if (fq.backend) faceBackend = fq.backend;
+    const removedForFile = cleanByFile && cleanByFile.file_index === i ? cleanByFile.removed : null;
+    segments = attachCleanliness(segments, removedForFile);
+    segments = attachTakeStrength(segments);
+
     const strips = hasVideo
       ? await buildSegmentStrips({ projectId, fileIndex: i, segments })
       : { strips: [], failed: 0 };
@@ -767,6 +795,10 @@ async function segmentSourceFiles({ projectId, manifest, transcriptsByFile, skip
     stripEntries,
     stripFailures,
     featuresByFile,
+    visualScored,
+    visualFailed,
+    visualBackend,
+    faceBackend,
   };
 }
 
@@ -1222,6 +1254,7 @@ async function runInspect({ projectId, manifest, options = {} }) {
   // keep_spans (source time) the composer concatenates into one clean spine clip.
   let cleanSpeechPathOut = null;
   let cleanSpeechStatsOut = null;
+  let cleanRemovedSpans = null; // winner-file filler/dead-air/flub spans → per-segment cleanliness
   if (transcriptPathOut && transcribedFileIndex >= 0) {
     try {
       const words = readJsonFile(transcriptPathOut);
@@ -1247,6 +1280,7 @@ async function runInspect({ projectId, manifest, options = {} }) {
         }, null, 2)}\n`);
         cleanSpeechPathOut = outPath;
         cleanSpeechStatsOut = clean.stats;
+        cleanRemovedSpans = Array.isArray(clean.removed) ? clean.removed : null;
       }
     } catch {
       // best-effort: clean_speech is an optional planning aid
@@ -1260,7 +1294,23 @@ async function runInspect({ projectId, manifest, options = {} }) {
   // — not the raw file.
   const segmentation = await segmentSourceFiles({
     projectId, manifest, transcriptsByFile, skipSceneDetection, seekModeByFile,
+    cleanByFile: cleanRemovedSpans
+      ? { file_index: transcribedFileIndex, removed: cleanRemovedSpans }
+      : null,
   });
+  // Compact per-source take-quality aggregate (strong/usable/weak counts + the
+  // strongest takes) for state/summary/digest. Best-effort: empty when nothing
+  // scored. (segments.json already carries the full per-segment `strength`.)
+  let takeQuality = null;
+  try {
+    takeQuality = {
+      ...summarizeTakeQuality(segmentation.fileSummaries),
+      visual_scored: segmentation.visualScored,
+      visual_failed: segmentation.visualFailed,
+      visual_backend: segmentation.visualBackend,
+      face_backend: segmentation.faceBackend,
+    };
+  } catch { takeQuality = null; }
   const segmentsPathOut = segmentsPath(projectId);
   writeFileAtomic(segmentsPathOut, `${JSON.stringify({
     schema_version: SEGMENTS_DOC_VERSION,
@@ -1343,6 +1393,7 @@ async function runInspect({ projectId, manifest, options = {} }) {
       audio: audioSummaryOut,
       sceneDetectionSkipped: skipSceneDetection,
       transcribedFileIndex,
+      takeQuality,
     });
     writeFileAtomic(inspectDigestPath(projectId), digestMarkdown);
     digestPathOut = inspectDigestPath(projectId);
@@ -1386,12 +1437,17 @@ async function runInspect({ projectId, manifest, options = {} }) {
     strip_failures: segmentation.stripFailures,
     hook_candidates: hookCandidates,
     hook_candidate_count: hookCandidates.length,
+    // (v3.9) The file the hook candidates were ranked on — their start/end are in
+    // THIS file's source seconds, so the plan-lint hook-grounding check only
+    // compares an opening clip drawn from this same file (else it skips).
+    transcribed_file_index: transcribedFileIndex,
     paragraph_count: paragraphCount,
     word_count: wordCount,
     segments_path: segmentsPathOut,
     segment_count: segmentation.totalSegments,
     segment_keyframe_count: segmentation.totalKeyframes,
     segment_keyframes_truncated: segmentation.truncatedKeyframes,
+    take_quality: takeQuality,
     skipped_reason: skippedReason,
   };
 

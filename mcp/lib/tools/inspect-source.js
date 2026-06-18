@@ -110,6 +110,7 @@ async function inspectSource(args) {
         strip_count: summary.strip_count || 0,
         transcripts: summary.transcripts || [],
         hook_candidate_count: summary.hook_candidate_count || 0,
+        take_quality: summary.take_quality || null,
         completed_at: ts,
         user_acknowledged: false,
         acknowledged_at: null,
@@ -172,6 +173,7 @@ async function inspectSource(args) {
       hook_candidate_count: next.inspect.hook_candidate_count,
       hook_candidates_top: (summary.hook_candidates || []).slice(0, 3)
         .map(({ rank, start_seconds, end_seconds, text }) => ({ rank, start_seconds, end_seconds, text })),
+      take_quality: next.inspect.take_quality,
       completed_at: ts,
       user_acknowledged: false,
     };

@@ -58,8 +58,49 @@ fail-safe. (3.8.0 → 3.9.0)
   codes. Read by both the storyboarder (to plan + self-critique) and the critic (to
   score).
 
+## INSPECT — per-segment take-quality scoring (the upstream complement)
+
+Pillar A makes the storyboarder *act* on INSPECT's energy / hook signals; this adds a
+richer composite signal those same consumers read. INSPECT used to say what is
+*spoken* and what is A/B-roll, never what is *good* (strong delivery, sharp focus, no
+flubs). Each non-silence segment in `segments.json` (schema 1.1→**1.2**) now carries a
+**`strength`** block — `{score (0–1), tier (strong|usable|weak), delivery, visual,
+components{energy,pace,cleanliness,sharpness,exposure,face}, flags[]}` — so the
+storyboarder picks the BEST take of a moment, not just a spoken one.
+
+- **`mcp/lib/take-quality.js`** (pure scorer) — energy + speech-rate + clean-cut
+  cleanliness (delivery) and sharpness + exposure + optional face (visual).
+  Energy/sharpness are scored *relative to the file's own distribution* ("strong" =
+  the best take of THIS shoot); pace/exposure use absolute bands; composite
+  0.6·delivery + 0.4·visual, renormalized over present components. Fail-safe — missing
+  inputs → null components; `strength:null` only when nothing is measurable (matching
+  silence).
+- **`mcp/lib/visual-quality.js`** — cheap visual heuristics off the **keyframes INSPECT
+  already extracts** (no re-decode): one `blurdetect,signalstats,metadata=print` ffmpeg
+  pass per frame → focus `sharpness` + `luma_mean` exposure. Degrades to exposure-only
+  (no `blurdetect`) or null; never throws.
+- **`mcp/lib/face-backend.js`** + `mcp/lib/visual/face_detect.py` — an OPTIONAL
+  pluggable face-presence backend (OpenCV bundled Haar cascade; mirrors
+  `asr-backend.js` detect→run→degrade). Adds the `face` term when `pip install
+  opencv-python-headless` is present; degrades to `face:null` otherwise. Knob
+  `VOB_FACE_BACKEND`. Surfaced as an optional, warn-only `vob_doctor` check.
+- **Surfaced** — `state.inspect.take_quality`, a lean
+  `read_state_summary.inspect.take_quality` (counts + median + strongest), a digest
+  **`## Strongest takes`** leaderboard + a `take` column (tier+score+flags) in the
+  segment table; documented in `storyboarder.md` / `inspector.md` /
+  `editorial-patterns.md` (§1/§2/§5). Lands in `segments.json`, so Pillar A's
+  `loadSegments` / `PLAN_OPENING_LOW_ENERGY` consume it for free.
+- **Advisory** — no gate, no FSM edge, no new required key. Knobs: `VOB_TAKE_QUALITY`,
+  `VOB_VISUAL_QUALITY`, `VOB_FACE_BACKEND`.
+
 ## Testing / tooling
 
+- **Walker `takequality` phase** (`node scripts/m5-walker.js takequality`) — a
+  source-free unit harness for the strength scorer (strong>weak ordering / tiers /
+  flags, fail-safe nulls, cleanliness from removed spans, the optional face term, the
+  visual-metadata parser, and the digest section). Model-free regression test. The
+  visual + face extraction were additionally verified live (real ffmpeg `blurdetect`;
+  real OpenCV face detection on a human-face image in a throwaway venv).
 - **Walker `editorial` phase** (`node scripts/m5-walker.js editorial`) — a source-free
   unit harness (calls `lintStoryboardPlan` with synthetic `summary`/`segments` ctx)
   that isolates each new code, the retention gate, and the cross-file / missing-signal
