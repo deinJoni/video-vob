@@ -61,6 +61,61 @@ function shouldRunLayoutQc(storyboard, scope = {}) {
   return false;
 }
 
+// (v3.8) The plan-shape trigger above misses compositions where the composer
+// authored captions FREELY (plain-string plan captions, or caption realization
+// left entirely to the composer) — exactly the heavy-text compositions that most
+// need overflow QC. This markup-side trigger fires when the composition itself
+// carries caption-class elements or the data-vob-(caption|overlay)-id binding
+// attrs, so the (reliable) overflow check runs on what the composer actually
+// built, not only on what the plan declared. `files` = [{relPath, content}].
+const CAPTION_CLASS_RE = /class\s*=\s*["'][^"']*caption[^"']*["']/i;
+const VOB_BIND_ATTR_RE = /data-vob-(?:caption|overlay)-id\s*=/i;
+function compositionHasTextMarkup(files) {
+  if (!Array.isArray(files)) return false;
+  for (const f of files) {
+    const content = f && typeof f.content === "string" ? f.content : "";
+    if (!content) continue;
+    if (CAPTION_CLASS_RE.test(content) || VOB_BIND_ATTR_RE.test(content)) return true;
+  }
+  return false;
+}
+
+// (v3.8) Output-time sample points aimed at the frames where captions/overlays
+// are actually on screen, so the (expensive) inspect render hits them instead of
+// 6 evenly-spread samples that can miss every caption on a long composition.
+// Per-scene output start = cumulative target_duration_seconds (same cursor math
+// snapshot-keyframes uses). Captions are SOURCE-time within a scene, so we can't
+// map them to an exact output instant without the clip cursor — instead sample a
+// few points ACROSS each captioned scene's window. Typed overlays ARE
+// scene-relative, so those are sampled exactly. Returns [] when nothing is
+// planned (caller falls back to --samples). Capped + sorted + deduped.
+const MAX_INSPECT_TIMECODES = 16;
+function captionOverlayTimecodes(storyboard, scope = {}) {
+  const scenes = scenesInScope(storyboard, scope);
+  if (!Array.isArray(scenes) || scenes.length === 0) return [];
+  const points = new Set();
+  let cursor = 0;
+  for (const scene of scenes) {
+    const d = scene && Number(scene.target_duration_seconds);
+    if (!Number.isFinite(d) || d <= 0) return []; // malformed timeline -> defer to --samples
+    const caps = captionSegmentsOf(scene);
+    const overlays = typedOverlaysOf(scene);
+    if (caps.length > 0) {
+      // Three points across the scene catch a caption wherever it sits in it.
+      for (const frac of [0.2, 0.5, 0.8]) {
+        points.add(Math.round((cursor + d * frac) * 1000) / 1000);
+      }
+    }
+    for (const ov of overlays) {
+      const s = Number(ov && ov.start_seconds);
+      const off = Number.isFinite(s) ? Math.min(Math.max(s, 0), d) : d * 0.5;
+      points.add(Math.round((cursor + Math.min(off + 0.1, d)) * 1000) / 1000);
+    }
+    cursor += d;
+  }
+  return [...points].sort((a, b) => a - b).slice(0, MAX_INSPECT_TIMECODES);
+}
+
 // --- report parsing ----------------------------------------------------------
 // Tolerant parse of `hyperframes inspect --json` stdout (shape: { schemaVersion,
 // duration, samples[], ok, issueCount, issues[{code,severity,time,selector,
@@ -201,6 +256,8 @@ module.exports = {
   layoutQcMode,
   scenesInScope,
   shouldRunLayoutQc,
+  compositionHasTextMarkup,
+  captionOverlayTimecodes,
   parseInspectReport,
   mapInspectIssues,
   layoutAdvisory,

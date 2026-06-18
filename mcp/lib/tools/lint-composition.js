@@ -16,6 +16,9 @@ const { planSegmentById } = require("../render-segments.js");
 const {
   layoutQcMode,
   shouldRunLayoutQc,
+  compositionHasTextMarkup,
+  captionOverlayTimecodes,
+  scenesInScope,
   parseInspectReport,
   mapInspectIssues,
   layoutAdvisory,
@@ -430,9 +433,13 @@ async function lintComposition(args) {
   const layoutMode = layoutQcMode();
   if (layoutMode === "off") {
     inspectMeta = { ran: false, skipped_reason: "disabled" };
-  } else if (layoutMode === "always" || shouldRunLayoutQc(storyboard, { activeShortId, activeSegment })) {
+  } else if (layoutMode === "always" || shouldRunLayoutQc(storyboard, { activeShortId, activeSegment }) || compositionHasTextMarkup(qcFiles)) {
     try {
-      const ins = await runInspect({ composeRoot });
+      // Aim inspect at the frames where captions/overlays are actually on screen
+      // (plan-derived output windows) rather than 6 evenly-spread samples that
+      // can miss every caption on a long composition. Empty -> defer to --samples.
+      const captionTimecodes = captionOverlayTimecodes(storyboard, { activeShortId, activeSegment });
+      const ins = await runInspect({ composeRoot, timecodes: captionTimecodes.length > 0 ? captionTimecodes : null });
       if (ins.timed_out) {
         inspectFindings = [layoutAdvisory("vob/layout_qc_skipped", "hyperframes inspect timed out — caption/overlay legibility not verified this run")];
         inspectMeta = { ran: false, skipped_reason: "timeout" };
@@ -462,9 +469,34 @@ async function lintComposition(args) {
   for (const f of hfDropped) {
     if (f.severity in droppedBySeverity) droppedBySeverity[f.severity] += 1;
   }
-  // vob QC findings first (most actionable), then the advisory inspect overflow
-  // findings, then the (deduped) hyperframes findings.
-  const findings = [...qc.findings, ...inspectFindings, ...hfFindings];
+  // (v3.8) Layout degraded -> CSS-cell fallback: a layout scene that didn't
+  // composite (materialize skipped/failed) costs N raw <video> cells against the
+  // host budget instead of 1 composited clip. The <video>-budget warning fires on
+  // the symptom; this WARNING names the cause so the composer/orchestrator know
+  // which scenes to simplify. Scoped to the active short/segment.
+  const layoutDegradedFindings = [];
+  const sceneLayoutsState = state.scene_layouts && typeof state.scene_layouts === "object" && !Array.isArray(state.scene_layouts)
+    ? state.scene_layouts : null;
+  if (sceneLayoutsState && Array.isArray(sceneLayoutsState.layouts)) {
+    const inScope = new Set(scenesInScope(storyboard, { activeShortId, activeSegment })
+      .map((s) => s && s.scene_id).filter(Boolean));
+    for (const l of sceneLayoutsState.layouts) {
+      if (!l || (l.status !== "skipped" && l.status !== "failed")) continue;
+      if (inScope.size > 0 && !inScope.has(l.scene_id)) continue;
+      const cost = Number.isFinite(l.cells) ? ` (≈${l.cells} extra <video> cells against the host budget)` : "";
+      const why = l.reason ? `: ${l.reason}` : (l.error ? `: ${l.error}` : "");
+      layoutDegradedFindings.push({
+        severity: "warning",
+        rule: "vob/layout_degraded_fallback",
+        message: `scene "${l.scene_id}" layout did not composite (${l.status}${why}) — the composer falls back to CSS-positioned cells${cost}; simplify or fix the layout, or expect tighter <video> budget`,
+        file: null, line: null, column: null, source: "vob",
+      });
+    }
+  }
+
+  // vob QC findings first (most actionable), then layout-degraded notes, then the
+  // advisory inspect overflow findings, then the (deduped) hyperframes findings.
+  const findings = [...qc.findings, ...layoutDegradedFindings, ...inspectFindings, ...hfFindings];
   let inspectWarnings = 0;
   let inspectInfo = 0;
   for (const f of inspectFindings) {
@@ -472,7 +504,7 @@ async function lintComposition(args) {
     else if (f.severity === "info") inspectInfo += 1;
   }
   const errorCount = Math.max(0, report.error_count - droppedBySeverity.error) + qc.error_count;
-  const warningCount = Math.max(0, report.warning_count - droppedBySeverity.warning) + qc.warning_count + inspectWarnings;
+  const warningCount = Math.max(0, report.warning_count - droppedBySeverity.warning) + qc.warning_count + inspectWarnings + layoutDegradedFindings.length;
   const infoCount = Math.max(0, report.info_count - droppedBySeverity.info) + inspectInfo;
   const lintStatus = errorCount > 0 ? "errors" : warningCount > 0 ? "warnings_only" : "clean";
 

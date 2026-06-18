@@ -32,7 +32,7 @@ Bump VERSION + CHANGELOG + CLAUDE.md invariants as changes land. Commit per cohe
 | 2 | INSPECT | **done** ✓ | ASR multilingual default + VAD + scene-detect fallback + crosslingual hooks + openai lang + balance penalty; verified |
 | 3 | INTENT→PLAN | **done** ✓ | P1 (teeth/caption-silent/key-moment) + P2 (target-drift/floors/safe-area) + P3 (hook-no-speech); brief-validator audio + stale-vs-intent gate deferred |
 | 4 | PLAN (FSM gate) | pending | |
-| 5 | COMPOSE | pending | |
+| 5 | COMPOSE | **done** ✓ | master_duration_long, design_font_partial, broadened+aimed inspect QC, layout_degraded_fallback; safe-band stays PLAN-side (no bbox from inspect) |
 | 6 | PREVIEW | pending | |
 | 7 | RENDER | pending | |
 | 8 | PACKAGE | pending | |
@@ -149,6 +149,16 @@ _(record non-obvious choices here as they're made)_
 - `PLAN_HOOK_NO_SPEECH` (retention-gated, in non-retention `disabled_rules`) — hook scene opening on silent footage. (INTENT#8)
 - _Verified: targeted tests (drift+match-no-drift, floors, top safe-area overlay+caption, hook-no-speech retention-on/general-off), boot, spans walker._
 - _Deferred (low): brief-validator manifest audio count (INTENT#5); stale-vs-intent gate `plan_stale_vs_intent` (INTENT#9 — touches phase-gates, will fold into CORE stage)._
+
+### Stage 4 — COMPOSE (commit) ✓
+- `vob/master_duration_long` — symmetric to `master_duration_short`; WARNING (1.0s tol) when `data-duration` exceeds scene total (frozen/black tail). (COMPOSE#5)
+- `vob/design_font_partial` — INFO when a multi-role type system collapses to ONE face (templated "slop"); `design_font_mismatch` stays the 0-match warning. (COMPOSE#10)
+- Layout-QC trigger broadened: `compositionHasTextMarkup` fires inspect on caption-class / `data-vob-*-id` MARKUP, not only object-form plan captions — overflow QC now runs on composer-authored captions. (COMPOSE#3)
+- Inspect AIMED: `captionOverlayTimecodes` samples the caption/overlay output windows (per-scene cursor math, exact for scene-relative overlays) instead of 6 generic samples. (COMPOSE#8)
+- `vob/layout_degraded_fallback` WARNING — a layout that didn't composite (skipped/failed) names the scene + extra `<video>` cost (scoped to active short/segment). (COMPOSE#4)
+- _Verified: layout-qc helper unit tests, runCompositionQc master-long + design-partial (+ no-false-positive when matched/both-used), module load, boot, spans walker._
+- _Note: rendered-text **safe-band** intrusion (COMPOSE#2) is NOT engine-detectable — `hyperframes inspect` gives overflow only (no bbox/safe-area), stills are luma-only (band always has video pixels). Safe-band lever lives at PLAN (planned positions, done Stage 2/3) + COMPOSE edge-overflow (broadened above)._
+- _Deferred (low): caption-sidecar multi-clip anchoring (COMPOSE#12 → fold into PACKAGE sidecar work); wipeComposeDir atomicity (COMPOSE#11); snapshot timecode→filename map (COMPOSE#7)._
 
 ## Loop bookkeeping
 
