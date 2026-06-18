@@ -71,6 +71,17 @@ function loadArchivedSide(projectId, version, record) {
   const storyboard = readJsonOrNull(storyboardPath);
   const sceneIds = orderedSceneIds(storyboard);
 
+  // (v3.8) The archived PACKAGE manifest carries the OUTPUT-quality signals a
+  // creator actually iterates on (delivered duration, measured loudness, dims,
+  // chapters, caption coverage) — render wall-clock + file size don't say "is it
+  // better?". Degrades to null fields when a version was never packaged.
+  const isObj = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
+  const pkg = readJsonOrNull(path.join(archiveVersionDir(projectId, version), "package", "manifest.json"));
+  const pkgVideo = pkg && isObj(pkg.video) ? pkg.video : null;
+  const pkgAudio = pkg && isObj(pkg.audio) ? pkg.audio : null;
+  const pkgCaptions = pkg && isObj(pkg.captions) ? pkg.captions : null;
+  const pkgChapters = pkg && Array.isArray(pkg.chapters) ? pkg.chapters : null;
+
   const render = snapshot.render && typeof snapshot.render === "object" ? snapshot.render : null;
   return {
     version,
@@ -85,7 +96,29 @@ function loadArchivedSide(projectId, version, record) {
     storyboard_revision: intOrNull(snapshot.storyboard_revision_at_archive),
     scene_count: sceneIds === null ? null : sceneIds.length,
     storyboard_readable: sceneIds !== null,
+    // Output-quality signals from the archived package manifest.
+    package_available: pkg !== null,
+    output_duration_seconds: pkgVideo ? finiteOrNull(pkgVideo.duration_seconds) : null,
+    output_width: pkgVideo ? intOrNull(pkgVideo.width) : null,
+    output_height: pkgVideo ? intOrNull(pkgVideo.height) : null,
+    measured_loudness_i: pkgAudio ? finiteOrNull(pkgAudio.measured_input_i) : null,
+    chapter_count: pkgChapters ? pkgChapters.length : null,
+    caption_segment_count: pkgCaptions ? intOrNull(pkgCaptions.segment_count) : null,
     _scene_ids: sceneIds,
+  };
+}
+
+// Output-quality deltas from the archived package manifests (null when either
+// side wasn't packaged — never a fabricated 0). dimensions_changed is only true
+// when BOTH sides have dims and they differ.
+function buildQualityDiff(fromSide, toSide) {
+  return {
+    output_duration_delta_seconds: numericDelta(fromSide.output_duration_seconds, toSide.output_duration_seconds, { round: true }),
+    loudness_delta_lufs: numericDelta(fromSide.measured_loudness_i, toSide.measured_loudness_i, { round: true }),
+    dimensions_changed: fromSide.output_width != null && toSide.output_width != null
+      && (fromSide.output_width !== toSide.output_width || fromSide.output_height !== toSide.output_height),
+    chapter_count_delta: numericDelta(fromSide.chapter_count, toSide.chapter_count),
+    caption_segment_count_delta: numericDelta(fromSide.caption_segment_count, toSide.caption_segment_count),
   };
 }
 
@@ -150,6 +183,13 @@ function publicSide(side) {
     storyboard_revision: side.storyboard_revision,
     scene_count: side.scene_count,
     storyboard_readable: side.storyboard_readable,
+    package_available: side.package_available,
+    output_duration_seconds: side.output_duration_seconds,
+    output_width: side.output_width,
+    output_height: side.output_height,
+    measured_loudness_i: side.measured_loudness_i,
+    chapter_count: side.chapter_count,
+    caption_segment_count: side.caption_segment_count,
   };
 }
 
@@ -265,6 +305,7 @@ function compareIterations(args) {
       file_size_delta_bytes: numericDelta(fromSide.file_size_bytes, toSide.file_size_bytes),
       composition_revision_delta: numericDelta(fromSide.composition_revision, toSide.composition_revision),
       storyboard_revision_delta: numericDelta(fromSide.storyboard_revision, toSide.storyboard_revision),
+      ...buildQualityDiff(fromSide, toSide),
       ...buildSceneDiff(fromSide, toSide),
     };
 
@@ -332,6 +373,7 @@ function compareIterations(args) {
     file_size_delta_bytes: numericDelta(fromSide.file_size_bytes, toSide.file_size_bytes),
     composition_revision_delta: numericDelta(fromSide.composition_revision, toSide.composition_revision),
     storyboard_revision_delta: numericDelta(fromSide.storyboard_revision, toSide.storyboard_revision),
+    ...buildQualityDiff(fromSide, toSide),
     ...buildSceneDiff(fromSide, toSide),
   };
 

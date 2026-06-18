@@ -242,6 +242,10 @@ function renderPackageReadme(manifest) {
     }
     if (manifest.assembly && Number.isFinite(manifest.assembly.segment_count)) {
       lines.push(`- Assembled from ${manifest.assembly.segment_count} render segment(s): ${manifest.assembly.segment_ids.join(", ")}${manifest.assembly.concat_path === "copy" ? " (lossless concat)" : ""}`);
+      const m = manifest.assembly.music;
+      if (m && m.file) {
+        lines.push(`- Music bed: ${m.file}${Number.isFinite(m.gain_db) ? ` (${m.gain_db > 0 ? "+" : ""}${m.gain_db} dB)` : ""} — ${m.ducked ? "sidechain-ducked under program audio" : "**flat mix (NOT ducked)** — verify dialogue isn't masked"}`);
+      }
     }
     if (Number.isFinite(l.storyboard_revision)) lines.push(`- Storyboard revision: ${l.storyboard_revision}`);
     if (Number.isFinite(l.composition_revision)) lines.push(`- Composition revision: ${l.composition_revision}`);

@@ -176,14 +176,27 @@ function buildClipCutArgv({ src, out, inSeconds, outSeconds, dropAudio, speed })
 const LOUDNORM_TIMEOUT_MS = 10 * 60 * 1000;
 const LOUDNORM_TARGET = Object.freeze({ i: -14, tp: -1, lra: 11 });
 
-function buildLoudnormMeasureArgv({ input }) {
+// Resolve a {i,tp,lra} target, defaulting any missing field to the -14 LUFS
+// short-form reference — so an absent/partial per-video-type target is safe.
+function resolveLoudnormTarget(target) {
+  const t = target && typeof target === "object" ? target : {};
+  return {
+    i: Number.isFinite(t.i) ? t.i : LOUDNORM_TARGET.i,
+    tp: Number.isFinite(t.tp) ? t.tp : LOUDNORM_TARGET.tp,
+    lra: Number.isFinite(t.lra) ? t.lra : LOUDNORM_TARGET.lra,
+  };
+}
+
+function buildLoudnormMeasureArgv({ input, target = LOUDNORM_TARGET }) {
+  const t = resolveLoudnormTarget(target);
   return ["-hide_banner", "-nostats", "-i", input, "-map", "0:a:0",
-    "-af", "loudnorm=I=-14:TP=-1:LRA=11:print_format=json", "-f", "null", "-"];
+    "-af", `loudnorm=I=${t.i}:TP=${t.tp}:LRA=${t.lra}:print_format=json`, "-f", "null", "-"];
 }
 
 // `measured` fields are the strings parsed from pass 1 (parseLoudnormStats).
-function buildLoudnormApplyArgv({ input, output, measured }) {
-  const af = `loudnorm=I=-14:TP=-1:LRA=11:measured_I=${measured.input_i}:measured_TP=${measured.input_tp}`
+function buildLoudnormApplyArgv({ input, output, measured, target = LOUDNORM_TARGET }) {
+  const t = resolveLoudnormTarget(target);
+  const af = `loudnorm=I=${t.i}:TP=${t.tp}:LRA=${t.lra}:measured_I=${measured.input_i}:measured_TP=${measured.input_tp}`
     + `:measured_LRA=${measured.input_lra}:measured_thresh=${measured.input_thresh}`
     + `:offset=${measured.target_offset}:linear=true:print_format=summary`;
   return ["-y", "-i", input, "-map", "0:v:0", "-map", "0:a:0",
@@ -376,6 +389,7 @@ module.exports = {
   CLIP_CUT_TIMEOUT_MS,
   LOUDNORM_TIMEOUT_MS,
   LOUDNORM_TARGET,
+  resolveLoudnormTarget,
   PREFLIGHT_TIMEOUT_MS,
   MAX_OUTPUT_BYTES,
   buildClipCutArgv,

@@ -18,9 +18,24 @@ const {
 const { withSessionLock, writeFileAtomic } = require("../storage.js");
 const { readSessionStateStrict } = require("../session-state.js");
 const { runHyperframesWithRetry, buildRenderArgv, renderTimeoutMs, defaultRenderQuality } = require("../hyperframes-runner.js");
+const hostProfile = require("../host-profile.js");
+
+// Count <video> elements across the composition's root HTML (best-effort) — the
+// signal for the screenshot-capture timeout fallback below.
+function countVideoElements(root) {
+  let count = 0;
+  try {
+    for (const ent of fs.readdirSync(root, { withFileTypes: true })) {
+      if (!ent.isFile() || !/\.html$/i.test(ent.name)) continue;
+      const m = fs.readFileSync(path.join(root, ent.name), "utf8").match(/<video[\s>]/gi);
+      if (m) count += m.length;
+    }
+  } catch { /* best-effort */ }
+  return count;
+}
 const { stderrTail } = require("../spawn-with-shutdown.js");
 const { verifyRenderedMp4 } = require("../render-verify.js");
-const { expectedTimelineDurationSeconds, findTimeline } = require("../storyboard-schema.js");
+const { expectedTimelineDurationSeconds, findTimeline, allStoryboardScenes, realizedScopeDurationSeconds } = require("../storyboard-schema.js");
 const { planSegmentById } = require("../render-segments.js");
 
 function nowIso() {
@@ -86,6 +101,22 @@ async function renderFull(args) {
       "preview has not been confirmed — call vob_confirm_preview before vob_render_full",
     );
   }
+  // Cross-short/segment guard (defense-in-depth; render_full gates on
+  // preview.confirmed independently of the PREVIEW→RENDER gate): the confirmed
+  // preview must be OF the active composition's short/segment, else a resume
+  // mid-fan-out would render the wrong short blessed by another short's preview.
+  const previewShort = typeof preview.short_id === "string" && preview.short_id !== "" ? preview.short_id : null;
+  const compShort = typeof composition.short_id === "string" && composition.short_id !== "" ? composition.short_id : null;
+  const previewSeg = typeof preview.segment_id === "string" && preview.segment_id !== "" ? preview.segment_id : null;
+  const compSeg = typeof composition.segment_id === "string" && composition.segment_id !== "" ? composition.segment_id : null;
+  if ((compShort !== null && previewShort !== null && previewShort !== compShort)
+    || (compSeg !== null && previewSeg !== null && previewSeg !== compSeg)) {
+    throw new ToolError(
+      ERROR_CODES.STATE_CONFLICT,
+      `the confirmed preview is for ${previewShort ? `short "${previewShort}"` : `segment "${previewSeg}"`} but the active composition is ${compShort ? `short "${compShort}"` : `segment "${compSeg}"`} — re-run vob_render_preview + vob_confirm_preview for the active ${compShort ? "short" : "segment"} before rendering`,
+      { preview_short_id: previewShort, composition_short_id: compShort, preview_segment_id: previewSeg, composition_segment_id: compSeg },
+    );
+  }
 
   // Segmented render: the composition implements ONE render segment (stamped
   // at save). Its partial lands in <session>/segment_renders/ — outside
@@ -115,22 +146,34 @@ async function renderFull(args) {
   let sbTotal = null;
   let expectedDurationSeconds = null;
   if (planSegment) {
+    // declared fallback (refined to the realized cut below if the storyboard reads)
     sbTotal = Number.isFinite(planSegment.target_duration_seconds) ? planSegment.target_duration_seconds : null;
     expectedDurationSeconds = sbTotal;
-  } else {
-    try {
-      const sb = JSON.parse(fs.readFileSync(storyboardPath(id), "utf8"));
-      const shortId = typeof composition.short_id === "string" && composition.short_id !== ""
-        ? composition.short_id
-        : null;
+  }
+  try {
+    const sb = JSON.parse(fs.readFileSync(storyboardPath(id), "utf8"));
+    const shortId = typeof composition.short_id === "string" && composition.short_id !== ""
+      ? composition.short_id
+      : null;
+    let scopeScenes = null;
+    if (planSegment && Array.isArray(planSegment.scene_ids)) {
+      const want = new Set(planSegment.scene_ids);
+      scopeScenes = allStoryboardScenes(sb).filter((s) => s && want.has(s.scene_id));
+    } else {
       sbTotal = expectedTimelineDurationSeconds(sb, shortId);
       const timeline = findTimeline(sb, shortId);
+      scopeScenes = timeline && Array.isArray(timeline.scenes) ? timeline.scenes : null;
       expectedDurationSeconds = timeline
         && Number.isFinite(timeline.total_target_duration_seconds) && timeline.total_target_duration_seconds > 0
         ? timeline.total_target_duration_seconds
         : null;
-    } catch {}
-  }
+    }
+    // Drift expectation = the REALIZED cut (speed/layout-baked), not the declared
+    // target (which legitimately differs — see PLAN_DURATION_INFEASIBLE). Fall
+    // back to declared when scenes don't resolve.
+    const realized = scopeScenes ? realizedScopeDurationSeconds(scopeScenes) : 0;
+    if (realized > 0) expectedDurationSeconds = realized;
+  } catch {}
   const timeoutMs = renderTimeoutMs("full", sbTotal);
 
   const ts = filenameSafeTimestamp();
@@ -172,16 +215,34 @@ async function renderFull(args) {
   });
 
   const start = Date.now();
-  const result = await runHyperframesWithRetry(
+  let result = await runHyperframesWithRetry(
     buildRenderArgv({ composeRoot, outPath, quality }),
     { timeoutMs, stderrLogPath, maxAttempts: 2 },
   );
 
+  // Screenshot-path fallback (degrade-don't-die): a render that timed out on a
+  // composition with MORE <video> elements than the host budget most likely
+  // stalled in BeginFrame capture (the documented low-RAM many-video wall). Retry
+  // ONCE via the screenshot capture path (PRODUCER_FORCE_SCREENSHOT) before giving
+  // up. Scoped to over-budget timeouts so a genuinely-too-long render doesn't pay
+  // a second full timeout. Race-free (no process.env mutation).
+  let screenshotFallbackUsed = false;
+  if (result.timed_out) {
+    const videoCount = countVideoElements(composeRoot);
+    if (videoCount > hostProfile.videoBudget()) {
+      screenshotFallbackUsed = true;
+      result = await runHyperframesWithRetry(
+        buildRenderArgv({ composeRoot, outPath, quality }),
+        { timeoutMs, stderrLogPath, maxAttempts: 1, forceScreenshot: true },
+      );
+    }
+  }
+
   if (result.timed_out) {
     throw new ToolError(
       ERROR_CODES.INTERNAL_ERROR,
-      `hyperframes render timed out after ${Math.round(timeoutMs / 1000)}s — partial log at ${stderrLogPath}`,
-      { stderr_log_path: stderrLogPath, stderr_preview: stderrTail(result.stderr, 1000) },
+      `hyperframes render timed out after ${Math.round(timeoutMs / 1000)}s${screenshotFallbackUsed ? " (the screenshot-capture fallback also timed out)" : ""} — partial log at ${stderrLogPath}`,
+      { stderr_log_path: stderrLogPath, stderr_preview: stderrTail(result.stderr, 1000), screenshot_fallback_used: screenshotFallbackUsed },
     );
   }
   if (result.exit_code !== 0) {
@@ -202,8 +263,10 @@ async function renderFull(args) {
 
   const renderDurationSeconds = (Date.now() - start) / 1000;
   const sizeBytes = fileSizeBytes(outPath);
-  // Silent-truncation detector: ffprobe the MP4 vs the storyboard expectation.
-  const verification = verifyRenderedMp4({ mp4Path: outPath, expectedDurationSeconds });
+  // Silent-truncation detector + content QC: ffprobe vs the realized cut, and
+  // sample luma/volume so an all-black or silent render (dropped <video> clip /
+  // failed audio mux — the dominant low-RAM render-fragility class) is flagged.
+  const verification = verifyRenderedMp4({ mp4Path: outPath, expectedDurationSeconds, checkContent: true });
   const completedTs = nowIso();
 
   return withSessionLock(id, () => {
@@ -234,6 +297,9 @@ async function renderFull(args) {
         quality,
         composition_revision_rendered: compositionRevisionRendered,
         ...(planSegment ? { segment_id: planSegment.segment_id } : {}),
+        // Stamp the short this render is OF (segmented path already stamps
+        // segment_id above) so resume mid-fan-out can't ship the wrong short.
+        ...(typeof composition.short_id === "string" && composition.short_id !== "" ? { short_id: composition.short_id } : {}),
         verification,
       },
       last_updated: completedTs,

@@ -12,6 +12,13 @@ function assertSafeProjectId(projectId) {
   if (/[\/\\]/.test(trimmed) || /(?:^|\.)\.\.(?:\.|$)/.test(trimmed)) {
     throw new Error(`project_id contains invalid path characters: ${trimmed}`);
   }
+  // A leading dot makes a HIDDEN session dir that collides with session-internal
+  // dotfiles (.session.lock) and is easy to lose — and a conversational /vob
+  // derives the id from the source basename, so a dotfile source (".intro.mp4")
+  // would silently yield one. Reject it (aligns with the no-dot-segment posture).
+  if (trimmed.startsWith(".")) {
+    throw new Error(`project_id must not start with "." (would create a hidden session dir): ${trimmed}`);
+  }
   return trimmed;
 }
 

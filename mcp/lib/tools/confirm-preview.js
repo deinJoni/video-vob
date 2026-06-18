@@ -30,6 +30,21 @@ function confirmPreview(args) {
         `preview file referenced by state is not on disk: ${preview.render_path}`,
       );
     }
+    // Revision cross-check (PREVIEW#9, defense-in-depth): confirming a preview
+    // that predates the current composition would bless a render of OLD files —
+    // the PREVIEW->RENDER gate's stale-binding is the backstop, but confirmation
+    // shouldn't depend solely on the save-time reset side-effect.
+    const composition = state.composition && typeof state.composition === "object" && !Array.isArray(state.composition)
+      ? state.composition : null;
+    const compRev = composition && Number.isInteger(composition.revision_count) ? composition.revision_count : null;
+    const previewRev = Number.isInteger(preview.composition_revision_rendered) ? preview.composition_revision_rendered : null;
+    if (compRev !== null && previewRev !== null && previewRev !== compRev) {
+      throw new ToolError(
+        ERROR_CODES.STATE_CONFLICT,
+        `cannot confirm: preview was rendered against composition revision ${previewRev} but the composition is now revision ${compRev} — re-run vob_render_preview, then confirm`,
+        { composition_revision: compRev, composition_revision_rendered: previewRev },
+      );
+    }
 
     const ts = nowIso();
     const next = {

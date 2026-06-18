@@ -82,17 +82,17 @@ const SEAM_TRANSITION_SET = new Set(SEAM_TRANSITION_TYPES);
 const LINT_RULESETS = Object.freeze({
   retention: Object.freeze({ disabled_rules: Object.freeze([]), chapter_rules: false }),
   chaptered: Object.freeze({
-    disabled_rules: Object.freeze(["PLAN_HOOK_NOT_FIRST", "PLAN_HOOK_TOO_LONG", "PLAN_RHYTHM_ARC_INVERTED"]),
+    disabled_rules: Object.freeze(["PLAN_HOOK_NOT_FIRST", "PLAN_HOOK_TOO_LONG", "PLAN_HOOK_NO_SPEECH", "PLAN_RHYTHM_ARC_INVERTED"]),
     chapter_rules: true,
   }),
   montage: Object.freeze({
     // PLAN_TRANSITION_INCONSISTENT off: a montage WANTS varied transitions, so
     // ">3 distinct types" is a feature, not a smell (PRD-02 §7.6).
-    disabled_rules: Object.freeze(["PLAN_HOOK_NOT_FIRST", "PLAN_HOOK_TOO_LONG", "PLAN_RHYTHM_ARC_INVERTED", "PLAN_TRANSITION_INCONSISTENT"]),
+    disabled_rules: Object.freeze(["PLAN_HOOK_NOT_FIRST", "PLAN_HOOK_TOO_LONG", "PLAN_HOOK_NO_SPEECH", "PLAN_RHYTHM_ARC_INVERTED", "PLAN_TRANSITION_INCONSISTENT"]),
     chapter_rules: false,
   }),
   general: Object.freeze({
-    disabled_rules: Object.freeze(["PLAN_HOOK_NOT_FIRST", "PLAN_HOOK_TOO_LONG", "PLAN_RHYTHM_ARC_INVERTED"]),
+    disabled_rules: Object.freeze(["PLAN_HOOK_NOT_FIRST", "PLAN_HOOK_TOO_LONG", "PLAN_HOOK_NO_SPEECH", "PLAN_RHYTHM_ARC_INVERTED"]),
     chapter_rules: false,
   }),
 });
@@ -104,6 +104,9 @@ const BUILT_IN_VIDEO_TYPES = Object.freeze({
   // continuous composition.
   "social-short": Object.freeze({
     platform_default: "tiktok",
+    // Loudness delivery target (PACKAGE). −14 LUFS is the short-form social
+    // reference (TikTok/Reels/Shorts). −14 keeps existing output byte-identical.
+    loudness_target: Object.freeze({ i: -14, tp: -1, lra: 11 }),
     editorial: Object.freeze({ clean_cut: true, scene_detect: true }),
     lint_ruleset: "retention",
     overlay_vocabulary: Object.freeze([
@@ -119,6 +122,7 @@ const BUILT_IN_VIDEO_TYPES = Object.freeze({
   }),
   "long-form": Object.freeze({
     platform_default: "youtube_long",
+    loudness_target: Object.freeze({ i: -14, tp: -1, lra: 11 }), // YouTube normalizes ~−14
     editorial: Object.freeze({ clean_cut: true, scene_detect: true }),
     lint_ruleset: "chaptered",
     overlay_vocabulary: Object.freeze([
@@ -135,6 +139,9 @@ const BUILT_IN_VIDEO_TYPES = Object.freeze({
   }),
   cinematic: Object.freeze({
     platform_default: "cinematic",
+    // Film/cinematic delivery sits lower with WIDER dynamics — a flat −14/LRA-11
+    // squashes the dynamics that are the point. ~−16 LUFS, generous LRA.
+    loudness_target: Object.freeze({ i: -16, tp: -1.5, lra: 16 }),
     // No filler/dead-air surgery on a montage — pacing is the edit.
     editorial: Object.freeze({ clean_cut: false, scene_detect: true }),
     lint_ruleset: "montage",
@@ -149,6 +156,7 @@ const BUILT_IN_VIDEO_TYPES = Object.freeze({
   }),
   tutorial: Object.freeze({
     platform_default: "tutorial",
+    loudness_target: Object.freeze({ i: -14, tp: -1, lra: 11 }), // YouTube
     editorial: Object.freeze({ clean_cut: true, scene_detect: true }),
     lint_ruleset: "chaptered",
     overlay_vocabulary: Object.freeze([
@@ -165,6 +173,7 @@ const BUILT_IN_VIDEO_TYPES = Object.freeze({
   }),
   podcast: Object.freeze({
     platform_default: "youtube_long",
+    loudness_target: Object.freeze({ i: -16, tp: -1.5, lra: 11 }), // spoken-word podcast standard ~−16
     // Long static shots: scene detection contributes nothing (skippable at
     // INSPECT); clean-cut still helps a rambling conversation.
     editorial: Object.freeze({ clean_cut: true, scene_detect: false }),
@@ -184,6 +193,7 @@ const BUILT_IN_VIDEO_TYPES = Object.freeze({
   // The generalized default an unknown preset name falls back to.
   general: Object.freeze({
     platform_default: "landscape",
+    loudness_target: Object.freeze({ i: -14, tp: -1, lra: 11 }),
     editorial: Object.freeze({ clean_cut: true, scene_detect: true }),
     lint_ruleset: "general",
     overlay_vocabulary: OVERLAY_TYPES,
@@ -508,6 +518,20 @@ function activeLintRules(state) {
   };
 }
 
+// Resolve the PACKAGE loudness delivery target {i,tp,lra} for the active video
+// type — wrong target for the format is the single biggest packaging-audio miss
+// (a cinematic film squashed to the −14 short-form reference loses its dynamics).
+// Falls back to the −14 short-form reference when a preset lacks one, so existing
+// short-form output stays byte-identical.
+const DEFAULT_LOUDNESS_TARGET = Object.freeze({ i: -14, tp: -1, lra: 11 });
+function resolveLoudnessTarget(state) {
+  const active = resolveActiveVideoType(state);
+  const t = active && active.preset && active.preset.loudness_target;
+  return (t && typeof t === "object" && Number.isFinite(t.i))
+    ? { i: t.i, tp: t.tp, lra: t.lra }
+    : { ...DEFAULT_LOUDNESS_TARGET };
+}
+
 // --- introspection (vob_doctor / read_state_summary) --------------------------
 
 function designDigest(preset) {
@@ -590,6 +614,7 @@ module.exports = {
   isNonCutTransition,
   isShaderTransition,
   resolveActiveVideoType,
+  resolveLoudnessTarget,
   summarizeActiveVideoType,
   transitionDurationOf,
   transitionTypeOf,

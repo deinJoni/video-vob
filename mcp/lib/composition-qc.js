@@ -20,6 +20,9 @@ const hostProfile = require("./host-profile.js");
 // host-profile.js: VOB_VIDEO_BUDGET/VOB_VIDEO_HARD_CAP env > host.json
 // video_budget/video_hard_cap / capacity tier > built-in 6 / 8.
 const QC_MASTER_DURATION_TOLERANCE_S = 0.5;
+// The "too long" side is more tolerant — a brief deliberate hold on the last
+// frame is a legitimate craft choice; only a clearly-accidental tail warns.
+const QC_MASTER_DURATION_LONG_TOLERANCE_S = 1.0;
 const QC_MEDIA_START_TOLERANCE_S = 0.05;
 const QC_MIN_CAPTION_FONT_PX_VERTICAL = 56;
 const QC_MIN_CAPTION_FONT_PX_SQUARE = 48;
@@ -412,6 +415,19 @@ function runCompositionQc({ files, storyboard, sourceLinks, sceneClipLinks, layo
           "error",
           "vob/master_duration_short",
           `master data-duration ${masterDuration}s is shorter than the storyboard scene total ${Math.round(sum * 1000) / 1000}s by more than ${QC_MASTER_DURATION_TOLERANCE_S}s — the timeline will truncate and the tail is silently dropped`,
+          effectiveMaster.file,
+          effectiveMaster.tag.line,
+        ));
+      } else if (sum > 0 && masterDuration > sum + QC_MASTER_DURATION_LONG_TOLERANCE_S) {
+        // Symmetric to the short check, but a WARNING: an over-long master appends
+        // frozen-last-frame / black tail (the timeline ends, the composition keeps
+        // running). A brief intentional hold is legitimate, so it's not an error —
+        // but a several-second tail is almost always an accident, and the composer
+        // only sees this at save time (the post-render drift surprise is too late).
+        findings.push(makeFinding(
+          "warning",
+          "vob/master_duration_long",
+          `master data-duration ${masterDuration}s is longer than the storyboard scene total ${Math.round(sum * 1000) / 1000}s by more than ${QC_MASTER_DURATION_LONG_TOLERANCE_S}s — the render appends a frozen/black tail after the last scene. Trim data-duration to the scene total unless this hold is intentional`,
           effectiveMaster.file,
           effectiveMaster.tag.line,
         ));
@@ -854,14 +870,29 @@ function designConformanceFindings({ parsedFiles, cssFiles, design, findings }) 
   }
   if (used.size === 0) return; // composition declares no fonts — nothing to judge
 
+  let usedDeclaredCount = 0;
   for (const lower of declared.keys()) {
-    if (used.has(lower)) return; // adheres to at least one declared family
+    if (used.has(lower)) usedDeclaredCount += 1;
   }
-  findings.push(makeFinding(
-    "warning",
-    "vob/design_font_mismatch",
-    `the storyboard's design language declares the font kit ${JSON.stringify([...declared.values()])} (target.design.typography) but the composition's font-family declarations reference none of them — the composer used off-brief type. Use the declared kit families (loaded via ./fonts.css)`,
-  ));
+  if (usedDeclaredCount === 0) {
+    findings.push(makeFinding(
+      "warning",
+      "vob/design_font_mismatch",
+      `the storyboard's design language declares the font kit ${JSON.stringify([...declared.values()])} (target.design.typography) but the composition's font-family declarations reference none of them — the composer used off-brief type. Use the declared kit families (loaded via ./fonts.css)`,
+    ));
+    return;
+  }
+  // Adheres to at least one declared family, but collapsed a multi-role type
+  // system (headline/body/caption) down to a SINGLE face — reads as templated
+  // "AI slop", the exact thing the design layer is meant to prevent. INFO (a
+  // non-gating, low-noise nudge; the all-or-nothing mismatch above stays a warning).
+  if (usedDeclaredCount === 1 && declared.size >= 2) {
+    findings.push(makeFinding(
+      "info",
+      "vob/design_font_partial",
+      `the design language declares ${declared.size} type roles ${JSON.stringify([...declared.values()])} but the composition uses only one of them — the headline/body/caption hierarchy is flattened to a single face, which reads as templated. Render the distinct declared faces in their roles`,
+    ));
+  }
 }
 
 module.exports = {

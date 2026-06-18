@@ -17,22 +17,27 @@ const {
   parseLoudnormStats,
   LOUDNORM_TIMEOUT_MS,
   LOUDNORM_TARGET,
+  resolveLoudnormTarget,
 } = require("./ffmpeg-runner.js");
 const { stderrTail } = require("./spawn-with-shutdown.js");
 
-// normalizeLoudnessInPlace({ mp4Path, summaryPre }) -> {
-//   applied, skipped_reason, error, measured_input_i, measured_input_tp }
+// normalizeLoudnessInPlace({ mp4Path, summaryPre, target }) -> {
+//   applied, skipped_reason, error, measured_input_i, measured_input_tp,
+//   measured_input_lra, target }
 // summaryPre = summarizeProbe(...) of the input (audio_streams gates the pass).
-async function normalizeLoudnessInPlace({ mp4Path, summaryPre }) {
+// `target` ({i,tp,lra}) defaults to the −14 LUFS short-form reference; PACKAGE
+// passes the per-video-type target (cinematic/podcast sit lower with wider LRA).
+async function normalizeLoudnessInPlace({ mp4Path, summaryPre, target = LOUDNORM_TARGET }) {
+  const tgt = resolveLoudnormTarget(target);
+  const base = { applied: false, skipped_reason: null, error: null, measured_input_i: null, measured_input_tp: null, measured_input_lra: null, target: tgt };
   const knob = (process.env.VOB_NO_LOUDNORM || "").trim().toLowerCase();
-  const base = { applied: false, skipped_reason: null, error: null, measured_input_i: null, measured_input_tp: null };
   if (knob === "1" || knob === "on" || knob === "true" || knob === "yes") {
     return { ...base, skipped_reason: "disabled_via_env" };
   }
   if (!summaryPre || summaryPre.audio_streams === 0) {
     return { ...base, skipped_reason: "no_audio" };
   }
-  const measure = await runFfmpegBlocking(buildLoudnormMeasureArgv({ input: mp4Path }), { timeoutMs: LOUDNORM_TIMEOUT_MS });
+  const measure = await runFfmpegBlocking(buildLoudnormMeasureArgv({ input: mp4Path, target: tgt }), { timeoutMs: LOUDNORM_TIMEOUT_MS });
   const measured = measure.timed_out || measure.exit_code !== 0 ? null : parseLoudnormStats(measure.stderr);
   if (!measured) {
     return { ...base, skipped_reason: "measure_failed", error: stderrTail(measure.stderr, 1000) };
@@ -42,17 +47,23 @@ async function normalizeLoudnessInPlace({ mp4Path, summaryPre }) {
   }
   const inputI = Number(measured.input_i);
   const inputTp = Number(measured.input_tp);
+  const inputLra = Number(measured.input_lra);
   const measuredNums = {
     measured_input_i: Number.isFinite(inputI) ? inputI : null,
     measured_input_tp: Number.isFinite(inputTp) ? inputTp : null,
+    // Recorded for auditability (PACKAGE#6): the skip below intentionally does
+    // NOT force an apply on a low-LRA (over-compressed) input — our linear=true
+    // pass applies linear gain only and cannot restore destroyed dynamics, so a
+    // re-encode would be wasted. LRA is surfaced so a reviewer can hear-check it.
+    measured_input_lra: Number.isFinite(inputLra) ? inputLra : null,
   };
-  if (Number.isFinite(inputI) && Math.abs(inputI - LOUDNORM_TARGET.i) <= 0.5
-    && Number.isFinite(inputTp) && inputTp <= LOUDNORM_TARGET.tp) {
+  if (Number.isFinite(inputI) && Math.abs(inputI - tgt.i) <= 0.5
+    && Number.isFinite(inputTp) && inputTp <= tgt.tp) {
     return { ...base, ...measuredNums, skipped_reason: "already_within_tolerance" };
   }
   const tmp = path.join(path.dirname(mp4Path), `${path.basename(mp4Path)}.loudnorm.tmp.mp4`);
   const apply = await runFfmpegBlocking(
-    buildLoudnormApplyArgv({ input: mp4Path, output: tmp, measured }),
+    buildLoudnormApplyArgv({ input: mp4Path, output: tmp, measured, target: tgt }),
     { timeoutMs: LOUDNORM_TIMEOUT_MS },
   );
   if (apply.timed_out || apply.exit_code !== 0 || !fs.existsSync(tmp)) {

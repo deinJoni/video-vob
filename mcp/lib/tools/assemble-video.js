@@ -11,6 +11,7 @@ const { assembleSegments, DEFAULT_MUSIC_GAIN_DB } = require("../assemble.js");
 const { renderPlanOf, validSegmentRenders } = require("../render-segments.js");
 const { verifyRenderedMp4 } = require("../render-verify.js");
 const { normalizeLoudnessInPlace } = require("../loudnorm.js");
+const { resolveLoudnessTarget } = require("../video-types.js");
 const { probeFile, summarizeProbe } = require("../ffprobe.js");
 
 function nowIso() {
@@ -32,12 +33,14 @@ async function assembleVideo(args) {
       "this project has no segmented render plan — a single continuous render needs no assembly (vob_render_full already produced renders/final-*.mp4)",
     );
   }
-  const { byId, missing, stale } = validSegmentRenders(state);
+  const { byId, missing, stale, unconfirmed } = validSegmentRenders(state);
   if (missing.length > 0) {
+    const staleNote = stale.length > 0 ? ` ${stale.join(", ")} are STALE (the storyboard changed since they rendered; re-render them).` : "";
+    const unconfirmedNote = unconfirmed.length > 0 ? ` ${unconfirmed.join(", ")} rendered but are UNCONFIRMED (confirm_render each before assembling).` : "";
     throw new ToolError(
       ERROR_CODES.STATE_CONFLICT,
-      `cannot assemble: ${missing.length} segment(s) have no valid rendered partial (${missing.join(", ")})${stale.length > 0 ? ` — of these, ${stale.join(", ")} are STALE (the storyboard changed since they rendered; re-render them)` : ""}. Cycle COMPOSE→PREVIEW→RENDER for each, then re-run vob_assemble_video.`,
-      { missing_segment_ids: missing, stale_segment_ids: stale },
+      `cannot assemble: ${missing.length} segment(s) are not assembly-ready (${missing.join(", ")}).${staleNote}${unconfirmedNote} Cycle COMPOSE→PREVIEW→RENDER→confirm_render for each, then re-run vob_assemble_video.`,
+      { missing_segment_ids: missing, stale_segment_ids: stale, unconfirmed_segment_ids: unconfirmed },
     );
   }
 
@@ -91,7 +94,7 @@ async function assembleVideo(args) {
       summaryPre = null;
     }
     loudnorm = summaryPre
-      ? await normalizeLoudnessInPlace({ mp4Path: outPath, summaryPre })
+      ? await normalizeLoudnessInPlace({ mp4Path: outPath, summaryPre, target: resolveLoudnessTarget(state) })
       : { applied: false, skipped_reason: "probe_failed", error: null, measured_input_i: null, measured_input_tp: null };
   }
 
@@ -182,12 +185,24 @@ async function assembleVideo(args) {
           segment_ids: ordered.map((s) => s.segment_id),
           concat_path: joined.path,
           music: joined.music ? path.basename(joined.music.path) : null,
+          music_ducked: joined.music ? joined.music.ducked === true : null,
           duration_drift_seconds: verification.duration_drift_seconds,
           render_revision_count: renderRevision,
         },
       ],
     };
     writeFileAtomic(statePath(id), `${JSON.stringify(next, null, 2)}\n`);
+
+    // Surface a flat-mix fallback prominently: a music bed that couldn't be
+    // sidechain-ducked is mixed at fixed gain and may mask dialogue — the
+    // orchestrator should tell the human (it was silent in state.assembly before).
+    const warnings = [];
+    if (joined.music && joined.music.ducked === false) {
+      warnings.push("music bed could NOT be sidechain-ducked under the program audio (the duck filter failed) — it was mixed at fixed gain, so narration/dialogue may be masked. Lower music_gain_db, or supply a pre-ducked bed.");
+    }
+    if (verification && verification.silent_audio === true) {
+      warnings.push("the assembled video measured as SILENT (no audible program) — check the segment audio and the music mix.");
+    }
 
     return {
       final_path: outPath,
@@ -202,6 +217,7 @@ async function assembleVideo(args) {
       stderr_log_path: stderrLogPath,
       render_revision_count: renderRevision,
       verification,
+      ...(warnings.length > 0 ? { warnings } : {}),
     };
   });
 }

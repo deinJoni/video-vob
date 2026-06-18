@@ -35,7 +35,7 @@ const { buildTranscriptResolver, distributionFromStoryboard, loadTranscript, sto
 const { renderPlanOf } = require("../render-segments.js");
 const { stderrTail } = require("../spawn-with-shutdown.js");
 const { thumbnailTimestampPercent, canonicalizePlatform, getPlatformProfile } = require("../platform-profiles.js");
-const { resolveActiveVideoType } = require("../video-types.js");
+const { resolveActiveVideoType, resolveLoudnessTarget } = require("../video-types.js");
 const { renderPackageReadme } = require("../package-readme.js");
 
 const PROJECT_ROOT = path.resolve(__dirname, "..", "..", "..");
@@ -461,7 +461,10 @@ async function packageOutput(args) {
 
   // Loudness normalization BEFORE the thumbnail/manifest probe: the post-
   // normalization re-probe is the authoritative summary for everything below.
-  const loudnorm = await normalizeLoudnessInPlace({ mp4Path: finalMp4, summaryPre });
+  // Target is per-video-type (cinematic/podcast sit lower with wider dynamics);
+  // defaults to −14 LUFS so short-form output is byte-identical.
+  const loudnessTarget = resolveLoudnessTarget(state);
+  const loudnorm = await normalizeLoudnessInPlace({ mp4Path: finalMp4, summaryPre, target: loudnessTarget });
   let summary = summaryPre;
   if (loudnorm.applied) {
     try {
@@ -697,7 +700,9 @@ async function packageOutput(args) {
           srt_path: "captions.srt",
           vtt_path: "captions.vtt",
           segment_count: captionSidecar.segment_count,
-          level: "chunk",
+          // "word" when a planned karaoke/word-by-word animation on an aligned
+          // transcript produced per-word VTT tags; "chunk" otherwise.
+          level: captionSidecar.level || "chunk",
           source: "caption_segments",
           // (v3.4) "forced_aligned" when cues were word-anchored to the aligned
           // transcript (matches the burn-in); "storyboard_target" otherwise.
@@ -713,7 +718,15 @@ async function packageOutput(args) {
           segment_ids: Array.isArray(assemblySlot.segment_ids) ? assemblySlot.segment_ids : [],
           concat_path: assemblySlot.concat_path || null,
           assembled_at: assemblySlot.assembled_at || null,
-          music: assemblySlot.music || null,
+          music: assemblySlot.music
+            ? {
+              file: typeof assemblySlot.music.path === "string" ? path.basename(assemblySlot.music.path) : null,
+              gain_db: Number.isFinite(assemblySlot.music.gain_db) ? assemblySlot.music.gain_db : null,
+              // ducked:false = the sidechain duck failed and music was mixed flat
+              // (dialogue may be masked) — surfaced so a reviewer can hear-check it.
+              ducked: assemblySlot.music.ducked === true,
+            }
+            : null,
         },
       }
       : {}),
@@ -752,9 +765,12 @@ async function packageOutput(args) {
     },
     audio: {
       loudnorm_applied: loudnorm.applied,
-      loudnorm_target: { i: LOUDNORM_TARGET.i, tp: LOUDNORM_TARGET.tp, lra: LOUDNORM_TARGET.lra },
+      // The actual per-video-type target this output was normalized to (was
+      // hardcoded −14 before v3.8 — now reflects cinematic/podcast/etc.).
+      loudnorm_target: loudnorm.target || { i: LOUDNORM_TARGET.i, tp: LOUDNORM_TARGET.tp, lra: LOUDNORM_TARGET.lra },
       measured_input_i: loudnorm.measured_input_i,
       measured_input_tp: loudnorm.measured_input_tp,
+      measured_input_lra: loudnorm.measured_input_lra,
       skipped_reason: loudnorm.skipped_reason,
     },
     source: {

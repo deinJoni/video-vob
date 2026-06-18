@@ -21,8 +21,9 @@
 //
 // Knobs (all optional; env wins):
 //   VOB_ASR_BACKEND   auto|faster-whisper|openai-whisper|hyperframes|none
-//   VOB_ASR_MODEL     model name/path (default "small.en")
+//   VOB_ASR_MODEL     model name/path (default "small" — MULTILINGUAL)
 //   VOB_ASR_LANGUAGE  language code, or "auto" to detect
+//   VOB_ASR_VAD       auto|on|off — Silero voice-activity filter (default on)
 //   VOB_PYTHON        python interpreter to use (default: python3 then python)
 //   VOB_ASR_NO_FALLBACK  when set with an explicit backend, do not try others
 
@@ -37,7 +38,14 @@ const FASTER_WHISPER_DRIVER = path.join(ASR_DRIVER_DIR, "faster_whisper_transcri
 const OPENAI_WHISPER_DRIVER = path.join(ASR_DRIVER_DIR, "openai_whisper_transcribe.py");
 const WHISPERX_DRIVER = path.join(ASR_DRIVER_DIR, "whisperx_transcribe.py");
 
-const DEFAULT_MODEL = "small.en";
+// MULTILINGUAL by default. `small.en` (the old default) is English-ONLY: on
+// non-English or accented speech it emits phonetic garbage regardless of the
+// auto-detect language code, silently capping caption/hook/clean-cut quality and
+// defeating the advertised CJK/bilingual support (the fonts ship, but the
+// transcript that drives the captions would be English-locked). `small` is the
+// multilingual sibling — barely larger, auto-detects language. Override with
+// VOB_ASR_MODEL (e.g. set `small.en` deliberately for an English-only host).
+const DEFAULT_MODEL = "small";
 const DETECT_TIMEOUT_MS = 20 * 1000;
 const DEFAULT_TRANSCRIBE_TIMEOUT_MS = 15 * 60 * 1000;
 
@@ -252,10 +260,21 @@ function checkAsrAvailable() {
   } else if (!haveRunnable) {
     error = "no local ASR engine detected (faster-whisper / openai-whisper). hyperframes transcribe will be tried but needs whisper-cpp; install faster-whisper (`pip install faster-whisper`) for a reliable backend.";
   }
+  // English-only model + a non-English/auto source = phonetic garbage. Surface
+  // the resolved model and a warning when an `.en` model is configured so the
+  // INGEST preflight / vob_doctor can flag it before INSPECT burns minutes.
+  const model = configuredModel(null);
+  const language = configuredLanguage(null) || "auto";
+  const model_advisory = /\.en$/i.test(model)
+    ? `ASR model "${model}" is ENGLISH-ONLY — non-English audio will mis-transcribe. Set VOB_ASR_MODEL=small (multilingual) for other languages / CJK / bilingual sources.`
+    : null;
   return {
     ok,
     backend: cfg,
     selected,
+    model,
+    language,
+    model_advisory,
     available_backends: runnableAvailable,
     all_backends: detection.backends,
     alignment_available: alignmentAvailable,

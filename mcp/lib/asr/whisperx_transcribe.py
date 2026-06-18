@@ -18,7 +18,7 @@ timings; false when alignment was disabled. See
 faster_whisper_transcribe.py for the shared contract.
 
 Env knobs (all optional):
-    VOB_ASR_MODEL          default model name/path (default "small.en")
+    VOB_ASR_MODEL          default model name/path (default "small", multilingual)
     VOB_ASR_LANGUAGE       force a language code ("en"); "auto"/"" => detect
     VOB_ASR_DEVICE         compute device (default "cpu")
     VOB_ASR_COMPUTE_TYPE   ctranslate2 compute type (default "int8")
@@ -42,7 +42,7 @@ def main():
     audio_path = sys.argv[1]
     out = sys.argv[2]
     model_name = (sys.argv[3] if len(sys.argv) > 3 and sys.argv[3]
-                  else os.environ.get("VOB_ASR_MODEL") or "small.en")
+                  else os.environ.get("VOB_ASR_MODEL") or "small")
     language = (sys.argv[4] if len(sys.argv) > 4 and sys.argv[4]
                 else os.environ.get("VOB_ASR_LANGUAGE") or None)
     if language in ("", "auto", None):

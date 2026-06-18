@@ -509,6 +509,17 @@ function pickCleanAudioSource(entries, {} = {}) {
       score -= 25;
       reasons.push("out of phase");
     }
+    // A strongly one-sided track (e.g. a lavalier wired to one channel) reads as
+    // "loud + worded" and can win, yet it's half-dead for the final mix. Penalize
+    // |balance| beyond the 1.5 dB center band, proportionally and capped.
+    const balanceDb = analysis && isFiniteNum(analysis.balance_db) ? analysis.balance_db : null;
+    if (balanceDb != null && Math.abs(balanceDb) >= 1.5) {
+      const penalty = Math.min(20, Math.round((Math.abs(balanceDb) - 1.5) * 1.5));
+      if (penalty > 0) {
+        score -= penalty;
+        reasons.push(`off-center ${balanceDb > 0 ? "+" : ""}${balanceDb} dB`);
+      }
+    }
 
     if (score > bestScore) {
       bestScore = score;

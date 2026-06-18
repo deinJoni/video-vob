@@ -12,10 +12,17 @@ stdout as the LAST line so the Node caller can parse it regardless of any
 library logging that lands on stdout/stderr first.
 
 Env knobs (all optional):
-    VOB_ASR_MODEL          default model name/path (default "small.en")
+    VOB_ASR_MODEL          default model name/path (default "small", multilingual)
     VOB_ASR_LANGUAGE       force a language code ("en"); "auto"/"" => detect
     VOB_ASR_DEVICE         ctranslate2 device (default "cpu")
     VOB_ASR_COMPUTE_TYPE   ctranslate2 compute type (default "int8")
+    VOB_ASR_VAD            Silero voice-activity filter; "off"/"0"/"false"/"no"
+                           disables it (default ON). VAD suppresses Whisper's
+                           habit of hallucinating phantom words ("Thank you.",
+                           "Please subscribe.") over silence/music — phantoms
+                           that otherwise defeat clean-cut's word-density dead-air
+                           gate (a hallucinated word in a silent gap flips a real
+                           cut to KEEP, leaving dead air in the spine).
 """
 import json
 import os
@@ -34,11 +41,16 @@ def main():
     audio = sys.argv[1]
     out = sys.argv[2]
     model_name = (sys.argv[3] if len(sys.argv) > 3 and sys.argv[3]
-                  else os.environ.get("VOB_ASR_MODEL") or "small.en")
+                  else os.environ.get("VOB_ASR_MODEL") or "small")
     language = (sys.argv[4] if len(sys.argv) > 4 and sys.argv[4]
                 else os.environ.get("VOB_ASR_LANGUAGE") or None)
     if language in ("", "auto", None):
         language = None
+
+    # Silero VAD on by default (see module docstring). Only an explicit
+    # off-switch disables it.
+    vad_filter = (os.environ.get("VOB_ASR_VAD", "").strip().lower()
+                  not in ("0", "off", "false", "no"))
 
     try:
         from faster_whisper import WhisperModel
@@ -52,7 +64,7 @@ def main():
     try:
         model = WhisperModel(model_name, device=device, compute_type=compute_type)
         segments, info = model.transcribe(
-            audio, language=language, word_timestamps=True, vad_filter=False
+            audio, language=language, word_timestamps=True, vad_filter=vad_filter
         )
         words = []
         for seg in segments:

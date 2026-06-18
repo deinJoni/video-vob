@@ -237,21 +237,56 @@ function removeStaleSessionLock(lockPathValue, snapshot) {
   return true;
 }
 
+// Process-level lock cleanup: the lock is normally released by withSessionLock's
+// finally, else by the 5-min staleness sweep. But a killed server (CLI restart,
+// OOM, Ctrl-C) — possibly mid-COMPOSE-materialization, which holds the lock
+// across minutes of ffmpeg / remove-bg — would otherwise strand EVERY vob_* call
+// on that project until the stale timeout. Track held locks and release the ones
+// we own on exit/SIGINT/SIGTERM.
+const heldLocks = new Map(); // lockPath -> token
+let lockCleanupRegistered = false;
+
+function releaseHeldLockFile(lockPathValue, token) {
+  try {
+    const current = JSON.parse(fs.readFileSync(lockPathValue, "utf8"));
+    if (current && current.token === token) fs.rmSync(lockPathValue, { force: true });
+  } catch { /* gone / unreadable — nothing to release */ }
+}
+
+function releaseAllHeldLocks() {
+  for (const [lockPathValue, token] of heldLocks) releaseHeldLockFile(lockPathValue, token);
+  heldLocks.clear();
+}
+
+function ensureLockCleanupRegistered() {
+  if (lockCleanupRegistered) return;
+  lockCleanupRegistered = true;
+  process.on("exit", releaseAllHeldLocks); // sync-only; covers normal/forced exit
+  for (const sig of ["SIGINT", "SIGTERM"]) {
+    process.on(sig, () => {
+      releaseAllHeldLocks();
+      // No prior handler existed (default was immediate termination) — preserve
+      // that with the conventional 128+signal exit code after cleaning up.
+      process.exit(sig === "SIGINT" ? 130 : 143);
+    });
+  }
+}
+
 function acquireSessionLock(domain) {
   const dir = sessionDir(domain);
   fs.mkdirSync(dir, { recursive: true });
+  ensureLockCleanupRegistered();
 
   const lockPathValue = sessionLockPath(domain);
   for (let attempt = 0; attempt < 2; attempt += 1) {
     const token = tryAcquireSessionLock(lockPathValue);
     if (token) {
+      heldLocks.set(lockPathValue, token);
       return () => {
-        try {
-          const current = JSON.parse(fs.readFileSync(lockPathValue, "utf8"));
-          if (current && current.token === token) {
-            fs.rmSync(lockPathValue, { force: true });
-          }
-        } catch {}
+        // Token-precise map removal: a stale release after a same-path re-acquire
+        // must not drop the live entry the signal handler would clean.
+        if (heldLocks.get(lockPathValue) === token) heldLocks.delete(lockPathValue);
+        releaseHeldLockFile(lockPathValue, token);
       };
     }
 

@@ -10,7 +10,7 @@ const { readSessionStateStrict } = require("../session-state.js");
 const { runHyperframesWithRetry, buildRenderArgv, renderTimeoutMs } = require("../hyperframes-runner.js");
 const { stderrTail } = require("../spawn-with-shutdown.js");
 const { verifyRenderedMp4 } = require("../render-verify.js");
-const { expectedTimelineDurationSeconds, findTimeline } = require("../storyboard-schema.js");
+const { expectedTimelineDurationSeconds, findTimeline, allStoryboardScenes, realizedScopeDurationSeconds } = require("../storyboard-schema.js");
 const { planSegmentById } = require("../render-segments.js");
 
 function nowIso() {
@@ -67,22 +67,36 @@ async function renderPreview(args) {
     : null;
   const planSegment = segmentId ? planSegmentById(state, segmentId) : null;
   if (planSegment) {
+    // declared fallback (refined to the realized cut below if the storyboard reads)
     sbTotal = Number.isFinite(planSegment.target_duration_seconds) ? planSegment.target_duration_seconds : null;
     expectedDurationSeconds = sbTotal;
-  } else {
-    try {
-      const sb = JSON.parse(fs.readFileSync(storyboardPath(id), "utf8"));
-      const shortId = typeof composition.short_id === "string" && composition.short_id !== ""
-        ? composition.short_id
-        : null;
+  }
+  try {
+    const sb = JSON.parse(fs.readFileSync(storyboardPath(id), "utf8"));
+    const shortId = typeof composition.short_id === "string" && composition.short_id !== ""
+      ? composition.short_id
+      : null;
+    let scopeScenes = null;
+    if (planSegment && Array.isArray(planSegment.scene_ids)) {
+      const want = new Set(planSegment.scene_ids);
+      scopeScenes = allStoryboardScenes(sb).filter((s) => s && want.has(s.scene_id));
+    } else {
       sbTotal = expectedTimelineDurationSeconds(sb, shortId);
       const timeline = findTimeline(sb, shortId);
+      scopeScenes = timeline && Array.isArray(timeline.scenes) ? timeline.scenes : null;
       expectedDurationSeconds = timeline
         && Number.isFinite(timeline.total_target_duration_seconds) && timeline.total_target_duration_seconds > 0
         ? timeline.total_target_duration_seconds
         : null;
-    } catch {}
-  }
+    }
+    // Drift expectation = the REALIZED cut (speed/layout-baked sceneOutputSeconds
+    // sum), not the declared target — the target legitimately differs (that's the
+    // PLAN_DURATION_INFEASIBLE lint's job), so comparing render duration to it
+    // gives false silent-truncation flags. Fall back to declared when scenes
+    // don't resolve.
+    const realized = scopeScenes ? realizedScopeDurationSeconds(scopeScenes) : 0;
+    if (realized > 0) expectedDurationSeconds = realized;
+  } catch {}
   const timeoutMs = renderTimeoutMs("preview", sbTotal);
 
   const ts0 = filenameSafeTimestamp();
@@ -119,8 +133,10 @@ async function renderPreview(args) {
   }
 
   const renderDurationSeconds = (Date.now() - start) / 1000;
-  // Silent-truncation detector: ffprobe the MP4 vs the storyboard expectation.
-  const verification = verifyRenderedMp4({ mp4Path: outPath, expectedDurationSeconds });
+  // Silent-truncation detector + content QC: ffprobe the MP4 vs the realized cut,
+  // and sample luma/volume so an all-black or silent preview (dropped clip /
+  // failed audio mux — duration looks fine) is flagged before the human confirms.
+  const verification = verifyRenderedMp4({ mp4Path: outPath, expectedDurationSeconds, checkContent: true });
   const ts = nowIso();
 
   return withSessionLock(id, () => {
@@ -148,6 +164,10 @@ async function renderPreview(args) {
         revision_count: revisionCount,
         stderr_log_path: stderrLogPath,
         composition_revision_rendered: compositionRevisionRendered,
+        // Which short/segment this preview is OF — so a resume mid-fan-out can't
+        // confirm short A's preview while the active composition is short B.
+        short_id: typeof composition.short_id === "string" && composition.short_id !== "" ? composition.short_id : null,
+        segment_id: typeof composition.segment_id === "string" && composition.segment_id !== "" ? composition.segment_id : null,
         verification,
       },
       last_updated: ts,

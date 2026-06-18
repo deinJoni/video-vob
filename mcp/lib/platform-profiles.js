@@ -326,6 +326,7 @@ module.exports = {
   getPlatformProfile,
   parseDurationSpec,
   parseDurationToSeconds,
+  parseSingleDuration,
   resolvePlatform,
   thumbnailTimestampPercent,
 };
