@@ -11,6 +11,7 @@ const { assembleSegments, DEFAULT_MUSIC_GAIN_DB } = require("../assemble.js");
 const { renderPlanOf, validSegmentRenders } = require("../render-segments.js");
 const { verifyRenderedMp4 } = require("../render-verify.js");
 const { normalizeLoudnessInPlace } = require("../loudnorm.js");
+const { resolveLoudnessTarget } = require("../video-types.js");
 const { probeFile, summarizeProbe } = require("../ffprobe.js");
 
 function nowIso() {
@@ -93,7 +94,7 @@ async function assembleVideo(args) {
       summaryPre = null;
     }
     loudnorm = summaryPre
-      ? await normalizeLoudnessInPlace({ mp4Path: outPath, summaryPre })
+      ? await normalizeLoudnessInPlace({ mp4Path: outPath, summaryPre, target: resolveLoudnessTarget(state) })
       : { applied: false, skipped_reason: "probe_failed", error: null, measured_input_i: null, measured_input_tp: null };
   }
 

@@ -35,7 +35,7 @@ const { buildTranscriptResolver, distributionFromStoryboard, loadTranscript, sto
 const { renderPlanOf } = require("../render-segments.js");
 const { stderrTail } = require("../spawn-with-shutdown.js");
 const { thumbnailTimestampPercent, canonicalizePlatform, getPlatformProfile } = require("../platform-profiles.js");
-const { resolveActiveVideoType } = require("../video-types.js");
+const { resolveActiveVideoType, resolveLoudnessTarget } = require("../video-types.js");
 const { renderPackageReadme } = require("../package-readme.js");
 
 const PROJECT_ROOT = path.resolve(__dirname, "..", "..", "..");
@@ -461,7 +461,10 @@ async function packageOutput(args) {
 
   // Loudness normalization BEFORE the thumbnail/manifest probe: the post-
   // normalization re-probe is the authoritative summary for everything below.
-  const loudnorm = await normalizeLoudnessInPlace({ mp4Path: finalMp4, summaryPre });
+  // Target is per-video-type (cinematic/podcast sit lower with wider dynamics);
+  // defaults to −14 LUFS so short-form output is byte-identical.
+  const loudnessTarget = resolveLoudnessTarget(state);
+  const loudnorm = await normalizeLoudnessInPlace({ mp4Path: finalMp4, summaryPre, target: loudnessTarget });
   let summary = summaryPre;
   if (loudnorm.applied) {
     try {
@@ -760,9 +763,12 @@ async function packageOutput(args) {
     },
     audio: {
       loudnorm_applied: loudnorm.applied,
-      loudnorm_target: { i: LOUDNORM_TARGET.i, tp: LOUDNORM_TARGET.tp, lra: LOUDNORM_TARGET.lra },
+      // The actual per-video-type target this output was normalized to (was
+      // hardcoded −14 before v3.8 — now reflects cinematic/podcast/etc.).
+      loudnorm_target: loudnorm.target || { i: LOUDNORM_TARGET.i, tp: LOUDNORM_TARGET.tp, lra: LOUDNORM_TARGET.lra },
       measured_input_i: loudnorm.measured_input_i,
       measured_input_tp: loudnorm.measured_input_tp,
+      measured_input_lra: loudnorm.measured_input_lra,
       skipped_reason: loudnorm.skipped_reason,
     },
     source: {

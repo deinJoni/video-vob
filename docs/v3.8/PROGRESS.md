@@ -35,7 +35,7 @@ Bump VERSION + CHANGELOG + CLAUDE.md invariants as changes land. Commit per cohe
 | 5 | COMPOSE | **done** ✓ | master_duration_long, design_font_partial, broadened+aimed inspect QC, layout_degraded_fallback; safe-band stays PLAN-side (no bbox from inspect) |
 | 6 | PREVIEW | **done** ✓ | XC-1 realized-cut drift + XC-2 content QC (black-frame/silent-audio); confirm-revision cross-check (P3) deferred |
 | 7 | RENDER | **done** ✓ | XC-1/XC-2 + segment-confirm-at-assembly + music-duck surfacing/warning + screenshot-path timeout fallback |
-| 8 | PACKAGE | pending | |
+| 8 | PACKAGE | loudnorm done; P2/P3 next | per-video-type loudness ✓ + LRA recorded; word-level VTT + segmented-drift + LUFS-reuse pending |
 | 9 | ITERATE | pending | |
 | X | FSM core / cross-cutting | pending | |
 
@@ -171,6 +171,12 @@ _(record non-obvious choices here as they're made)_
 - **Music duck surfaced** (RENDER#3): `ducked` was computed but invisible — `assemble_video` now emits a `warnings[]` on flat-mix fallback (+ silent-audio), and the PACKAGE manifest/README spell out the bed + `ducked` status (basename, gain).
 - **Screenshot-path timeout fallback** (RENDER#2): on a render timeout when `<video>` count > `hostProfile.videoBudget()`, retry ONCE with `PRODUCER_FORCE_SCREENSHOT=1` (race-free `forceScreenshot` threaded `runHyperframesWithRetry`→`runHyperframesBlocking`→`hyperframesChildEnv`; no process.env mutation) before throwing. degrade-don't-die for the low-RAM many-video BeginFrame wall.
 - _Verified: validSegmentRenders unit test (unconfirmed→missing, confirm→ready), forceScreenshot env (set/unset), module load, boot, spans walker. Music duck/timeout paths logic-reviewed (need a live render to exercise)._
+
+### Stage 8 — PACKAGE loudnorm (commit) ✓
+- **Per-video-type loudness target** (PACKAGE#5 — biggest packaging-audio lever): each preset in `video-types.js` carries `loudness_target{i,tp,lra}` (social/long-form/tutorial/general −14; cinematic −16/wide LRA 16; podcast −16). `resolveLoudnessTarget(state)` resolves it; `loudnorm.js` + the ffmpeg argv builders (`buildLoudnorm{Measure,Apply}Argv`) take a `target` (default −14 → short-form byte-identical). Threaded into PACKAGE + assembly; stamped into `manifest.audio.loudnorm_target`.
+- **LRA recorded** (PACKAGE#6): `measured_input_lra` now surfaced in result + manifest. (Deliberately do NOT force-apply on a low-LRA input — our `linear=true` pass can't restore destroyed dynamics; recording it for the reviewer is the correct fix.)
+- _Verified on REAL audio: cinematic target (−16/−1.5/16) applied to a −21.8 LUFS clip, target stamped, LRA recorded; resolveLoudnessTarget per type (social/cinematic/podcast); argv honors target; module load; boot._
+- _P2/P3 PENDING: word-level VTT sidecar (PACKAGE#7); segmented drift total + skip redundant package loudnorm when normalized-at-assembly (PACKAGE#8); reuse INSPECT-measured LUFS to skip a loudnorm measure pass (INSPECT#4a)._
 
 ## Loop bookkeeping
 
