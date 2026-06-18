@@ -104,11 +104,17 @@ function archiveForIteration(state, { from = state && state.phase, to = null } =
   const projectId = state.project_id;
   const rendersSrc = rendersDir(projectId);
   const packageSrc = packageDir(projectId);
-  // segment_renders/ lives OUTSIDE renders/ (the per-segment back-edge can't
-  // sweep it mid-cycle) — but a full ITERATE cycle SHOULD archive it like an
-  // output, else stale partials accumulate (each potentially GBs) across cuts.
+  // segment_renders/ holds the per-segment partials being ACCUMULATED for
+  // assembly. The per-segment RENDER→COMPOSE back-edge (render segment N → compose
+  // segment N+1) is an archival transition too, but it must NOT sweep the
+  // partials — that's the whole reason they live outside renders/. So archive
+  // segment_renders/ ONLY on a genuine cut-completing / plan-changing back-edge
+  // (any archival transition EXCEPT RENDER→COMPOSE); else partials would vanish
+  // mid-cycle and vob_assemble_video would report them missing.
   const segmentRendersSrc = segmentRendersDir(projectId);
-  if (!fs.existsSync(rendersSrc) && !fs.existsSync(packageSrc) && !fs.existsSync(segmentRendersSrc)) {
+  const sweepSegmentRenders = !(from === "RENDER" && to === "COMPOSE");
+  if (!fs.existsSync(rendersSrc) && !fs.existsSync(packageSrc)
+    && !(sweepSegmentRenders && fs.existsSync(segmentRendersSrc))) {
     return null;
   }
 
@@ -127,7 +133,9 @@ function archiveForIteration(state, { from = state && state.phase, to = null } =
   // Outputs: move (the next iteration regenerates them).
   const movedRenders = moveIfExists(rendersSrc, archivedRendersAbs);
   const movedPackage = moveIfExists(packageSrc, archivedPackageAbs);
-  const movedSegmentRenders = moveIfExists(segmentRendersSrc, path.join(versionRoot, "segment_renders"));
+  const movedSegmentRenders = sweepSegmentRenders
+    ? moveIfExists(segmentRendersSrc, path.join(versionRoot, "segment_renders"))
+    : false;
 
   // Intent: copy (the next iteration reads/mutates these in place). This is
   // what makes versions diffable — brief + storyboard + the authored

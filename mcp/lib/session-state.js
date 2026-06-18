@@ -461,8 +461,13 @@ function summarizeComposition(slot) {
 function summarizeRenderPlan(state) {
   const plan = asSlot(state.render_plan);
   if (!plan || plan.mode !== "segmented") return null;
-  const { byId, missing } = validSegmentRenders(state);
-  const registry = asSlot(state.segment_renders) || {};
+  const { byId, missing, stale, unconfirmed } = validSegmentRenders(state);
+  // A fresh partial that exists but hasn't been confirmed is excluded from byId,
+  // so the digest must distinguish it (rendered, just needs confirm) from a truly
+  // stale/missing one — else resume-after-render-before-confirm would tell the
+  // orchestrator to re-render a segment that only needs confirmation.
+  const staleSet = new Set(Array.isArray(stale) ? stale : []);
+  const unconfirmedSet = new Set(Array.isArray(unconfirmed) ? unconfirmed : []);
   return {
     mode: "segmented",
     segmentation: strOrNull(plan.segmentation),
@@ -470,8 +475,9 @@ function summarizeRenderPlan(state) {
     segment_count: arrOr(plan.segments).length,
     segments: arrOr(plan.segments).map((s) => {
       const seg = asSlot(s) || {};
-      const valid = typeof seg.segment_id === "string" ? byId.get(seg.segment_id) || null : null;
-      const raw = typeof seg.segment_id === "string" ? asSlot(registry[seg.segment_id]) : null;
+      const sid = typeof seg.segment_id === "string" ? seg.segment_id : null;
+      const valid = sid ? byId.get(sid) || null : null;
+      const isUnconfirmed = sid !== null && unconfirmedSet.has(sid);
       return {
         segment_id: strOrNull(seg.segment_id),
         title: strOrNull(seg.title),
@@ -479,11 +485,13 @@ function summarizeRenderPlan(state) {
         target_duration_seconds: numOr(seg.target_duration_seconds, null),
         video_count: intOr(seg.video_count, null),
         transition_out: strOrNull(seg.transition_out) || "cut",
-        rendered: Boolean(valid),
-        confirmed: Boolean(valid && valid.confirmed === true),
-        // had a partial but it no longer counts (storyboard revision / scene
-        // set changed, or the file vanished)
-        stale: Boolean(!valid && raw),
+        // rendered = a FRESH partial exists (confirmed or merely unconfirmed);
+        // confirmed = it passed the per-segment confirm; stale = ONLY the real
+        // revision/scene-mismatch set (a merely-unconfirmed partial is NOT stale).
+        rendered: Boolean(valid) || isUnconfirmed,
+        confirmed: Boolean(valid),
+        unconfirmed: isUnconfirmed,
+        stale: sid !== null && staleSet.has(sid),
       };
     }),
     missing_segment_ids: missing,
