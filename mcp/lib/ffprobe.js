@@ -212,7 +212,7 @@ function escapeLavfiSource(p) {
 // unprobeable frame must not abort the pass. `ymax` is the discriminator for a
 // blank/dropped-clip frame (nothing bright rendered → low ymax) vs an
 // intentionally dark frame with a bright subject (high ymax).
-function signalstatsLuma(filePath, { timeoutMs = SIGNALSTATS_TIMEOUT_MS, seekSeconds = null } = {}) {
+function signalstatsLuma(filePath, { timeoutMs = SIGNALSTATS_TIMEOUT_MS, seekSeconds = null, crop = null } = {}) {
   if (typeof filePath !== "string" || !filePath) {
     return { probed: false, error: "no path" };
   }
@@ -222,10 +222,24 @@ function signalstatsLuma(filePath, { timeoutMs = SIGNALSTATS_TIMEOUT_MS, seekSec
   // escaped by escapeLavfiSource). Default (null) preserves the first-frame
   // behavior every existing caller (still QC) relies on.
   const seekOpt = Number.isFinite(seekSeconds) && seekSeconds > 0 ? `:seek_point=${seekSeconds}` : "";
+  // Optional crop to a sub-rectangle BEFORE signalstats, so a caller can read the
+  // luma of just one region of the frame (the v3.9.1 caption-contrast check
+  // samples the background under the caption safe band). `crop` is
+  // {w,h,x,y} in pixels; the colons in `crop=w:h:x:y` are the filter's own arg
+  // separators (NOT path separators), so they're appended after escapeLavfiSource.
+  // Invalid/zero dims fall through to the whole-frame read. Default (null)
+  // preserves the whole-frame behavior every existing caller relies on.
+  const cropOpt = (crop
+    && Number.isFinite(crop.w) && crop.w > 0
+    && Number.isFinite(crop.h) && crop.h > 0
+    && Number.isFinite(crop.x) && crop.x >= 0
+    && Number.isFinite(crop.y) && crop.y >= 0)
+    ? `,crop=${Math.round(crop.w)}:${Math.round(crop.h)}:${Math.round(crop.x)}:${Math.round(crop.y)}`
+    : "";
   const argv = [
     "-v", "error",
     "-f", "lavfi",
-    "-i", `movie=${escapeLavfiSource(filePath)}${seekOpt},signalstats`,
+    "-i", `movie=${escapeLavfiSource(filePath)}${seekOpt}${cropOpt},signalstats`,
     "-show_entries", "frame_tags=lavfi.signalstats.YMIN,lavfi.signalstats.YAVG,lavfi.signalstats.YMAX",
     "-of", "default=noprint_wrappers=1",
   ];

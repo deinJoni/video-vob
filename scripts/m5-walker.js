@@ -42,8 +42,9 @@ const PROJECT_ID = process.env.VOB_WALKER_PROJECT || "dji-aerial";
 //   VOB_WALKER_SOURCE=/path/to/clip.mp4 node scripts/m5-walker.js [phase]
 const SOURCE = process.env.VOB_WALKER_SOURCE || "";
 // `stillsqc` (synthetic test stills), `spans`, `editorial`, `takequality`, and
-// `variety` (source-free unit harnesses) need no source video — every other phase lays out a fixture against a real clip.
-if (!SOURCE && !["stillsqc", "spans", "editorial", "takequality", "variety", "hook"].includes(process.argv[2])) {
+// `variety`, `hook`, and `visualqc` (source-free unit harnesses) need no source
+// video — every other phase lays out a fixture against a real clip.
+if (!SOURCE && !["stillsqc", "spans", "editorial", "takequality", "variety", "hook", "visualqc"].includes(process.argv[2])) {
   console.error(
     "m5-walker: set VOB_WALKER_SOURCE to a video file or directory, e.g.\n" +
     "  VOB_WALKER_SOURCE=/path/to/clip.mp4 node scripts/m5-walker.js [phase]",
@@ -3491,6 +3492,126 @@ async function runVariety() {
   console.log("\n=== variety: visual-variety / static-stretch lint negative paths verified");
 }
 
+// v3.9.1 `visualqc` walker phase — the deterministic caption-CONTRAST engine
+// (Pillar B of the visual-critic feature: the walker-testable companion to the
+// model critic). A source-free unit harness over visual-legibility.js: the
+// WCAG-ish contrast math, color parsing, caption-band geometry, timecode->scene
+// mapping, classification thresholds (glaring requires a KNOWN text color), the
+// VOB_VISUAL_CRITIC spawn-gate knob, and the evaluate-with-injected-signalstats
+// orchestration incl. every degrade path. No ffmpeg/render needed (the real
+// crop+signalstats sampling is verified live separately).
+async function runVisualQc() {
+  console.log("=== v3.9.1 visualqc walker (caption-contrast engine) — source-free unit harness");
+  const vl = require("../mcp/lib/visual-legibility.js");
+
+  const Lw = vl.srgbRelativeLuminance(255, 255, 255);
+  const Lb = vl.srgbRelativeLuminance(0, 0, 0);
+
+  await step("contrast math — white/black ≈21, white/white ≈1, symmetric, monotone", () => {
+    assert(Math.abs(vl.contrastRatio(Lw, Lb) - 21) < 0.1, `white/black ${vl.contrastRatio(Lw, Lb)}`);
+    assert(Math.abs(vl.contrastRatio(Lw, Lw) - 1) < 1e-6, "white/white ~1");
+    assert(vl.contrastRatio(Lw, Lb) === vl.contrastRatio(Lb, Lw), "symmetric");
+    const r1 = vl.contrastRatio(Lw, vl.lumaToRelativeLuminance(240));
+    const r2 = vl.contrastRatio(Lw, vl.lumaToRelativeLuminance(120));
+    const r3 = vl.contrastRatio(Lw, vl.lumaToRelativeLuminance(20));
+    assert(r1 < r2 && r2 < r3, `monotone darken→higher contrast: ${r1},${r2},${r3}`);
+    assert(vl.contrastRatio(NaN, 0.5) === null, "NaN input -> null");
+    assert(vl.lumaToRelativeLuminance(0) === 0 && vl.lumaToRelativeLuminance(255) > 0.9, "luma->lum endpoints");
+  });
+
+  await step("color parsing — hex3/hex6/rgb/named/bad", () => {
+    assert(vl.parseColorLuma("#fff") === Lw, "#fff");
+    assert(vl.parseColorLuma("#FFFFFF") === Lw, "#FFFFFF");
+    assert(vl.parseColorLuma("#000000") === Lb, "#000000");
+    assert(vl.parseColorLuma("white") === Lw && vl.parseColorLuma("black") === Lb, "named");
+    assert(vl.parseColorLuma("rgb(255, 255, 255)") === Lw, "rgb()");
+    assert(vl.parseColorLuma("rgba(0,0,0,0.5)") === Lb, "rgba ignores alpha");
+    assert(vl.parseColorLuma("rgb(50%, 50%, 50%)") === null, "percentage rgb -> null (degrade, not mis-read)");
+    assert(vl.parseColorLuma("nope") === null && vl.parseColorLuma(null) === null && vl.parseColorLuma("#12") === null, "bad -> null");
+  });
+
+  await step("thresholds + classification (glaring needs a KNOWN color)", () => {
+    const th = vl.resolveContrastThresholds({});
+    assert(th.glaringRatio === 2.0 && th.tasteRatio === 3.0, `defaults ${JSON.stringify(th)}`);
+    const env = vl.resolveContrastThresholds({ VOB_QC_CONTRAST_GLARING: "1.5", VOB_QC_CONTRAST_TASTE: "4.5" });
+    assert(env.glaringRatio === 1.5 && env.tasteRatio === 4.5, "env override");
+    const bad = vl.resolveContrastThresholds({ VOB_QC_CONTRAST_GLARING: "9", VOB_QC_CONTRAST_TASTE: "3" });
+    assert(bad.glaringRatio <= bad.tasteRatio, "glaring clamped <= taste");
+    assert(vl.classifyCaptionContrast(1.5, { thresholds: th, colorKnown: true }).severity === "glaring", "low+known=glaring");
+    assert(vl.classifyCaptionContrast(1.5, { thresholds: th, colorKnown: false }).severity === "taste", "low+assumed=taste (capped)");
+    assert(vl.classifyCaptionContrast(2.5, { thresholds: th, colorKnown: true }).severity === "taste", "mid=taste");
+    assert(vl.classifyCaptionContrast(5, { thresholds: th }) === null, "high=null");
+    assert(vl.classifyCaptionContrast(NaN, { thresholds: th }) === null, "NaN=null");
+    assert(vl.classifyCaptionContrast(1.5, { thresholds: th, colorKnown: true }).code === "qc/caption_low_contrast", "code");
+  });
+
+  await step("caption-band geometry — in-bounds vertical/landscape, anchors, degrade", () => {
+    const v = vl.captionBandRect({ width: 1080, height: 1920, safeBottomPx: 280, anchor: "bottom", offsetPx: 300 });
+    assert(v && v.x >= 0 && v.y >= 0 && v.x + v.w <= 1080 && v.y + v.h <= 1920 && v.h > 0, `vertical ${JSON.stringify(v)}`);
+    const l = vl.captionBandRect({ width: 1920, height: 1080, safeBottomPx: 100, anchor: "bottom" });
+    assert(l && l.y + l.h <= 1080, `landscape ${JSON.stringify(l)}`);
+    const top = vl.captionBandRect({ width: 1080, height: 1920, safeTopPx: 200, anchor: "top", offsetPx: 200 });
+    assert(top && top.y < 960, `top anchor high ${JSON.stringify(top)}`);
+    const ctr = vl.captionBandRect({ width: 1080, height: 1920, anchor: "center" });
+    assert(ctr && ctr.y > 0 && ctr.y + ctr.h <= 1920, "center anchor");
+    assert(vl.captionBandRect({}) === null && vl.captionBandRect({ width: 0, height: 0 }) === null, "no dims -> null");
+  });
+
+  await step("timecode -> scene mapping + caption presence", () => {
+    const scenes = [
+      { scene_id: "s1", target_duration_seconds: 2, caption_segments: [{ text: "hi" }] },
+      { scene_id: "s2", target_duration_seconds: 3, captions: "a note" },
+      { scene_id: "s3", target_duration_seconds: 2 },
+    ];
+    assert(vl.sceneAtTime(scenes, 0).scene_id === "s1", "t0->s1");
+    assert(vl.sceneAtTime(scenes, 1.9).scene_id === "s1", "t1.9->s1");
+    assert(vl.sceneAtTime(scenes, 2).scene_id === "s2", "t2 boundary->s2");
+    assert(vl.sceneAtTime(scenes, 6.9).scene_id === "s3", "t6.9->s3");
+    assert(vl.sceneAtTime(scenes, 99) === null, "past end -> null");
+    assert(vl.sceneAtTime([{ scene_id: "x", target_duration_seconds: 0 }], 0) === null, "malformed dur -> null");
+    assert(vl.sceneHasCaptions(scenes[0]) && vl.sceneHasCaptions(scenes[1]) && !vl.sceneHasCaptions(scenes[2]), "presence");
+  });
+
+  await step("evaluate (injected signalstats) — bright flags, dark/scrim clean, scope + degrade", () => {
+    const scenes = [
+      { scene_id: "cap", target_duration_seconds: 2, caption_segments: [{ text: "hi" }] },
+      { scene_id: "nocap", target_duration_seconds: 3 },
+    ];
+    const platform = { width: 1080, height: 1920, safeBottomPx: 280, offsetPx: 300 };
+    const bright = () => ({ probed: true, ymin: 230, yavg: 242, ymax: 255 });
+    const dark = () => ({ probed: true, ymin: 0, yavg: 12, ymax: 30 });
+    const white = { caption_style: { color: "#ffffff" } };
+    const r = vl.evaluateStillCaptionContrast({ stillPath: "/x.png", scenes, timeSeconds: 1, platform, targetDesign: white, signalstats: bright });
+    assert(r && r.code === "qc/caption_low_contrast" && r.severity === "glaring" && r.scene_id === "cap", `bright+white ${JSON.stringify(r)}`);
+    assert(typeof r.contrast_ratio === "number" && r.bg_luma === 242 && r.text_color === "#ffffff", "evidence fields");
+    assert(vl.evaluateStillCaptionContrast({ stillPath: "/x.png", scenes, timeSeconds: 3, platform, targetDesign: white, signalstats: bright }) === null, "caption-free scene skipped");
+    assert(vl.evaluateStillCaptionContrast({ stillPath: "/x.png", scenes, timeSeconds: 1, platform, targetDesign: white, signalstats: dark }) === null, "white on dark scrim -> clean");
+    const assumed = vl.evaluateStillCaptionContrast({ stillPath: "/x.png", scenes, timeSeconds: 1, platform, targetDesign: null, signalstats: bright });
+    assert(assumed && assumed.severity === "taste" && assumed.text_color === null && /none declared/.test(assumed.message), "undeclared color -> assume white, capped taste, accurate note");
+    const unparseable = vl.evaluateStillCaptionContrast({ stillPath: "/x.png", scenes, timeSeconds: 1, platform, targetDesign: { caption_style: { color: "var(--cap)" } }, signalstats: bright });
+    assert(unparseable && unparseable.severity === "taste" && unparseable.text_color === null && /not parseable/.test(unparseable.message), "declared-but-unparseable -> taste + accurate note");
+    assert(vl.evaluateStillCaptionContrast({ stillPath: "/x.png", scenes, timeSeconds: 1, platform, targetDesign: null, signalstats: () => ({ probed: false }) }) === null, "unprobeable -> null");
+    assert(vl.evaluateStillCaptionContrast({ stillPath: "/x.png", scenes, timeSeconds: 1, platform: {}, targetDesign: null, signalstats: bright }) === null, "no dims -> null");
+    assert(vl.evaluateStillCaptionContrast({ stillPath: "/x.png", scenes, timeSeconds: NaN, platform, targetDesign: null, signalstats: bright }) === null, "NaN time -> null");
+  });
+
+  await step("sampleRegionLuma — injected probe + degrade", () => {
+    assert(vl.sampleRegionLuma("/x.png", { x: 0, y: 0, w: 10, h: 10 }, { signalstats: () => ({ probed: true, yavg: 128, ymin: 0, ymax: 255 }) }) === 128, "yavg passthrough");
+    assert(vl.sampleRegionLuma("/x.png", { x: 0, y: 0, w: 10, h: 10 }, { signalstats: () => ({ probed: false }) }) === null, "unprobed -> null");
+    assert(vl.sampleRegionLuma("/x.png", { x: 0, y: 0, w: 10, h: 10 }, { signalstats: () => { throw new Error("boom"); } }) === null, "throw -> null (degrade)");
+    assert(vl.sampleRegionLuma("", { x: 0, y: 0, w: 10, h: 10 }) === null, "no path -> null");
+  });
+
+  await step("visualCriticMode knob — auto default, off/always, unrecognized", () => {
+    assert(vl.visualCriticMode({}) === "auto", "default auto");
+    assert(vl.visualCriticMode({ VOB_VISUAL_CRITIC: "off" }) === "off", "off");
+    assert(vl.visualCriticMode({ VOB_VISUAL_CRITIC: "always" }) === "always", "always");
+    assert(vl.visualCriticMode({ VOB_VISUAL_CRITIC: "weird" }) === "auto", "unrecognized -> auto");
+  });
+
+  console.log("\n=== visualqc: caption-contrast engine + spawn-gate verified");
+}
+
 async function main() {
   const phase = process.argv[2] || "all";
   if (phase === "stillsqc") {
@@ -3551,6 +3672,10 @@ async function main() {
   }
   if (phase === "hook") {
     await runHook();
+    return;
+  }
+  if (phase === "visualqc") {
+    await runVisualQc();
     return;
   }
   console.log(`=== M5 walker v2 — phase: ${phase} — project: ${PROJECT_ID}`);

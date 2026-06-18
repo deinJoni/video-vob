@@ -12,6 +12,7 @@ const { materializeSceneClips } = require("./clip-materialize.js");
 const { materializeSubjectMattes } = require("./matte-materialize.js");
 const { materializeSceneLayouts } = require("./layout-materialize.js");
 const { summarizeActiveVideoType } = require("./video-types.js");
+const { visualCriticMode } = require("./visual-legibility.js");
 const hostProfile = require("./host-profile.js");
 const { deriveRenderPlan, validSegmentRenders } = require("./render-segments.js");
 
@@ -623,6 +624,10 @@ function buildStateSummary(state, projectId) {
     // ...+ shader_transitions_allowed: the host-capability gate for shader scene
     // transitions, surfaced here so the composer spawn carries it (v3.3 §7.8).
     video_type: { ...summarizeActiveVideoType(state), shader_transitions_allowed: hostProfile.shaderTransitionsAllowed() },
+    // (v3.9.1) Resolved VOB_VISUAL_CRITIC mode (auto|always|off) — the orchestrator
+    // reads this in COMPOSE self-QC to decide whether to spawn the visual-critic
+    // (it cannot read process.env itself).
+    visual_critic_mode: visualCriticMode(),
     target_duration_seconds: summarizeTargetDurationSeconds(answers),
     target_duration_range: summarizeTargetDurationRange(answers),
     brief: summarizeBrief(state.brief),

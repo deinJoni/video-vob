@@ -7,9 +7,9 @@ to the `composer` subagent; linting, snapshots, and transitions stay with you.
 ## Read sites
 | step | source | fields |
 |---|---|---|
-| 2 | `vob_read_state_summary` | `storyboard.artifact_path`, `brief.path`, `manifest.path`, `composition.*`, `inspect.{transcript_path,clean_speech_path,transcript_aligned}`, `platform{...}`, `intent.answers`, `style.derived_from` |
+| 2 | `vob_read_state_summary` | `storyboard.artifact_path`, `brief.path`, `manifest.path`, `composition.*`, `inspect.{transcript_path,clean_speech_path,transcript_aligned}`, `platform{...}`, `video_type.{canonical,lint_ruleset}`, `visual_critic_mode`, `intent.answers`, `style.derived_from` |
 | 5 | composer-relayed save verdict; `vob_read_state_summary` `composition.{lint_status,lint_report_path}`; `vob_lint_composition` (fallback only) | `lint_status, error_count, warning_count, qc_error_count, qc_warning_count, findings_summary[≤10], report_path` |
-| 6 | `vob_snapshot_keyframes` result | `still_paths, contact_sheet_path, snapshots_dir` |
+| 2/2b/3 | `vob_snapshot_keyframes` result → `vob_qc_stills` → `visual-critic` spawn | `still_paths, contact_sheet_path, snapshots_dir`; qc `findings[]`; critic `VERDICT/SCORES/FINDINGS/TOP FIX` |
 
 1. **Transition with a warning.** Tell the user the transition pre-cuts scene clips (first entry
    from PLAN typically 5–30s per scene; back-edge re-entry is cached, see spine rule 9), then
@@ -110,10 +110,10 @@ to the `composer` subagent; linting, snapshots, and transitions stay with you.
    `vob_vob_lint_composition { project_id }` yourself ONLY when `lint_status` is
    `unknown` (the save-time lint infra-failed — e.g. missing binary, timeout) or the
    composer's report is missing/garbled. Branch on `lint_status`:
-   - **`clean`** → go to step 6 (self-QC) before presenting anything.
+   - **`clean`** → run the Self-QC section below (start at its step 1) before presenting anything.
    - **`warnings_only`** → show the warning summary (`findings_summary`, or `report_path` for
      the full list). Ask: "the linter flagged N warning(s); fix them, or accept and proceed?"
-     - **Accept** → step 6 (self-QC), then present.
+     - **Accept** → run the Self-QC section below (its step 1), then present.
      - **Fix** → loop to step 3 with `revision_notes` = rule codes + file/line list +
        `report_path` — never paste full findings prose (the composer reads the report itself).
      - The user may also choose **revise** (their own notes) or **back to the plan**.
@@ -123,69 +123,108 @@ to the `composer` subagent; linting, snapshots, and transitions stay with you.
      (re-spawns) without reaching `clean`/`warnings_only`, stop, surface the latest report, and
      ask: revise (user notes), back-edge to PLAN, or abort.
 
-### Self-QC — snapshot review BEFORE the user sees anything
-Run after lint returns `clean`, or after the user has accepted `warnings_only`. Budget: ≤2
-self-QC rounds per COMPOSE pass (count rounds in-conversation; a round = one composer re-spawn
-caused by this checklist). The lint ≤3 retry budget is separate and lint always settles first:
-if a self-QC fix introduces lint errors, those consume lint retries; when lint is clean again,
-resume self-QC at the SAME round count.
+### Self-QC — independent VISUAL critique BEFORE the user sees anything
+Run after lint returns `clean`, or after the user has accepted `warnings_only`. The pixel check is
+an INDEPENDENT `visual-critic` subagent (the COMPOSE twin of PLAN's `editorial-critic`): it judges
+the rendered stills, you act on its verdict, and you judge the stills inline yourself only as a
+fallback when it is unavailable. Budgets are separate and compose cleanly: the critic drives **≤1**
+auto-fix; the inline-fallback self-QC keeps its **≤2** rounds; the lint **≤3** retry budget always
+settles first (a self-QC fix that introduces lint errors consumes lint retries, then self-QC
+resumes at the SAME round count). (Step numbers in this section are LOCAL to it; outer-phase steps
+are written "COMPOSE step N".)
 
-1. Compute snapshot timecodes from the storyboard (cumulative scene starts; fan-out: the ACTIVE
-   short's scenes only — the composition implements just that timeline):
+1. Compute snapshot timecodes from the storyboard (cumulative scene starts; fan-out / segmented:
+   the ACTIVE short's / segment's scenes only — the composition implements just that timeline):
    - hook frame: hook-scene start + min(0.5, scene_duration/2) seconds — always include;
    - caption-dense: midpoint of the first caption window of every scene with captions (cap 3);
    - boundaries: every scene start + 0.2s (cap to fill);
    - dedupe within 0.5s; hard cap 8 (priority: hook > captions > boundaries).
-2. `vob_vob_snapshot_keyframes { project_id, timecodes }` (works in COMPOSE — needs only
-   a saved composition). ALWAYS read two stills at FULL resolution: the hook frame and the first
-   caption-dense still (each ≈1.1–1.6k image tokens — cheap insurance against a wasted preview
-   render; contact-sheet cells are too small after the vision downscale to judge caption
-   legibility, safe-band margins, or collisions). Read `contact_sheet_path` for the
-   letterbox/layout sweep (QC-F). Read up to 2 MORE stills to confirm suspected failures —
-   singles budget 4 per round.
-2b. `vob_vob_qc_stills { project_id, timecodes }` — pass the SAME `timecodes`. This is
-   automated **QC-C**: it luma-scans every still and returns `glaring` findings `qc/still_black`
-   / `qc/still_blown_out` (a frame that rendered with NO visible content — a dropped clip, a
-   timed-out seek, a blank/blown scene) plus a `taste` `qc/still_flat`. Pure ffprobe, ~1–3s,
-   advisory (gates nothing). Read its `findings` instead of eyeballing every contact-sheet cell
-   for black frames: a `glaring` finding is a step-4 GLARING item — re-spawn the composer citing
-   the finding's `code` + `timecode_seconds`. Carry `qc/still_flat` into the taste notes only if
-   it lands mid-scene (a solid title card is legitimately flat).
-3. Judge QC-A/QC-B/QC-D/QC-E on the full-res stills; judge QC-F on every contact-sheet cell
-   (QC-C is automated in step 2b — read `vob_qc_stills` findings). The checklist:
-   - QC-A captions inside the safe band (not in the top safe_top_px / bottom safe_bottom_px of
-     the frame; nothing clipped at frame edges)
-   - QC-B caption legibility: readable contrast against what's behind it, ≤2 lines, not
-     overlapping other text
-   - QC-C no black/empty/half-loaded frames at any sampled timecode — **automated by step 2b**
-     (`vob_qc_stills`); trust its findings rather than re-judging every cell by eye
-   - QC-D no overlay collisions (overlay text over captions or over the speaker's face)
-   - QC-E the hook frame is actually striking: subject visible, not motion-smeared, text hook
-     legible at thumbnail size
-   - QC-F aspect/framing accidents: unintended letterboxing, wrong dimensions, subject cropped
-     out by object-fit
-4. GLARING (auto-fix without asking): any QC-A/QC-C/QC-F failure (QC-C = a `vob_qc_stills`
-   `glaring` finding); QC-B unreadable (not merely suboptimal); QC-D hard overlap. →
-   `vob_log_composer_invocation` with `revision_notes` =
-   `"self-QC round <n>: <QC-code> at t=<s>s — <what is wrong, one line each>"`, re-spawn the
-   composer, re-lint, then re-snapshot ONLY the timecodes that failed (plus the hook frame).
-   Safe bands and the 56px caption floor are hard constraints even against an explicit user
-   `captions_style` — if a glaring fix overrides a user choice, say so when you present.
-5. TASTE (never auto-fix; note for the user): font/palette feel, hook framing aesthetics,
-   overlay density, pacing feel, caption position preferences within the safe band. Carry these
-   as one short "things you might want changed" list when you present.
-6. After 2 rounds — or a clean pass — present to the user: file list, total duration, the
-   contact sheet path, any remaining taste notes, any UNRESOLVED glaring item flagged
-   prominently. Then the normal approve / revise / back-to-plan branch.
+2. `vob_vob_snapshot_keyframes { project_id, timecodes }` (works in COMPOSE — needs only a
+   saved composition) → full-res PNGs (`still_paths`) + `contact_sheet_path` + `snapshots_dir`.
+   You do NOT read the stills here — the visual-critic does (step 3), keeping the image tokens out
+   of your context. (You still Read them yourself in the inline fallback, step 6.)
+2b. `vob_vob_qc_stills { project_id, timecodes }` — pass the SAME `timecodes`. Automated
+   **QC-C** (luma-scan: `glaring` `qc/still_black` / `qc/still_blown_out` for a frame that rendered
+   with NO visible content; `taste` `qc/still_flat`) **and automated QC-B** (the deterministic
+   caption-contrast check `qc/caption_low_contrast`, sampled under the caption safe band on
+   caption-bearing frames — `glaring` below the hard floor, else `taste`). Pure ffprobe, ~1–3s,
+   advisory (gates nothing). A `glaring` finding is a GLARING item (step 4 / step 6); carry `taste`
+   findings (incl. `qc/still_flat` only if it lands mid-scene, and `qc/caption_low_contrast` at
+   taste) into the user notes.
+3. **Spawn the `visual-critic`** — the independent pixel critic — UNLESS the summary's
+   `visual_critic_mode` is `off`, OR it is `auto` (default) AND the active scope plans NO captions,
+   NO typed overlays, and NO `target.design` look (a bare cuts-only scope — then skip straight to
+   the inline fallback, step 6). When `visual_critic_mode` is `always`, spawn regardless of scope.
+   Its image tokens stay in its own throwaway context. Spawn prompt is DATA-ONLY (fields with no
+   value are passed as the literal string `none`):
+   Invoke the `visual-critic` subagent with the `task` tool, passing:
+   ```
+   DATA
+   project_id: <project_id>
+   snapshots_dir: <snapshot result .snapshots_dir>
+   still_paths: <snapshot result .still_paths, comma-joined>
+   contact_sheet_path: <snapshot result .contact_sheet_path | none>
+   timecodes: <the SAME timecodes, comma-joined, same order as still_paths>
+   video_type: <summary.video_type.canonical>
+   lint_ruleset: <summary.video_type.lint_ruleset>
+   intent.target_platform: <canonical>
+   intent.platform_profile: width=<w> height=<h> safe_top_px=<t> safe_bottom_px=<b>
+   intent.tone: <tone>
+   storyboard_json_path: <storyboard.artifact_path>
+   short_id: <active short_id | none>
+   segment_id: <active segment_id | none>
+   Follow your agent instructions.
+   ```
+4. **Act on the verdict — at most ONE critic-driven fix** (mirrors PLAN step 6c):
+   - **`SHIP`** → keep a one-line summary for the gate; carry any `taste` findings forward as
+     `⚠ visual:` notes; go to step 7 (present).
+   - **`REVISE`** and not already auto-fixed this COMPOSE pass → `vob_vob_log_composer_invocation
+     { project_id, revision_notes }` where `revision_notes` = the critic's `TOP FIX` + its
+     `glaring` FINDINGS + any `glaring` `vob_qc_stills` codes (+ the `vob_qc_stills` `report_path`
+     when it flagged anything; the critic itself writes no report — its verdict was its message).
+     Re-spawn the composer (COMPOSE step 3), re-lint, then re-run snapshot + `vob_qc_stills`. Do
+     **NOT** re-spawn the critic (the budget is one fix). Carry remaining `taste` notes forward;
+     go to step 7.
+   - **`taste`-only** (verdict `SHIP`, no `weak` dimension) → surface as `⚠ visual:` notes at the
+     gate; never auto-fix.
+   - **Critic errored / unparseable / unavailable / `visual_critic_mode: off`** → **fall back to
+     the inline self-QC (step 6)** — never block. The critic is advisory; the human is the final
+     judge.
+5. Safe bands and the 56px caption floor are hard constraints even against an explicit user
+   `captions_style` — if a glaring fix (from the critic OR the inline fallback) overrides a user
+   choice, say so when you present.
 
-7. **Verdict branches:**
-   - **Approve** → `vob_vob_transition_phase { project_id, to_phase: "PREVIEW" }`. (There
-     is no separate confirm tool — clean lint + the user's explicit approval + the transition is
-     the confirmation. The gate rejects `errors`/`unknown` lint.)
-   - **Revise** ("tighten scene 3", "title too small") → loop to step 3 with the user's note as
-     `revision_notes`.
-   - **Back to the plan** → `vob_vob_transition_phase { project_id, to_phase: "PLAN" }`
-     and re-enter PLAN.
+6. **Inline self-QC fallback** — used ONLY when the critic was skipped/unavailable (step 4's last
+   branch). Read two stills at FULL resolution (the hook frame + the first caption-dense still,
+   ≈1.1–1.6k image tokens each); Read `contact_sheet_path` for the letterbox/layout sweep; Read up
+   to 2 MORE to confirm a suspected failure (singles budget 4 per round). Judge:
+   - QC-A captions inside the safe band (nothing in the top safe_top_px / bottom safe_bottom_px;
+     nothing clipped at frame edges)
+   - QC-B caption legibility: readable contrast against the background, ≤2 lines, not overlapping
+     other text — **automated by step 2b** (`qc/caption_low_contrast`); add what it can't measure
+     (busy backgrounds, partial occlusion)
+   - QC-C no black/empty/half-loaded frames — **automated by step 2b** (`qc/still_black` etc.);
+     trust its findings rather than re-judging every cell by eye
+   - QC-D no overlay collisions (overlay text over captions or over the speaker's face)
+   - QC-E the hook frame is striking: subject visible, not motion-smeared, hook text legible small
+   - QC-F aspect/framing accidents: unintended letterboxing, wrong dimensions, subject cropped out
+   GLARING (auto-fix without asking): any QC-A/QC-C/QC-F failure (QC-C = a `vob_qc_stills`
+   `glaring` finding); QC-B unreadable; QC-D hard overlap → `vob_log_composer_invocation` with
+   `revision_notes` = `"self-QC round <n>: <QC-code> at t=<s>s — <what is wrong>"`, re-spawn the
+   composer, re-lint, then re-snapshot ONLY the failed timecodes (plus the hook frame). ≤2 rounds.
+   TASTE (never auto-fix): font/palette feel, hook framing aesthetics, overlay density — carry as a
+   short "things you might want changed" list.
+
+7. **Present, then branch.** Present to the user: file list, total duration, the contact sheet
+   path, any remaining `taste` / `⚠ visual:` notes, any UNRESOLVED glaring item flagged
+   prominently. Then:
+   - **Approve** → `vob_vob_transition_phase { project_id, to_phase: "PREVIEW" }`. (There is
+     no separate confirm tool — clean lint + the user's explicit approval + the transition is the
+     confirmation. The gate rejects `errors`/`unknown` lint.)
+   - **Revise** ("tighten scene 3", "title too small") → loop to COMPOSE step 3 (Delegate) with the
+     user's note as `revision_notes`.
+   - **Back to the plan** → `vob_vob_transition_phase { project_id, to_phase: "PLAN" }` and
+     re-enter PLAN.
 
 8. If the composer errors out of band twice in a row (validation failure after one retry),
    surface the blocker and stop — never fabricate composition files yourself, and never invoke

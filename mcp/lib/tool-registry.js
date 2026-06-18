@@ -13,6 +13,13 @@ const VALID_ROLE_BUNDLES = Object.freeze([
   // requires every agents/*.md name to be a known bundle, and the reverse check
   // requires this bundle to have an agent file in both adapters.
   "editorial-critic",
+  // (v3.9.1) Read-only VISUAL critic — the pixels twin of editorial-critic,
+  // spawned in COMPOSE self-QC after a lint-clean save to judge the RENDERED
+  // stills (legibility / safe-area / collisions / hook-frame / framing / polish).
+  // Same shape as editorial-critic: it holds NO mutating tool (verdict-as-final-
+  // message), so it needs no tool role_bundles entry — only this bundle + an agent
+  // file in both adapters (the boot reverse-check).
+  "visual-critic",
 ]);
 
 const CAPABILITY_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;

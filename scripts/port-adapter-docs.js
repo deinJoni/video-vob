@@ -129,12 +129,12 @@ for (const phase of PHASES) {
   writeOut(path.join(OC, "vob", "phases", `${phase}.md`), t);
 }
 
-for (const ref of ["lint-rules.md", "brief-design.md", "clarifying-questions.md", "editorial-patterns.md"]) {
+for (const ref of ["lint-rules.md", "brief-design.md", "clarifying-questions.md", "editorial-patterns.md", "visual-quality.md"]) {
   writeOut(path.join(OC, "vob", "references", ref), baseTransform(read(path.join(CC, "skills", "vob", "references", ref))));
 }
 
 // --- subagents: keep the OpenCode frontmatter, port the body ----------------
-for (const agent of ["inspector", "storyboarder", "composer", "editorial-critic"]) {
+for (const agent of ["inspector", "storyboarder", "composer", "editorial-critic", "visual-critic"]) {
   const ccBody = splitFrontmatter(read(path.join(CC, "agents", `${agent}.md`))).body;
   const ocPath = path.join(OC, "agents", `${agent}.md`);
   const ocFm = splitFrontmatter(read(ocPath)).fm;
