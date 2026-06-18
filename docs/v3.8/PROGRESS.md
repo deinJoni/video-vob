@@ -36,7 +36,7 @@ Bump VERSION + CHANGELOG + CLAUDE.md invariants as changes land. Commit per cohe
 | 6 | PREVIEW | **done** ✓ | XC-1 realized-cut drift + XC-2 content QC (black-frame/silent-audio); confirm-revision cross-check (P3) deferred |
 | 7 | RENDER | **done** ✓ | XC-1/XC-2 + segment-confirm-at-assembly + music-duck surfacing/warning + screenshot-path timeout fallback |
 | 8 | PACKAGE | **done** ✓ | per-video-type loudness + LRA + word-level VTT; LOW efficiency nits (#8/#4a) deferred |
-| 9 | ITERATE | pending | |
+| 9 | ITERATE | **done** ✓ | compare quality deltas (from archived manifest) + archival sweeps segment_renders + finalize fan-out backstop |
 | X | FSM core / cross-cutting | pending | |
 
 Status legend: pending → designed → implementing → verifying → reviewed → **done**
@@ -180,6 +180,12 @@ _(record non-obvious choices here as they're made)_
 - **Word-level VTT** (PACKAGE#7): when a karaoke/word-by-word animation is planned on a forced-aligned transcript, `caption-sidecar.js` emits per-word `<HH:MM:SS.mmm>word` VTT tags (`wordTaggedCue`) and returns `level:"word"` (SRT stays chunk-level — inline tags aren't portable there). Both PACKAGE (manifest `captions.level` was hardcoded "chunk") and the fan-out import path surface it. Falls back to chunk when unaligned / non-word animation. The engine already paid for alignment; now the sidecar spends it.
 - _Verified: karaoke+aligned→word tags+level:word, pop→chunk, unaligned→chunk, SRT plain; module load; boot._
 - _Deferred (LOW/efficiency, output-quality-first): segmented drift total + skip redundant package loudnorm (PACKAGE#8); reuse INSPECT LUFS to skip a measure pass (INSPECT#4a)._
+
+### Stage 9 — ITERATE (commit) ✓
+- **Quality deltas** (ITERATE#9): `compare_iterations` now reads the archived `package/manifest.json` (`loadArchivedSide`) → `buildQualityDiff` adds output-duration / loudness (LUFS) / dimensions-changed / chapter-count / caption-count deltas (null-safe when a side wasn't packaged). Turns the structural diff into a "did it get better?" diff. Exposed in `publicSide` too.
+- **Archival sweeps `segment_renders/`** (ITERATE#10): a full ITERATE cycle moves the per-segment partials into `archive/v<N>/segment_renders/` (they live outside `renders/` so the per-segment back-edge can't sweep them) — bounds disk growth on the length-unlock path.
+- **Finalize fan-out backstop** (ITERATE#11): `finalize_iteration` calls the shared `missingShortDeliverables` (now exported from phase-gates) and refuses on a partial short set — closes the `import_deliverable{set_phase:true}`→PACKAGE→finalize bypass of the gate.
+- _Verified: module load (no finalize→phase-gates require cycle), helper export, boot, spans walker._
 
 ## Loop bookkeeping
 

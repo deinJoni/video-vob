@@ -12,6 +12,7 @@ const {
   composeSourceDir,
   packageDir,
   rendersDir,
+  segmentRendersDir,
   sessionDir,
   storyboardPath,
 } = require("./paths.js");
@@ -103,7 +104,11 @@ function archiveForIteration(state, { from = state && state.phase, to = null } =
   const projectId = state.project_id;
   const rendersSrc = rendersDir(projectId);
   const packageSrc = packageDir(projectId);
-  if (!fs.existsSync(rendersSrc) && !fs.existsSync(packageSrc)) {
+  // segment_renders/ lives OUTSIDE renders/ (the per-segment back-edge can't
+  // sweep it mid-cycle) — but a full ITERATE cycle SHOULD archive it like an
+  // output, else stale partials accumulate (each potentially GBs) across cuts.
+  const segmentRendersSrc = segmentRendersDir(projectId);
+  if (!fs.existsSync(rendersSrc) && !fs.existsSync(packageSrc) && !fs.existsSync(segmentRendersSrc)) {
     return null;
   }
 
@@ -122,6 +127,7 @@ function archiveForIteration(state, { from = state && state.phase, to = null } =
   // Outputs: move (the next iteration regenerates them).
   const movedRenders = moveIfExists(rendersSrc, archivedRendersAbs);
   const movedPackage = moveIfExists(packageSrc, archivedPackageAbs);
+  const movedSegmentRenders = moveIfExists(segmentRendersSrc, path.join(versionRoot, "segment_renders"));
 
   // Intent: copy (the next iteration reads/mutates these in place). This is
   // what makes versions diffable — brief + storyboard + the authored
@@ -149,6 +155,7 @@ function archiveForIteration(state, { from = state && state.phase, to = null } =
     paths: {
       renders: movedRenders ? relToSession(archivedRendersAbs) : null,
       package: movedPackage ? relToSession(archivedPackageAbs) : null,
+      segment_renders: movedSegmentRenders ? relToSession(path.join(versionRoot, "segment_renders")) : null,
       brief: copiedBrief ? relToSession(archivedBriefAbs) : null,
       storyboard: copiedStoryboard ? relToSession(archivedStoryboardAbs) : null,
       compose: copiedCompose ? relToSession(archivedComposeAbs) : null,

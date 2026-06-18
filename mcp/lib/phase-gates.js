@@ -661,4 +661,4 @@ function getGate(from, to) {
   return GATES[`${from}->${to}`] || null;
 }
 
-module.exports = { GATES, getGate };
+module.exports = { GATES, getGate, missingShortDeliverables };

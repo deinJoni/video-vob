@@ -7,6 +7,7 @@ const { assertSafeProjectId, deliverablesDir, sessionDir, statePath } = require(
 const { withSessionLock, writeFileAtomic } = require("../storage.js");
 const { readSessionStateStrict } = require("../session-state.js");
 const { currentIterationVersion } = require("../archival.js");
+const { missingShortDeliverables } = require("../phase-gates.js");
 
 function nowIso() {
   return new Date().toISOString();
@@ -32,6 +33,18 @@ function finalizeIteration(args) {
       throw new ToolError(
         ERROR_CODES.NOT_FOUND,
         "no package or external deliverables recorded in state — call vob_package_output (or vob_import_deliverable) before vob_finalize_iteration",
+      );
+    }
+    // Fan-out completeness backstop (mirrors the PACKAGE→ITERATE gate): import
+    // with set_phase:true jumps straight to PACKAGE WITHOUT crossing the gate, so
+    // finalizing here could silently bless a partial short set. Refuse until every
+    // short has a recorded deliverable — the same shared helper the gate uses.
+    const missingShorts = missingShortDeliverables(state);
+    if (missingShorts.length > 0) {
+      throw new ToolError(
+        ERROR_CODES.STATE_CONFLICT,
+        `cannot finalize: ${missingShorts.length} short(s) have no recorded deliverable (${missingShorts.join(", ")}) — record each with vob_import_deliverable before vob_finalize_iteration`,
+        { missing_short_ids: missingShorts },
       );
     }
 
