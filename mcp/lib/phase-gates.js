@@ -262,6 +262,27 @@ function planToCompose(state) {
       ),
     ]);
   }
+  // (v3.8) Stale-vs-intent: an intent answer changed AFTER the brief/storyboard
+  // were saved, so the confirmed plan may no longer reflect the stated intent.
+  // OVERRIDABLE (the tweak may be intentional) — a visible nudge, not a hard wall.
+  const intent = state && typeof state.intent === "object" && !Array.isArray(state.intent) ? state.intent : null;
+  const intentUpdated = intent && typeof intent.last_updated === "string" ? Date.parse(intent.last_updated) : NaN;
+  if (Number.isFinite(intentUpdated)) {
+    const briefSaved = typeof brief.saved_at === "string" ? Date.parse(brief.saved_at) : NaN;
+    const storyboardSaved = typeof storyboard.saved_at === "string" ? Date.parse(storyboard.saved_at) : NaN;
+    const stale = [];
+    if (Number.isFinite(briefSaved) && intentUpdated > briefSaved) stale.push("brief");
+    if (Number.isFinite(storyboardSaved) && intentUpdated > storyboardSaved) stale.push("storyboard");
+    if (stale.length > 0) {
+      return block([
+        blocker(
+          "plan_stale_vs_intent",
+          `an intent answer changed after the ${stale.join(" and ")} ${stale.length > 1 ? "were" : "was"} saved — the confirmed plan may not reflect the current intent. Re-save (and re-confirm) the ${stale.join("/")}, or pass an override_reason if the change was intentional.`,
+          { stale, intent_last_updated: intent.last_updated },
+        ),
+      ]);
+    }
+  }
   return ALLOWED;
 }
 

@@ -37,7 +37,7 @@ Bump VERSION + CHANGELOG + CLAUDE.md invariants as changes land. Commit per cohe
 | 7 | RENDER | **done** ✓ | XC-1/XC-2 + segment-confirm-at-assembly + music-duck surfacing/warning + screenshot-path timeout fallback |
 | 8 | PACKAGE | **done** ✓ | per-video-type loudness + LRA + word-level VTT; LOW efficiency nits (#8/#4a) deferred |
 | 9 | ITERATE | **done** ✓ | compare quality deltas (from archived manifest) + archival sweeps segment_renders + finalize fan-out backstop |
-| X | FSM core / cross-cutting | high-value done; nits next | short_id slots+guard, lock release, intentToPlan canonical path ✓; PREVIEW#9/CORE#9/#12/INTENT#9 next |
+| X | FSM core / cross-cutting | **done** ✓ | short_id guard, lock release, canonical path + confirm-revision, leading-dot reject, stale-vs-intent gate; remaining nits deferred (low/risky) |
 
 Status legend: pending → designed → implementing → verifying → reviewed → **done**
 
@@ -192,6 +192,13 @@ _(record non-obvious choices here as they're made)_
 - **Process-level lock release** (CORE#2): `storage.js` tracks held lock tokens in a module Map + registers exit/SIGINT/SIGTERM handlers that release the locks we own (token-precise) — a killed long render no longer strands the session for the 5-min stale timeout.
 - **`intentToPlan` reads canonical inspect path** (CORE#4): uses `inspectSummaryPath(project_id)` not the state-slot path, so a stale slot can't silently drop the conditional intent keys (audio_treatment/captions_style). Mirrors `inspectToIntent`.
 - _Verified: wrong-scope gate test (mismatch→blocked overridable:false, match→allowed), lock acquire/release/re-acquire cycle, module load, boot, spans walker._
+
+### Stage X — FSM CORE nits (commit) ✓
+- **`confirm_preview` revision cross-check** (PREVIEW#9): refuses to bless a preview rendered against an older composition revision (defense-in-depth vs the save-time reset side-effect).
+- **`assertSafeProjectId` rejects leading-dot ids** (CORE#12): a `.intro`-style id would make a hidden session dir colliding with `.session.lock`; conversational `/vob` could derive one from a dotfile source.
+- **`plan_stale_vs_intent` gate** (INTENT#9): `planToCompose` blocks (OVERRIDABLE) when an intent answer changed after the brief/storyboard were saved — a visible "your plan predates your latest intent" nudge.
+- _Verified: project-id guard (reject `.intro`, accept normal, still reject `../x`), stale-vs-intent gate (stale→blocked overridable, fresh→allowed), confirm-preview load, boot._
+- _Deferred (LOW / low-value / risky): dependency unknown-state ffmpeg gate (CORE#9), validator null/oneOf messages (CORE#8), transport byte-framing for CJK (CORE#10 — load-bearing, high-risk for low frequency), `summary_delta` on mutating returns (CORE#5 — optimization), brief-validator manifest audio (INTENT#5)._
 
 ## Loop bookkeeping
 
