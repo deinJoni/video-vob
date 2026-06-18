@@ -329,7 +329,13 @@ async function importDeliverable(args) {
       const vttAbs = path.join(destDir, `${stem}.vtt`);
       writeFileAtomic(srtAbs, captionSidecar.srt);
       writeFileAtomic(vttAbs, captionSidecar.vtt);
-      captionsRel = { srt: sessionRelative(id, srtAbs), vtt: sessionRelative(id, vttAbs) };
+      captionsRel = {
+        srt: sessionRelative(id, srtAbs),
+        vtt: sessionRelative(id, vttAbs),
+        level: captionSidecar.level || "chunk",
+        timing_basis: captionSidecar.timing_basis || "storyboard_target",
+        segment_count: captionSidecar.segment_count,
+      };
     }
     records.push({
       id: stem,

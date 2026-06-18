@@ -35,7 +35,7 @@ Bump VERSION + CHANGELOG + CLAUDE.md invariants as changes land. Commit per cohe
 | 5 | COMPOSE | **done** ✓ | master_duration_long, design_font_partial, broadened+aimed inspect QC, layout_degraded_fallback; safe-band stays PLAN-side (no bbox from inspect) |
 | 6 | PREVIEW | **done** ✓ | XC-1 realized-cut drift + XC-2 content QC (black-frame/silent-audio); confirm-revision cross-check (P3) deferred |
 | 7 | RENDER | **done** ✓ | XC-1/XC-2 + segment-confirm-at-assembly + music-duck surfacing/warning + screenshot-path timeout fallback |
-| 8 | PACKAGE | loudnorm done; P2/P3 next | per-video-type loudness ✓ + LRA recorded; word-level VTT + segmented-drift + LUFS-reuse pending |
+| 8 | PACKAGE | **done** ✓ | per-video-type loudness + LRA + word-level VTT; LOW efficiency nits (#8/#4a) deferred |
 | 9 | ITERATE | pending | |
 | X | FSM core / cross-cutting | pending | |
 
@@ -176,7 +176,10 @@ _(record non-obvious choices here as they're made)_
 - **Per-video-type loudness target** (PACKAGE#5 — biggest packaging-audio lever): each preset in `video-types.js` carries `loudness_target{i,tp,lra}` (social/long-form/tutorial/general −14; cinematic −16/wide LRA 16; podcast −16). `resolveLoudnessTarget(state)` resolves it; `loudnorm.js` + the ffmpeg argv builders (`buildLoudnorm{Measure,Apply}Argv`) take a `target` (default −14 → short-form byte-identical). Threaded into PACKAGE + assembly; stamped into `manifest.audio.loudnorm_target`.
 - **LRA recorded** (PACKAGE#6): `measured_input_lra` now surfaced in result + manifest. (Deliberately do NOT force-apply on a low-LRA input — our `linear=true` pass can't restore destroyed dynamics; recording it for the reviewer is the correct fix.)
 - _Verified on REAL audio: cinematic target (−16/−1.5/16) applied to a −21.8 LUFS clip, target stamped, LRA recorded; resolveLoudnessTarget per type (social/cinematic/podcast); argv honors target; module load; boot._
-- _P2/P3 PENDING: word-level VTT sidecar (PACKAGE#7); segmented drift total + skip redundant package loudnorm when normalized-at-assembly (PACKAGE#8); reuse INSPECT-measured LUFS to skip a loudnorm measure pass (INSPECT#4a)._
+### Stage 8 — PACKAGE word-level VTT (commit) ✓
+- **Word-level VTT** (PACKAGE#7): when a karaoke/word-by-word animation is planned on a forced-aligned transcript, `caption-sidecar.js` emits per-word `<HH:MM:SS.mmm>word` VTT tags (`wordTaggedCue`) and returns `level:"word"` (SRT stays chunk-level — inline tags aren't portable there). Both PACKAGE (manifest `captions.level` was hardcoded "chunk") and the fan-out import path surface it. Falls back to chunk when unaligned / non-word animation. The engine already paid for alignment; now the sidecar spends it.
+- _Verified: karaoke+aligned→word tags+level:word, pop→chunk, unaligned→chunk, SRT plain; module load; boot._
+- _Deferred (LOW/efficiency, output-quality-first): segmented drift total + skip redundant package loudnorm (PACKAGE#8); reuse INSPECT LUFS to skip a measure pass (INSPECT#4a)._
 
 ## Loop bookkeeping
 

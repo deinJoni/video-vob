@@ -26,6 +26,10 @@
 
 const { captionSegmentsOf } = require("./storyboard-schema.js");
 
+// Animations that highlight per WORD (vs chunk-level "pop") — the only ones that
+// benefit from a word-level VTT export. Mirrors storyboard-schema's set.
+const WORD_LEVEL_ANIMS = new Set(["word-by-word", "karaoke"]);
+
 function isPlainObject(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
@@ -60,6 +64,29 @@ function alignedWindow(words, seg) {
   }
   if (first === null || last === null || last <= first) return null;
   return { start: first, end: last };
+}
+
+// (v3.8) Word-level VTT cue body: the forced-aligned transcript words inside the
+// segment window, each prefixed with its OUTPUT-time tag (<HH:MM:SS.mmm>word) so
+// a player/editor can highlight per word — the karaoke export the engine already
+// pays for alignment to produce but used to discard. `words` is the file's
+// {text,start,end} array; offsets map SOURCE→OUTPUT via cursor − inSec, clamped.
+// Returns the tagged string, or null when no aligned word falls in the window.
+function wordTaggedCue(words, seg, inSec, cursor, durationSeconds) {
+  if (!Array.isArray(words) || !Number.isFinite(seg.start_seconds) || !Number.isFinite(seg.end_seconds)) return null;
+  const pad = 0.3;
+  const parts = [];
+  for (const w of words) {
+    if (!isPlainObject(w) || !Number.isFinite(w.start) || !Number.isFinite(w.end)) continue;
+    if (w.end <= seg.start_seconds - pad || w.start >= seg.end_seconds + pad) continue;
+    const tok = String(w.text == null ? "" : w.text).trim();
+    if (!tok) continue;
+    let t = cursor + (w.start - inSec);
+    if (t < 0) t = 0;
+    if (t >= durationSeconds) break;
+    parts.push(`<${stampVtt(t)}>${tok}`);
+  }
+  return parts.length > 0 ? parts.join(" ") : null;
 }
 
 // HH:MM:SS,mmm (SRT, comma fraction) / HH:MM:SS.mmm (VTT, dot fraction). Both
@@ -112,6 +139,7 @@ function buildCaptionSidecar(storyboard, options) {
   const cues = [];
   let cursor = 0;
   let usedAligned = false;
+  let usedWordLevel = false;
   for (const scene of storyboard.scenes) {
     const d = Number(scene && scene.target_duration_seconds);
     // Malformed scene durations break every downstream cue offset — stop
@@ -145,7 +173,15 @@ function buildCaptionSidecar(storyboard, options) {
       // The cursor can overrun the real cut (durationSeconds is the probed
       // post-loudnorm final) — drop cues that fall off the end or collapse.
       if (cueStart >= durationSeconds || cueEnd <= cueStart) continue;
-      cues.push({ start: cueStart, end: cueEnd, text: String(seg.text).trim() });
+      // Word-level VTT export for a planned word-level animation (karaoke /
+      // word-by-word) on an aligned transcript — the engine already has the
+      // per-word times, so spend them on the sidecar too. SRT stays chunk-level.
+      let wordVtt = null;
+      if (Array.isArray(words) && WORD_LEVEL_ANIMS.has(seg.animation)) {
+        wordVtt = wordTaggedCue(words, seg, inSec, cursor, durationSeconds);
+        if (wordVtt) usedWordLevel = true;
+      }
+      cues.push({ start: cueStart, end: cueEnd, text: String(seg.text).trim(), wordVtt });
     }
     cursor += d;
   }
@@ -156,8 +192,10 @@ function buildCaptionSidecar(storyboard, options) {
   const vttBlocks = [];
   cues.forEach((cue, ix) => {
     const i = ix + 1;
+    // SRT carries the plain chunk text (inline word tags aren't portable in SRT);
+    // VTT carries the per-word tags when present (chunk text otherwise).
     srtBlocks.push(`${i}\n${stampSrt(cue.start)} --> ${stampSrt(cue.end)}\n${cue.text}\n`);
-    vttBlocks.push(`${stampVtt(cue.start)} --> ${stampVtt(cue.end)}\n${cue.text}\n`);
+    vttBlocks.push(`${stampVtt(cue.start)} --> ${stampVtt(cue.end)}\n${cue.wordVtt || cue.text}\n`);
   });
 
   return {
@@ -165,6 +203,8 @@ function buildCaptionSidecar(storyboard, options) {
     vtt: `WEBVTT\n\n${vttBlocks.join("\n")}`,
     segment_count: cues.length,
     timing_basis: usedAligned ? "forced_aligned" : "storyboard_target",
+    // "word" when at least one cue got per-word VTT tags, else "chunk".
+    level: usedWordLevel ? "word" : "chunk",
   };
 }
 

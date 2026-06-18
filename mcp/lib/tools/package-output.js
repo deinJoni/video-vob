@@ -700,7 +700,9 @@ async function packageOutput(args) {
           srt_path: "captions.srt",
           vtt_path: "captions.vtt",
           segment_count: captionSidecar.segment_count,
-          level: "chunk",
+          // "word" when a planned karaoke/word-by-word animation on an aligned
+          // transcript produced per-word VTT tags; "chunk" otherwise.
+          level: captionSidecar.level || "chunk",
           source: "caption_segments",
           // (v3.4) "forced_aligned" when cues were word-anchored to the aligned
           // transcript (matches the burn-in); "storyboard_target" otherwise.
