@@ -205,8 +205,10 @@ _(record non-obvious choices here as they're made)_
 - ✅ Version 3.7.0→3.8.0 (package.json + server.js); `docs/v3.8/CHANGELOG.md`; CLAUDE.md invariants refreshed (d313732).
 - Adversarial reviews:
   - ✅ ENGINE-LOGIC review back (7 findings, 0 high). Fixed: word-level VTT inline tags could fall outside the cue window → malformed VTT (clamp to [cueStart,cueEnd]); per-video-type loudness target not threaded through import-deliverable; scene-basis mislabel on retry-fail; `-inf dB` regex miss; dead `cells` hint (record cells on skipped/failed layout records); `pop` substring over-match in caption-anim intent. Doc-scoped #1 (ASR default deliberately not byte-identical — CLAUDE.md wording refined). All verified (subset-caption VTT clamp, -inf parse, boot, spans).
-  - ⏳ FSM/robustness review still running.
-- **On FSM review: triage → fix → commit → STOP the loop (goal met), PushNotification the outcome.**
+  - ✅ FSM/robustness review back (1 HIGH, 1 MED, rest clean). Fixed: **HIGH** archival regression (my ITERATE#10 `segment_renders/` move swept the per-segment partials on the `RENDER→COMPOSE` back-edge → broke segmented assembly; now scoped to NOT-`RENDER→COMPOSE` archival transitions) + **MED** `summarizeRenderPlan` misreported a rendered-but-unconfirmed segment as stale (threaded `unconfirmed`/`stale` through). Both verified (archival preserves partial on per-segment back-edge / archives on PACKAGE→COMPOSE; digest flags via buildStateSummary). Reviewer confirmed everything else CLEAN (two-files invariant, lock handler, both new gates no-false-fire, buildQualityDiff null-safety, forceScreenshot threading, no require cycle).
+
+## ✅ v3.8 COMPLETE
+All 9 FSM stages improved + cross-cutting CORE; version 3.8.0; CHANGELOG + CLAUDE.md updated; both adversarial reviews triaged and all real findings fixed & verified. 22 commits on `v3.8/fsm-improvements`. Branch NOT merged (left for the maintainer); NOT live-tested with a real `/vob` run (no source/hyperframes in this environment) — the heavy walker phases (`general`/`longform`/`captions`/`layout`/`render`) should be run on a host with `VOB_WALKER_SOURCE` + ffmpeg + hyperframes before merge. Loop stopped (goal met).
 
 ## Loop bookkeeping
 
