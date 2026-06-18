@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=1920, height=1080" />
+    <title>grade-bw</title>
+
+    <!-- ========================================================================
+         video-vob design-system REFERENCE GRADE — grade-bw
+         Dramatic high-contrast black & white monochrome.
+
+         HOW THE COMPOSER REALIZES A GRADE (two parts):
+           (a) Apply this CSS filter to the scene clip element (the video):
+                 filter: grayscale(1) contrast(1.12) brightness(1.02);
+           (b) Add the overlay layers below as full-frame "clip"/static divs on
+                 tracks ABOVE the video (each its own track):
+                 • OVERLAY 1 — subtle grain: a tiled SVG fractal-noise data-URI
+                   background, mix-blend-mode: overlay, low opacity (~0.08). Gives
+                   the mono image a filmic tooth. (Static; here faded in ~0.4s.)
+                 • OVERLAY 2 — strong vignette: a deeper dark radial gradient
+                   (transparent center to ~0.5 black at corners) for drama. Faded
+                   in ~0.4s.
+
+         In this STANDALONE reference the filter wraps a rich, photo-like
+         .ds-demo-bg (which has strong tonal contrast in COLOR so the grayscale
+         conversion has real lights and darks to dramatize); the grain + vignette
+         overlays ride on top exactly as in the real composition.
+
+         Render contract (shared by every design-system component):
+         1. PURE CSS keyframes — never GSAP. window.__timelines is a no-op stub.
+            The grain is a static SVG data-URI background — NO Math.random, NO
+            network; the noise seed is baked into the data-URI.
+         2. STAGGER WITH the start attribute, NEVER animation-delay.
+         3. Each timed overlay is a "clip" with id + start + duration + a DISTINCT
+            track-index per time-overlapping layer.
+         4. Grades are imagery — no fonts needed.
+         ===================================================================== -->
+
+    <style>
+      *,
+      *::before,
+      *::after {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        width: 1920px;
+        height: 1080px;
+        margin: 0;
+        overflow: hidden;
+        background: transparent;
+      }
+      #stage {
+        position: relative;
+        width: 1920px;
+        height: 1080px;
+        overflow: hidden;
+        background: #000;
+      }
+      /* Graded layer — filter rides the scene video in the real comp. */
+      .ds-grade-wrap {
+        position: absolute;
+        inset: 0;
+        z-index: 0;
+        filter: grayscale(1) contrast(1.12) brightness(1.02);
+      }
+      /* Photo-like scene with bold light-to-dark range IN COLOR (a bright key on a
+         subject, deep shadow foreground) — grayscale then dramatizes a real
+         tonal spread, not a flat gray field. */
+      .ds-demo-bg {
+        position: absolute;
+        inset: 0;
+        background:
+          radial-gradient(40% 52% at 42% 44%, rgba(255, 252, 244, 0.7) 0%, rgba(170, 160, 140, 0.18) 44%, rgba(0, 0, 0, 0) 70%),
+          radial-gradient(50% 60% at 78% 78%, rgba(8, 8, 10, 0.85) 0%, rgba(20, 20, 24, 0) 62%),
+          linear-gradient(0deg, rgba(6, 6, 8, 0.96) 0%, rgba(30, 30, 34, 0.4) 26%, rgba(0, 0, 0, 0) 50%),
+          linear-gradient(196deg, #e6ddcf 0%, #b9b0a0 22%, #6f6859 48%, #34302a 72%, #0b0a09 100%);
+      }
+      /* OVERLAY 1 — subtle film grain (static SVG noise, overlay blend). */
+      .ds-grain {
+        position: absolute;
+        inset: 0;
+        z-index: 2;
+        mix-blend-mode: overlay;
+        background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+        background-size: 160px 160px;
+        animation-name: vob-grain-in;
+        animation-duration: 0.4s;
+        animation-timing-function: ease-out;
+        animation-fill-mode: both;
+        animation-play-state: paused;
+      }
+      /* OVERLAY 2 — strong vignette for drama. */
+      .ds-vignette {
+        position: absolute;
+        inset: 0;
+        z-index: 3;
+        background: radial-gradient(112% 76% at 50% 46%, rgba(0, 0, 0, 0) 44%, rgba(0, 0, 0, 0.5) 100%);
+        animation-name: vob-vignette-in;
+        animation-duration: 0.4s;
+        animation-timing-function: ease-out;
+        animation-fill-mode: both;
+        animation-play-state: paused;
+      }
+      @keyframes vob-grain-in {
+        0% {
+          opacity: 0;
+        }
+        100% {
+          opacity: 0.08;
+        }
+      }
+      @keyframes vob-vignette-in {
+        0% {
+          opacity: 0;
+        }
+        100% {
+          opacity: 1;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div
+      id="stage"
+      data-composition-id="ds-grade-bw"
+      data-timeline-locked
+      data-start="0"
+      data-duration="4"
+      data-fps="30"
+      data-width="1920"
+      data-height="1080"
+    >
+      <div class="ds-grade-wrap">
+        <div class="ds-demo-bg"></div>
+      </div>
+      <div id="ds-grain" class="clip ds-grain" data-start="0" data-duration="4" data-track-index="1"></div>
+      <div id="ds-vignette" class="clip ds-vignette" data-start="0" data-duration="4" data-track-index="2"></div>
+    </div>
+
+    <script>
+      /* Inert timeline stub — render driver calls duration()/pause(); no GSAP. */
+      window.__timelines = window.__timelines || {};
+      window.__timelines["ds-grade-bw"] = {
+        duration: function () {
+          return 4;
+        },
+        pause: function () {},
+      };
+    </script>
+  </body>
+</html>

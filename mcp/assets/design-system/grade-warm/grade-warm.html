@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=1920, height=1080" />
+    <title>grade-warm</title>
+
+    <!-- ========================================================================
+         video-vob design-system REFERENCE GRADE — grade-warm
+         Cozy, warm "golden-hour" look — gently warmed and a touch richer.
+
+         HOW THE COMPOSER REALIZES A GRADE (two parts):
+           (a) Apply this CSS filter to the scene clip element (the video):
+                 filter: sepia(0.16) saturate(1.16) brightness(1.03) hue-rotate(-8deg);
+           (b) Add the overlay layer below as a full-frame "clip" div on a track
+                 ABOVE the video:
+                 • OVERLAY 1 — warm amber tint: a soft amber radial/linear wash,
+                   mix-blend-mode: soft-light, low opacity (~0.3), weighted slightly
+                   to the upper frame like late sun. Faded in ~0.4s.
+
+         In this STANDALONE reference the filter wraps a rich, photo-like
+         .ds-demo-bg; the amber tint overlay rides on top exactly as in the real
+         composition.
+
+         Render contract (shared by every design-system component):
+         1. PURE CSS keyframes — never GSAP. window.__timelines is a no-op stub.
+         2. STAGGER WITH the start attribute, NEVER animation-delay.
+         3. A faded-in overlay is a "clip" with id + start + duration + track-index.
+         4. Grades are imagery — no fonts needed.
+         ===================================================================== -->
+
+    <style>
+      *,
+      *::before,
+      *::after {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        width: 1920px;
+        height: 1080px;
+        margin: 0;
+        overflow: hidden;
+        background: transparent;
+      }
+      #stage {
+        position: relative;
+        width: 1920px;
+        height: 1080px;
+        overflow: hidden;
+        background: #000;
+      }
+      /* Graded layer — filter rides the scene video in the real comp. */
+      .ds-grade-wrap {
+        position: absolute;
+        inset: 0;
+        z-index: 0;
+        filter: sepia(0.16) saturate(1.16) brightness(1.03) hue-rotate(-8deg);
+      }
+      /* Photo-like scene: an indoor/interior feel with a window-lit subject so the
+         warm grade reads as cozy ambient light. */
+      .ds-demo-bg {
+        position: absolute;
+        inset: 0;
+        background:
+          radial-gradient(42% 54% at 40% 44%, rgba(255, 226, 178, 0.5) 0%, rgba(170, 116, 70, 0.16) 46%, rgba(0, 0, 0, 0) 72%),
+          linear-gradient(0deg, rgba(28, 18, 14, 0.92) 0%, rgba(70, 46, 30, 0.34) 28%, rgba(0, 0, 0, 0) 52%),
+          linear-gradient(195deg, #e8c89a 0%, #d9b487 22%, #c79a6a 48%, #8a5e3c 72%, #2c1d14 100%);
+      }
+      /* OVERLAY 1 — warm amber tint (soft-light). */
+      .ds-tint {
+        position: absolute;
+        inset: 0;
+        z-index: 2;
+        mix-blend-mode: soft-light;
+        background:
+          radial-gradient(70% 60% at 50% 24%, rgba(255, 196, 120, 0.95) 0%, rgba(255, 170, 95, 0.4) 48%, rgba(255, 150, 80, 0) 84%),
+          linear-gradient(180deg, rgba(255, 184, 110, 0.55) 0%, rgba(255, 160, 90, 0.18) 60%, rgba(220, 130, 70, 0) 100%);
+        animation-name: vob-tint-in;
+        animation-duration: 0.4s;
+        animation-timing-function: ease-out;
+        animation-fill-mode: both;
+        animation-play-state: paused;
+      }
+      @keyframes vob-tint-in {
+        0% {
+          opacity: 0;
+        }
+        100% {
+          opacity: 0.3;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div
+      id="stage"
+      data-composition-id="ds-grade-warm"
+      data-timeline-locked
+      data-start="0"
+      data-duration="4"
+      data-fps="30"
+      data-width="1920"
+      data-height="1080"
+    >
+      <div class="ds-grade-wrap">
+        <div class="ds-demo-bg"></div>
+      </div>
+      <div id="ds-tint" class="clip ds-tint" data-start="0" data-duration="4" data-track-index="1"></div>
+    </div>
+
+    <script>
+      /* Inert timeline stub — render driver calls duration()/pause(); no GSAP. */
+      window.__timelines = window.__timelines || {};
+      window.__timelines["ds-grade-warm"] = {
+        duration: function () {
+          return 4;
+        },
+        pause: function () {},
+      };
+    </script>
+  </body>
+</html>

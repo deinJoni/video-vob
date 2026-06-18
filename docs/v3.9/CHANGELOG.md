@@ -117,3 +117,31 @@ editorial-critic agent (both adapters), `PLAN.md` (critique pass), the
 `editorial-patterns.md` reference (both adapters), `scripts/port-adapter-docs.js`,
 `scripts/m5-walker.js` (`editorial` phase), and the `3.9.0` version bump
 (`.vob/VERSION`, `package.json`, `mcp/server.js`).
+
+## COMPOSE — design-system kit (the taste-floor lever)
+
+The composer turned `target.design` tokens into CSS with only a font kit + fix recipes
++ QC — no opinionated visual system, so the default read as "AI slop". v3.9 adds a
+first-party, vetted, **per-video-type design system** the composer ADAPTS (mirrors the
+caption-kit mechanism). No new tool / QC code / FSM edge / schema.
+
+- **28 PURE-CSS, token-driven REFERENCE components** under `mcp/assets/design-system/`
+  — 5 titles, 5 lower-thirds, 7 grades, 3 motion presets, 3 furniture (callout×2,
+  end-card), 5 backdrops — all lint-clean (build-verified) + render-verified. Plus
+  `tokens.css` (the `--vob-*` contract) and a generated `manifest.json` whose
+  `video_types` map carries per-preset LOOK bundles (taste `principles[]` + the
+  recommended component per role).
+- **`scripts/build-design-system.js`** — source of truth; LINTS every component
+  (`hyperframes lint`, fails the build on any error = the "vetted" guarantee);
+  `--manifest-only` / `--skip-lint` / `--snapshot`.
+- **`injectDesignKit()`** (`source-symlink.js`) symlinks `compose/design-system` on
+  every save (clone of `injectCaptionKit`, degrade-don't-die); wired into
+  `save-composition.js` (`state.composition.design_system:{linked}`).
+- **Composer wired** — `composer.md` §"Design system kit" (set `--vob-*` tokens from
+  `target.design` → adapt the video_type look's components → grade `filter:` on the
+  scene `<video>` → reuse motion eases → font-substitute → STAGGER VIA `data-start`,
+  not `animation-delay`); `COMPOSE.md` spawn (`video_type` + `design_system`);
+  `lint-rules.md` §Design system kit. Both adapters in sync.
+- Verified: 28 lint-clean, 12 render-verified across social / general / cinematic /
+  podcast, adversarial review (0 blockers / 0 majors, 5 minor fixed). Full ledger:
+  `docs/v3.9/compose-design-system/`.

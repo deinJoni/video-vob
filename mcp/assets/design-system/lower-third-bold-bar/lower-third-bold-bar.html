@@ -1,0 +1,237 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=1080, height=1920" />
+    <title>lower-third-bold-bar</title>
+
+    <!-- ========================================================================
+         video-vob design-system REFERENCE component — lower-third-bold-bar
+         A punchy, high-contrast vertical lower-third for retention/social.
+         A solid accent bar WIPES in from the left carrying the name; the role
+         rides a dark bar below. Enter → dwell → exit, ~5s.
+
+         The composer ADAPTS this technique into compose/index.html; it does NOT
+         copy it verbatim. Rules that apply to EVERY design-system component:
+
+         1. PURE CSS @keyframes — never GSAP. hyperframes' css adapter scrubs a
+            `paused` CSS animation to each rendered frame by setting
+            `animation-delay = -(T - element data-start)`. (window.__timelines is
+            a no-op stub at render; GSAP is not loaded.)
+         2. STAGGER WITH data-start, NEVER animation-delay. Each timed element is
+            its own class="clip" with its own data-start; the runtime hijacks
+            animation-delay to scrub, so children of one element cannot be
+            delay-staggered.
+         3. COLORS via --vob-* tokens (see ../tokens.css), with a literal fallback.
+         4. FONTS use hyperframes' AUTO-RESOLVED families (here "Archivo Black" /
+            "Oswald") — concrete names, NOT var(), and NO font <link>.
+         5. Every timed element carries class="clip" + a stable id + data-start +
+            data-duration + data-track-index (>=1; a distinct track per
+            time-overlapping element); animation-duration == data-duration;
+            animation-fill-mode: both; animation-play-state: paused.
+         ===================================================================== -->
+
+    <style>
+      :root {
+        --vob-bg: #000000;
+        --vob-surface: #14141a;
+        --vob-text: #ffffff;
+        --vob-text-muted: #b8b8c0;
+        --vob-accent: #ff3b30;
+        --vob-safe-bottom: 280px;
+      }
+      *,
+      *::before,
+      *::after {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        width: 1080px;
+        height: 1920px;
+        margin: 0;
+        overflow: hidden;
+        background: transparent;
+      }
+      #stage {
+        position: relative;
+        width: 1080px;
+        height: 1920px;
+        overflow: hidden;
+        background: var(--vob-bg, #000000);
+      }
+      /* Demo backdrop — stands in for the video spine in this standalone
+         reference. Dropped in the real composition, where the lower-third rides
+         over ./source/<clip>.mp4. */
+      .ds-demo-bg {
+        position: absolute;
+        inset: 0;
+        z-index: 0;
+        background: linear-gradient(205deg, #20232b 0%, #101218 46%, #050507 100%);
+      }
+      /* Lower-third block, anchored well above the bottom safe band. */
+      .ds-lt {
+        position: absolute;
+        left: 0;
+        right: 0;
+        bottom: calc(var(--vob-safe-bottom, 280px) + 60px);
+        z-index: 2;
+        padding-left: 84px;
+      }
+      /* Solid accent bar carrying the NAME — wipes in from the left. */
+      .ds-name-bar {
+        display: inline-block;
+        transform-origin: left center;
+        background: var(--vob-accent, #ff3b30);
+        padding: 18px 44px 22px 40px;
+        box-shadow: 0 18px 48px rgba(0, 0, 0, 0.45);
+        animation-name: vob-bar-wipe;
+        animation-duration: 5s;
+        animation-timing-function: linear;
+        animation-fill-mode: both;
+        animation-play-state: paused;
+        will-change: transform, opacity;
+      }
+      .ds-name {
+        margin: 0;
+        font-family: "Archivo Black", "Oswald", sans-serif;
+        font-weight: 400; /* Archivo Black is single-weight */
+        text-transform: uppercase;
+        letter-spacing: 0.01em;
+        line-height: 0.96;
+        font-size: 60px;
+        color: var(--vob-bg, #000000);
+        /* the text fades in slightly behind the bar so it doesn't streak */
+        animation-name: vob-name-in;
+        animation-duration: 5s;
+        animation-timing-function: linear;
+        animation-fill-mode: both;
+        animation-play-state: paused;
+        white-space: nowrap;
+      }
+      /* Dark role bar below — slides in just after the accent bar. */
+      .ds-role-bar {
+        display: inline-block;
+        margin-top: 14px;
+        transform-origin: left center;
+        background: var(--vob-surface, #14141a);
+        padding: 12px 34px 14px 40px;
+        box-shadow: 0 14px 34px rgba(0, 0, 0, 0.4);
+        animation-name: vob-rolebar-in;
+        animation-duration: 4.62s;
+        animation-timing-function: linear;
+        animation-fill-mode: both;
+        animation-play-state: paused;
+        will-change: transform, opacity;
+      }
+      .ds-role {
+        margin: 0;
+        font-family: "Oswald", sans-serif;
+        font-weight: 500;
+        text-transform: uppercase;
+        letter-spacing: 0.16em;
+        font-size: 32px;
+        color: var(--vob-text-muted, #b8b8c0);
+        white-space: nowrap;
+      }
+      @keyframes vob-bar-wipe {
+        0% {
+          transform: scaleX(0);
+          opacity: 0;
+          animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+        }
+        9% {
+          transform: scaleX(1);
+          opacity: 1;
+        }
+        90% {
+          transform: scaleX(1);
+          opacity: 1;
+          animation-timing-function: cubic-bezier(0.55, 0, 0.85, 0.2);
+        }
+        100% {
+          transform: scaleX(0);
+          opacity: 0;
+        }
+      }
+      @keyframes vob-name-in {
+        0% {
+          opacity: 0;
+          transform: translateX(18px);
+        }
+        7% {
+          opacity: 0;
+          transform: translateX(18px);
+          animation-timing-function: cubic-bezier(0.2, 0.8, 0.3, 1);
+        }
+        13% {
+          opacity: 1;
+          transform: translateX(0);
+        }
+        90% {
+          opacity: 1;
+          transform: translateX(0);
+        }
+        100% {
+          opacity: 0;
+          transform: translateX(0);
+        }
+      }
+      @keyframes vob-rolebar-in {
+        0% {
+          opacity: 0;
+          transform: translateX(-40px) scaleX(0.7);
+          animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+        }
+        12% {
+          opacity: 1;
+          transform: translateX(0) scaleX(1);
+        }
+        90% {
+          opacity: 1;
+          transform: translateX(0) scaleX(1);
+          animation-timing-function: cubic-bezier(0.55, 0, 0.85, 0.2);
+        }
+        100% {
+          opacity: 0;
+          transform: translateX(-30px) scaleX(1);
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div
+      id="stage"
+      data-composition-id="ds-lower-third-bold-bar"
+      data-timeline-locked
+      data-start="0"
+      data-duration="5"
+      data-fps="30"
+      data-width="1080"
+      data-height="1920"
+    >
+      <div class="ds-demo-bg"></div>
+      <div class="ds-lt">
+        <div id="ds-name-bar" class="clip ds-name-bar" data-start="0" data-duration="5" data-track-index="1">
+          <h1 id="ds-name" class="clip ds-name" data-start="0" data-duration="5" data-track-index="2">JORDAN REYES</h1>
+        </div>
+        <div id="ds-role-bar" class="clip ds-role-bar" data-start="0.38" data-duration="4.62" data-track-index="3">
+          <p id="ds-role" class="ds-role">FOUNDER &amp; CEO, NORTHWIND</p>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      /* Inert timeline stub. The hyperframes render driver calls duration() and
+         pause() unconditionally; a pure-CSS component needs no real timeline and
+         loads no GSAP. duration() returns the master length (data-duration). */
+      window.__timelines = window.__timelines || {};
+      window.__timelines["ds-lower-third-bold-bar"] = {
+        duration: function () {
+          return 5;
+        },
+        pause: function () {},
+      };
+    </script>
+  </body>
+</html>

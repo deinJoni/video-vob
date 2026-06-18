@@ -1,0 +1,292 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=1080, height=1920" />
+    <title>end-card-cta</title>
+
+    <!-- ========================================================================
+         video-vob design-system REFERENCE component — end-card-cta
+         A strong vertical (9:16) END CARD owning the last ~3s of a social short:
+         a big slammed headline ("FOLLOW FOR MORE"), a handle line (@yourhandle), and
+         an accent button-shaped pill ("Subscribe"/"Follow"), over a subtle backdrop
+         panel. Bold, punchy, staggered entrance (slam + scale), then a brief settle.
+
+         The composer ADAPTS this technique into compose/index.html; it does NOT
+         copy it verbatim. Rules that apply to EVERY design-system component:
+
+         1. PURE CSS @keyframes — never GSAP. hyperframes' css adapter scrubs a
+            `paused` CSS animation to each frame via animation-delay = -(T - data-start).
+         2. STAGGER WITH data-start, NEVER animation-delay. The panel, headline,
+            handle, and button are separate clips at data-start 0 / 0.12 / 0.26 / 0.4.
+         3. COLORS via --vob-* tokens (see ../tokens.css) with a literal fallback.
+         4. FONTS use hyperframes' AUTO-RESOLVED families (here "Archivo Black" for
+            the headline / "Inter" for the supporting lines) — concrete names, NOT
+            var(), and NO font <link>.
+         5. Every timed element carries class="clip" + a stable id + data-start +
+            data-duration + data-track-index (>=1; a distinct track per
+            time-overlapping element); animation-duration == data-duration;
+            animation-fill-mode: both; animation-play-state: paused.
+         ===================================================================== -->
+
+    <style>
+      :root {
+        --vob-bg: #000000;
+        --vob-surface: #14141a;
+        --vob-text: #ffffff;
+        --vob-text-muted: #b8b8c0;
+        --vob-accent: #ff3b30;
+        --vob-accent-2: #ffd60a;
+        --vob-safe-top: 200px;
+        --vob-safe-bottom: 280px;
+      }
+      *,
+      *::before,
+      *::after {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        width: 1080px;
+        height: 1920px;
+        margin: 0;
+        overflow: hidden;
+        background: transparent;
+      }
+      #stage {
+        position: relative;
+        width: 1080px;
+        height: 1920px;
+        overflow: hidden;
+        background: var(--vob-bg, #000000);
+      }
+      /* Demo backdrop — stands in for the video spine in this standalone reference.
+         Dropped in the real composition (the end card may ride over the final clip
+         or its own solid backdrop). */
+      .ds-demo-bg {
+        position: absolute;
+        inset: 0;
+        z-index: 0;
+        background: radial-gradient(120% 70% at 50% 42%, #26272f 0%, #0b0b0f 60%, #000 100%);
+      }
+      /* Subtle raised backdrop panel that holds the CTA together, centered between
+         the safe bands. */
+      .ds-panel {
+        position: absolute;
+        left: 70px;
+        right: 70px;
+        top: 560px;
+        z-index: 1;
+        height: 820px;
+        background: var(--vob-surface, #14141a);
+        border-radius: 40px;
+        border: 2px solid rgba(255, 255, 255, 0.06);
+        box-shadow: 0 40px 110px rgba(0, 0, 0, 0.55);
+        transform-origin: 50% 50%;
+        animation-name: vob-panel-in;
+        animation-duration: 3s;
+        animation-timing-function: linear;
+        animation-fill-mode: both;
+        animation-play-state: paused;
+        will-change: transform, opacity;
+      }
+      /* Big slammed headline. */
+      .ds-headline {
+        position: absolute;
+        left: 110px;
+        right: 110px;
+        top: 660px;
+        z-index: 2;
+        margin: 0;
+        text-align: center;
+        font-family: "Archivo Black", "Oswald", sans-serif;
+        font-weight: 400; /* Archivo Black is single-weight */
+        text-transform: uppercase;
+        letter-spacing: 0.005em;
+        line-height: 0.9;
+        font-size: 124px;
+        color: var(--vob-text, #ffffff);
+        text-shadow: 0 12px 44px rgba(0, 0, 0, 0.55);
+        transform-origin: 50% 70%;
+        animation-name: vob-headline-slam;
+        animation-duration: 2.88s;
+        animation-timing-function: linear;
+        animation-fill-mode: both;
+        animation-play-state: paused;
+        will-change: transform, opacity;
+      }
+      .ds-headline .ds-accent-word {
+        color: var(--vob-accent, #ff3b30);
+      }
+      /* Handle line. */
+      .ds-handle {
+        position: absolute;
+        left: 110px;
+        right: 110px;
+        top: 1018px;
+        z-index: 2;
+        margin: 0;
+        text-align: center;
+        font-family: "Inter", "Helvetica Neue", sans-serif;
+        font-weight: 600;
+        letter-spacing: 0.04em;
+        font-size: 44px;
+        color: var(--vob-text-muted, #b8b8c0);
+        animation-name: vob-rise-in;
+        animation-duration: 2.74s;
+        animation-timing-function: linear;
+        animation-fill-mode: both;
+        animation-play-state: paused;
+        will-change: transform, opacity;
+      }
+      /* Accent button-shaped pill. */
+      .ds-button {
+        position: absolute;
+        left: 50%;
+        top: 1180px;
+        z-index: 2;
+        transform: translateX(-50%);
+        padding: 30px 76px;
+        background: var(--vob-accent, #ff3b30);
+        border-radius: 999px;
+        box-shadow: 0 22px 56px rgba(0, 0, 0, 0.5);
+        transform-origin: 50% 50%;
+        animation-name: vob-button-pop;
+        animation-duration: 2.6s;
+        animation-timing-function: linear;
+        animation-fill-mode: both;
+        animation-play-state: paused;
+        will-change: transform, opacity;
+      }
+      .ds-button-text {
+        font-family: "Inter", "Helvetica Neue", sans-serif;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        font-size: 46px;
+        line-height: 1;
+        color: var(--vob-bg, #000000);
+        white-space: nowrap;
+      }
+      /* panel: scale/fade in (0 -> 9% of 3s), hold, settle out (last ~10%). */
+      @keyframes vob-panel-in {
+        0% {
+          opacity: 0;
+          transform: scale(0.94);
+          animation-timing-function: cubic-bezier(0.2, 0.85, 0.25, 1);
+        }
+        9% {
+          opacity: 1;
+          transform: scale(1);
+        }
+        90% {
+          opacity: 1;
+          transform: scale(1);
+          animation-timing-function: ease-in;
+        }
+        100% {
+          opacity: 0;
+          transform: scale(0.98);
+        }
+      }
+      /* headline: slam up + scale with overshoot (window is its own 2.88s lifetime). */
+      @keyframes vob-headline-slam {
+        0% {
+          opacity: 0;
+          transform: translateY(56px) scale(0.88);
+          animation-timing-function: cubic-bezier(0.2, 0.9, 0.2, 1);
+        }
+        10% {
+          opacity: 1;
+          transform: translateY(0) scale(1);
+        }
+        88% {
+          opacity: 1;
+          transform: translateY(0) scale(1);
+          animation-timing-function: ease-in;
+        }
+        100% {
+          opacity: 0;
+          transform: translateY(-18px) scale(0.98);
+        }
+      }
+      /* handle: gentle rise + fade. */
+      @keyframes vob-rise-in {
+        0% {
+          opacity: 0;
+          transform: translateY(26px);
+          animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+        }
+        12% {
+          opacity: 1;
+          transform: translateY(0);
+        }
+        88% {
+          opacity: 1;
+          transform: translateY(0);
+          animation-timing-function: ease-in;
+        }
+        100% {
+          opacity: 0;
+          transform: translateY(0);
+        }
+      }
+      /* button: pop with overshoot. */
+      @keyframes vob-button-pop {
+        0% {
+          opacity: 0;
+          transform: translateX(-50%) scale(0.82);
+          animation-timing-function: cubic-bezier(0.2, 0.9, 0.2, 1);
+        }
+        12% {
+          opacity: 1;
+          transform: translateX(-50%) scale(1);
+        }
+        88% {
+          opacity: 1;
+          transform: translateX(-50%) scale(1);
+          animation-timing-function: ease-in;
+        }
+        100% {
+          opacity: 0;
+          transform: translateX(-50%) scale(0.96);
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div
+      id="stage"
+      data-composition-id="ds-end-card-cta"
+      data-timeline-locked
+      data-start="0"
+      data-duration="3"
+      data-fps="30"
+      data-width="1080"
+      data-height="1920"
+    >
+      <div class="ds-demo-bg"></div>
+      <div id="ds-end-card-panel" class="clip ds-panel" data-start="0" data-duration="3" data-track-index="1"></div>
+      <h1 id="ds-end-card-headline" class="clip ds-headline" data-start="0.12" data-duration="2.88" data-track-index="2">
+        FOLLOW<br /><span class="ds-accent-word">FOR MORE</span>
+      </h1>
+      <p id="ds-end-card-handle" class="clip ds-handle" data-start="0.26" data-duration="2.74" data-track-index="3">@yourhandle</p>
+      <div id="ds-end-card-button" class="clip ds-button" data-start="0.4" data-duration="2.6" data-track-index="4">
+        <span class="ds-button-text">Follow</span>
+      </div>
+    </div>
+
+    <script>
+      /* Inert timeline stub. The hyperframes render driver calls duration() and
+         pause() unconditionally; a pure-CSS component needs no real timeline and
+         loads no GSAP. duration() returns the master length (data-duration). */
+      window.__timelines = window.__timelines || {};
+      window.__timelines["ds-end-card-cta"] = {
+        duration: function () {
+          return 3;
+        },
+        pause: function () {},
+      };
+    </script>
+  </body>
+</html>

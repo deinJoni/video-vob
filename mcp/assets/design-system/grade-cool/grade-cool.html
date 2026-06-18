@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=1920, height=1080" />
+    <title>grade-cool</title>
+
+    <!-- ========================================================================
+         video-vob design-system REFERENCE GRADE — grade-cool
+         Crisp, cool "blue-hour / clean tech" look — slightly cooled and clean.
+
+         HOW THE COMPOSER REALIZES A GRADE (two parts):
+           (a) Apply this CSS filter to the scene clip element (the video):
+                 filter: saturate(1.06) contrast(1.03) hue-rotate(10deg);
+           (b) Add the overlay layer below as a full-frame "clip" div on a track
+                 ABOVE the video:
+                 • OVERLAY 1 — cool blue tint: a soft blue wash, mix-blend-mode:
+                   soft-light, low opacity (~0.3), weighted slightly to the shadows
+                   / lower frame. Faded in ~0.4s.
+
+         In this STANDALONE reference the filter wraps a rich, photo-like
+         .ds-demo-bg; the blue tint overlay rides on top exactly as in the real
+         composition.
+
+         Render contract (shared by every design-system component):
+         1. PURE CSS keyframes — never GSAP. window.__timelines is a no-op stub.
+         2. STAGGER WITH the start attribute, NEVER animation-delay.
+         3. A faded-in overlay is a "clip" with id + start + duration + track-index.
+         4. Grades are imagery — no fonts needed.
+         ===================================================================== -->
+
+    <style>
+      *,
+      *::before,
+      *::after {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        width: 1920px;
+        height: 1080px;
+        margin: 0;
+        overflow: hidden;
+        background: transparent;
+      }
+      #stage {
+        position: relative;
+        width: 1920px;
+        height: 1080px;
+        overflow: hidden;
+        background: #000;
+      }
+      /* Graded layer — filter rides the scene video in the real comp. */
+      .ds-grade-wrap {
+        position: absolute;
+        inset: 0;
+        z-index: 0;
+        filter: saturate(1.06) contrast(1.03) hue-rotate(10deg);
+      }
+      /* Photo-like scene: a cool dusk / modern exterior so the cool grade reads as
+         crisp, not sickly — keep some warm subject light to push against. */
+      .ds-demo-bg {
+        position: absolute;
+        inset: 0;
+        background:
+          radial-gradient(40% 50% at 56% 50%, rgba(225, 232, 240, 0.45) 0%, rgba(120, 150, 180, 0.16) 48%, rgba(0, 0, 0, 0) 72%),
+          radial-gradient(34% 40% at 30% 62%, rgba(255, 196, 140, 0.32) 0%, rgba(180, 120, 80, 0) 64%),
+          linear-gradient(0deg, rgba(10, 14, 22, 0.94) 0%, rgba(24, 34, 50, 0.36) 28%, rgba(0, 0, 0, 0) 52%),
+          linear-gradient(193deg, #b7c9dc 0%, #9fb4cc 22%, #7e93af 48%, #475a76 72%, #1a2230 100%);
+      }
+      /* OVERLAY 1 — cool blue tint (soft-light). */
+      .ds-tint {
+        position: absolute;
+        inset: 0;
+        z-index: 2;
+        mix-blend-mode: soft-light;
+        background:
+          radial-gradient(72% 60% at 50% 76%, rgba(120, 170, 230, 0.95) 0%, rgba(90, 140, 210, 0.4) 50%, rgba(70, 120, 190, 0) 86%),
+          linear-gradient(0deg, rgba(90, 150, 220, 0.55) 0%, rgba(110, 160, 220, 0.18) 60%, rgba(140, 180, 230, 0) 100%);
+        animation-name: vob-tint-in;
+        animation-duration: 0.4s;
+        animation-timing-function: ease-out;
+        animation-fill-mode: both;
+        animation-play-state: paused;
+      }
+      @keyframes vob-tint-in {
+        0% {
+          opacity: 0;
+        }
+        100% {
+          opacity: 0.3;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div
+      id="stage"
+      data-composition-id="ds-grade-cool"
+      data-timeline-locked
+      data-start="0"
+      data-duration="4"
+      data-fps="30"
+      data-width="1920"
+      data-height="1080"
+    >
+      <div class="ds-grade-wrap">
+        <div class="ds-demo-bg"></div>
+      </div>
+      <div id="ds-tint" class="clip ds-tint" data-start="0" data-duration="4" data-track-index="1"></div>
+    </div>
+
+    <script>
+      /* Inert timeline stub — render driver calls duration()/pause(); no GSAP. */
+      window.__timelines = window.__timelines || {};
+      window.__timelines["ds-grade-cool"] = {
+        duration: function () {
+          return 4;
+        },
+        pause: function () {},
+      };
+    </script>
+  </body>
+</html>

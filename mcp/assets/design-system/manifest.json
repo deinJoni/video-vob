@@ -1,0 +1,955 @@
+{
+  "kind": "video-vob-design-kit",
+  "verified_with_hyperframes": "0.6.112",
+  "note": "First-party, PURE-CSS, token-parameterized REFERENCE design components per video-type. ADAPT the technique; never copy verbatim. Set the --vob-* tokens (see tokens.css) once on your composition root from target.design, substitute each component's concrete font family with target.design.typography (load ./fonts.css for house faces), and re-time elements to your scene windows. Stagger with data-start (NEVER animation-delay — the runtime hijacks it to scrub paused CSS animations). See README.md.",
+  "token_contract": "tokens.css",
+  "tokens": [
+    "vob-bg",
+    "vob-surface",
+    "vob-text",
+    "vob-text-muted",
+    "vob-accent",
+    "vob-accent-2",
+    "vob-safe-top",
+    "vob-safe-bottom"
+  ],
+  "kinds": [
+    "title",
+    "lower_third",
+    "grade",
+    "motion",
+    "backdrop",
+    "callout",
+    "end_card"
+  ],
+  "auto_resolved_fonts": [
+    "League Gothic",
+    "Archivo Black",
+    "Oswald",
+    "Montserrat",
+    "Poppins",
+    "Outfit",
+    "Open Sans",
+    "Lato",
+    "Roboto",
+    "Nunito",
+    "Inter",
+    "Playfair Display",
+    "EB Garamond",
+    "JetBrains Mono",
+    "IBM Plex Mono",
+    "Source Code Pro",
+    "Space Mono",
+    "Noto Sans JP"
+  ],
+  "video_types": {
+    "social-short": {
+      "look": "punchy, high-energy, retention-first",
+      "principles": [
+        "Big heavy condensed display type (League Gothic / Archivo Black), UPPERCASE, tight leading (~0.9).",
+        "ONE dominant accent against near-black; high contrast; saturated.",
+        "Fast snappy motion — slam/scale-in 0.25–0.45s, nothing lingers; energy beats can whip/punch.",
+        "Titles ride the upper third (above a talking head); captions are bold-pop lower-third.",
+        "Generous size over generous spacing — fill the frame, it's watched small."
+      ],
+      "slots": {
+        "title": {
+          "default": "title-bold-slam",
+          "alternates": [
+            "title-kinetic-stack"
+          ]
+        },
+        "lower_third": {
+          "default": "lower-third-bold-bar",
+          "alternates": []
+        },
+        "grade": {
+          "default": "grade-punch",
+          "alternates": [
+            "grade-teal-orange"
+          ]
+        },
+        "motion": {
+          "default": "motion-fast-snap",
+          "alternates": []
+        },
+        "backdrop": {
+          "default": "backdrop-spotlight",
+          "alternates": [
+            "backdrop-gradient-sweep"
+          ]
+        },
+        "end_card": {
+          "default": "end-card-cta",
+          "alternates": []
+        }
+      },
+      "transition_guidance": "Cut-heavy; reserve whip_pan / zoom_punch (≤0.35s) for energy beats."
+    },
+    "long-form": {
+      "look": "clean editorial, readable, chaptered",
+      "principles": [
+        "Calm grotesque headlines (Hanken Grotesk / Outfit) with generous whitespace; sentence or title case.",
+        "Restrained, soft motion (0.4–0.6s ease); let content breathe.",
+        "Chapter/section cards at boundaries; lower-thirds introduce speakers; cool blue accent.",
+        "16:9 safe margins; never crowd the edges; one idea per card."
+      ],
+      "slots": {
+        "title": {
+          "default": "title-clean-kicker",
+          "alternates": []
+        },
+        "lower_third": {
+          "default": "lower-third-accent-edge",
+          "alternates": [
+            "lower-third-name-role"
+          ]
+        },
+        "grade": {
+          "default": "grade-clean",
+          "alternates": [
+            "grade-warm"
+          ]
+        },
+        "motion": {
+          "default": "motion-medium-soft",
+          "alternates": []
+        },
+        "backdrop": {
+          "default": "backdrop-gradient-sweep",
+          "alternates": []
+        },
+        "end_card": {
+          "default": "end-card-cta",
+          "alternates": []
+        }
+      },
+      "transition_guidance": "cut / dip between scenes; crossfade at section boundaries."
+    },
+    "cinematic": {
+      "look": "filmic, restrained, elegant (24fps)",
+      "principles": [
+        "Refined serif display (Playfair Display) + serif body (EB Garamond); lots of negative space.",
+        "Slow, smooth motion (0.7–1.0s, gentle ease); long holds; nothing snappy.",
+        "Letterbox feel; desaturated/teal-orange grade; muted gold accent; small minimal lower-thirds.",
+        "Center or rule-of-thirds compositions; type is small and confident, never shouting."
+      ],
+      "slots": {
+        "title": {
+          "default": "title-editorial-serif",
+          "alternates": []
+        },
+        "lower_third": {
+          "default": "lower-third-serif-minimal",
+          "alternates": []
+        },
+        "grade": {
+          "default": "grade-film-desat",
+          "alternates": [
+            "grade-teal-orange"
+          ]
+        },
+        "motion": {
+          "default": "motion-slow-cinematic",
+          "alternates": []
+        },
+        "backdrop": {
+          "default": "backdrop-film-bars",
+          "alternates": []
+        }
+      },
+      "transition_guidance": "cut / dip; slow crossfade or focus_pull between acts; never whip/zoom."
+    },
+    "tutorial": {
+      "look": "clear, functional, high-legibility",
+      "principles": [
+        "Plain sans (Inter) headlines + body; mono (JetBrains Mono) for code/keys/numbers.",
+        "Step indicators and callouts that POINT at the thing; never decorative.",
+        "Soft, quick motion; green 'go/correct' accent; high text contrast on solid panels.",
+        "Keep the demo readable — overlays hug a safe edge, never cover the action."
+      ],
+      "slots": {
+        "title": {
+          "default": "title-clean-kicker",
+          "alternates": []
+        },
+        "lower_third": {
+          "default": "lower-third-pill",
+          "alternates": []
+        },
+        "grade": {
+          "default": "grade-clean",
+          "alternates": []
+        },
+        "motion": {
+          "default": "motion-medium-soft",
+          "alternates": []
+        },
+        "callout": {
+          "default": "callout-arrow-pill",
+          "alternates": [
+            "callout-number-step"
+          ]
+        },
+        "backdrop": {
+          "default": "backdrop-grid",
+          "alternates": []
+        }
+      },
+      "transition_guidance": "cut / dip; slide for step-to-step; avoid flashy transitions."
+    },
+    "podcast": {
+      "look": "minimal, speaker-forward, quotable",
+      "principles": [
+        "Calm grotesque (Hanken Grotesk); big pull-quote cards; speaker name + role lower-thirds.",
+        "Soft medium motion; muted purple accent; lots of stillness (it's talking heads).",
+        "Frame the speaker; keep furniture minimal; one quote on screen at a time."
+      ],
+      "slots": {
+        "title": {
+          "default": "title-quote-card",
+          "alternates": []
+        },
+        "lower_third": {
+          "default": "lower-third-name-role",
+          "alternates": []
+        },
+        "grade": {
+          "default": "grade-clean",
+          "alternates": [
+            "grade-warm"
+          ]
+        },
+        "motion": {
+          "default": "motion-medium-soft",
+          "alternates": []
+        },
+        "backdrop": {
+          "default": "backdrop-soft-studio",
+          "alternates": []
+        }
+      },
+      "transition_guidance": "cut / dip; gentle crossfade between segments."
+    },
+    "general": {
+      "look": "balanced, versatile, clean",
+      "principles": [
+        "Neutral sans (Inter / Outfit); moderate weight contrast; one clear accent.",
+        "Medium-soft motion (0.4–0.6s); comfortable margins; legible at any size.",
+        "Adapt density to platform: tighter & bolder if vertical, airier if 16:9."
+      ],
+      "slots": {
+        "title": {
+          "default": "title-clean-kicker",
+          "alternates": [
+            "title-bold-slam"
+          ]
+        },
+        "lower_third": {
+          "default": "lower-third-accent-edge",
+          "alternates": [
+            "lower-third-pill"
+          ]
+        },
+        "grade": {
+          "default": "grade-clean",
+          "alternates": [
+            "grade-warm",
+            "grade-cool"
+          ]
+        },
+        "motion": {
+          "default": "motion-medium-soft",
+          "alternates": []
+        },
+        "backdrop": {
+          "default": "backdrop-gradient-sweep",
+          "alternates": [
+            "backdrop-spotlight"
+          ]
+        }
+      },
+      "transition_guidance": "cut / crossfade / dip — match the destination platform's energy."
+    }
+  },
+  "components": {
+    "title-bold-slam": {
+      "kind": "title",
+      "file": "title-bold-slam/title-bold-slam.html",
+      "files": [
+        "title-bold-slam/title-bold-slam.html"
+      ],
+      "suited_for": [
+        "social-short",
+        "general"
+      ],
+      "dims": "1080x1920",
+      "fonts": [
+        "League Gothic",
+        "Oswald"
+      ],
+      "tokens_used": [
+        "vob-accent",
+        "vob-bg",
+        "vob-safe-top",
+        "vob-text"
+      ],
+      "pure_css": true,
+      "has_keyframes": true,
+      "lint": "clean",
+      "bytes": 7391,
+      "note": "Punchy full-frame title: heavy condensed caps, accent 2nd line + accent rule, slam-in → hold → slam-out. Retention/social default."
+    },
+    "title-clean-kicker": {
+      "kind": "title",
+      "file": "title-clean-kicker/title-clean-kicker.html",
+      "files": [
+        "title-clean-kicker/title-clean-kicker.html"
+      ],
+      "suited_for": [
+        "long-form",
+        "tutorial",
+        "general"
+      ],
+      "dims": "1920x1080",
+      "fonts": [
+        "Inter",
+        "Outfit",
+        "Montserrat"
+      ],
+      "tokens_used": [
+        "vob-accent",
+        "vob-bg",
+        "vob-text"
+      ],
+      "pure_css": true,
+      "has_keyframes": true,
+      "lint": "clean",
+      "bytes": 7139,
+      "note": "Editorial left-aligned title: accent UPPERCASE tracked kicker over a large clean headline that rises in; thin accent underline. Calm, whitespace-heavy."
+    },
+    "title-editorial-serif": {
+      "kind": "title",
+      "file": "title-editorial-serif/title-editorial-serif.html",
+      "files": [
+        "title-editorial-serif/title-editorial-serif.html"
+      ],
+      "suited_for": [
+        "cinematic"
+      ],
+      "dims": "1920x1080",
+      "fonts": [
+        "Playfair Display",
+        "EB Garamond"
+      ],
+      "tokens_used": [
+        "vob-accent",
+        "vob-bg",
+        "vob-text",
+        "vob-text-muted"
+      ],
+      "pure_css": true,
+      "has_keyframes": true,
+      "lint": "clean",
+      "bytes": 6617,
+      "note": "Cinematic centered serif (Playfair) with a thin rule + italic subtitle; slow scale-fade, maximal negative space, muted gold accent."
+    },
+    "title-quote-card": {
+      "kind": "title",
+      "file": "title-quote-card/title-quote-card.html",
+      "files": [
+        "title-quote-card/title-quote-card.html"
+      ],
+      "suited_for": [
+        "podcast"
+      ],
+      "dims": "1920x1080",
+      "fonts": [
+        "Playfair Display",
+        "EB Garamond",
+        "Inter"
+      ],
+      "tokens_used": [
+        "vob-accent",
+        "vob-bg",
+        "vob-text",
+        "vob-text-muted"
+      ],
+      "pure_css": true,
+      "has_keyframes": true,
+      "lint": "clean",
+      "bytes": 7244,
+      "note": "Pull-quote card: big accent quote glyph, serif quote, attribution line (name · role). Soft fade+rise. Podcast/long-form."
+    },
+    "title-kinetic-stack": {
+      "kind": "title",
+      "file": "title-kinetic-stack/title-kinetic-stack.html",
+      "files": [
+        "title-kinetic-stack/title-kinetic-stack.html"
+      ],
+      "suited_for": [
+        "social-short"
+      ],
+      "dims": "1080x1920",
+      "fonts": [
+        "League Gothic",
+        "Oswald"
+      ],
+      "tokens_used": [
+        "vob-accent",
+        "vob-bg",
+        "vob-safe-top",
+        "vob-text"
+      ],
+      "pure_css": true,
+      "has_keyframes": true,
+      "lint": "clean",
+      "bytes": 5194,
+      "note": "3 heavy condensed-caps lines slam in staggered (data-start), middle line in accent. Energetic vertical social title."
+    },
+    "lower-third-bold-bar": {
+      "kind": "lower_third",
+      "file": "lower-third-bold-bar/lower-third-bold-bar.html",
+      "files": [
+        "lower-third-bold-bar/lower-third-bold-bar.html"
+      ],
+      "suited_for": [
+        "social-short"
+      ],
+      "dims": "1080x1920",
+      "fonts": [
+        "Archivo Black",
+        "Oswald"
+      ],
+      "tokens_used": [
+        "vob-accent",
+        "vob-bg",
+        "vob-safe-bottom",
+        "vob-surface",
+        "vob-text-muted"
+      ],
+      "pure_css": true,
+      "has_keyframes": true,
+      "lint": "clean",
+      "bytes": 8039,
+      "note": "Heavy uppercase name on a solid accent bar that wipes in from the left; role on a dark bar below. Punchy, high-contrast (vertical)."
+    },
+    "lower-third-accent-edge": {
+      "kind": "lower_third",
+      "file": "lower-third-accent-edge/lower-third-accent-edge.html",
+      "files": [
+        "lower-third-accent-edge/lower-third-accent-edge.html"
+      ],
+      "suited_for": [
+        "long-form",
+        "general"
+      ],
+      "dims": "1920x1080",
+      "fonts": [
+        "Outfit",
+        "Montserrat"
+      ],
+      "tokens_used": [
+        "vob-accent",
+        "vob-bg",
+        "vob-safe-bottom",
+        "vob-surface",
+        "vob-text",
+        "vob-text-muted"
+      ],
+      "pure_css": true,
+      "has_keyframes": true,
+      "lint": "clean",
+      "bytes": 6590,
+      "note": "Name + muted role on a translucent dark pill with a thick accent left edge; slide+fade in. Clean editorial."
+    },
+    "lower-third-serif-minimal": {
+      "kind": "lower_third",
+      "file": "lower-third-serif-minimal/lower-third-serif-minimal.html",
+      "files": [
+        "lower-third-serif-minimal/lower-third-serif-minimal.html"
+      ],
+      "suited_for": [
+        "cinematic"
+      ],
+      "dims": "1920x1080",
+      "fonts": [
+        "Playfair Display",
+        "EB Garamond"
+      ],
+      "tokens_used": [
+        "vob-accent",
+        "vob-bg",
+        "vob-safe-bottom",
+        "vob-text",
+        "vob-text-muted"
+      ],
+      "pure_css": true,
+      "has_keyframes": true,
+      "lint": "clean",
+      "bytes": 6016,
+      "note": "Letter-spaced Playfair name + thin rule + italic muted role; fade-rise only. Elegant/cinematic."
+    },
+    "lower-third-name-role": {
+      "kind": "lower_third",
+      "file": "lower-third-name-role/lower-third-name-role.html",
+      "files": [
+        "lower-third-name-role/lower-third-name-role.html"
+      ],
+      "suited_for": [
+        "podcast",
+        "long-form"
+      ],
+      "dims": "1920x1080",
+      "fonts": [
+        "Outfit",
+        "Montserrat"
+      ],
+      "tokens_used": [
+        "vob-accent",
+        "vob-bg",
+        "vob-safe-bottom",
+        "vob-text",
+        "vob-text-muted"
+      ],
+      "pure_css": true,
+      "has_keyframes": true,
+      "lint": "clean",
+      "bytes": 6387,
+      "note": "Two-line speaker intro: accent tick + large name + uppercase muted role; gentle slide-up + fade."
+    },
+    "lower-third-pill": {
+      "kind": "lower_third",
+      "file": "lower-third-pill/lower-third-pill.html",
+      "files": [
+        "lower-third-pill/lower-third-pill.html"
+      ],
+      "suited_for": [
+        "tutorial",
+        "general"
+      ],
+      "dims": "1920x1080",
+      "fonts": [
+        "Inter"
+      ],
+      "tokens_used": [
+        "vob-accent",
+        "vob-bg",
+        "vob-safe-bottom",
+        "vob-surface",
+        "vob-text"
+      ],
+      "pure_css": true,
+      "has_keyframes": true,
+      "lint": "clean",
+      "bytes": 4746,
+      "note": "Rounded pill with a leading accent dot + single label; pop-in (scale + fade). Friendly/functional."
+    },
+    "grade-punch": {
+      "kind": "grade",
+      "file": "grade-punch/grade-punch.html",
+      "files": [
+        "grade-punch/grade-punch.html"
+      ],
+      "suited_for": [
+        "social-short"
+      ],
+      "dims": "1920x1080",
+      "fonts": [],
+      "tokens_used": [],
+      "pure_css": true,
+      "has_keyframes": true,
+      "lint": "clean",
+      "bytes": 4926,
+      "note": "High-contrast vivid: filter contrast/saturate/brightness + subtle vignette. Punchy."
+    },
+    "grade-teal-orange": {
+      "kind": "grade",
+      "file": "grade-teal-orange/grade-teal-orange.html",
+      "files": [
+        "grade-teal-orange/grade-teal-orange.html"
+      ],
+      "suited_for": [
+        "cinematic",
+        "general"
+      ],
+      "dims": "1920x1080",
+      "fonts": [],
+      "tokens_used": [],
+      "pure_css": true,
+      "has_keyframes": true,
+      "lint": "clean",
+      "bytes": 5928,
+      "note": "Cinematic teal-shadows / orange-highlights look via multiply + soft-light overlays. Signature 'film' grade."
+    },
+    "grade-film-desat": {
+      "kind": "grade",
+      "file": "grade-film-desat/grade-film-desat.html",
+      "files": [
+        "grade-film-desat/grade-film-desat.html"
+      ],
+      "suited_for": [
+        "cinematic"
+      ],
+      "dims": "1920x1080",
+      "fonts": [],
+      "tokens_used": [],
+      "pure_css": true,
+      "has_keyframes": true,
+      "lint": "clean",
+      "bytes": 5603,
+      "note": "Muted filmic: desaturate + slight sepia + fine film-grain + soft vignette. Understated."
+    },
+    "grade-warm": {
+      "kind": "grade",
+      "file": "grade-warm/grade-warm.html",
+      "files": [
+        "grade-warm/grade-warm.html"
+      ],
+      "suited_for": [
+        "long-form",
+        "podcast",
+        "general"
+      ],
+      "dims": "1920x1080",
+      "fonts": [],
+      "tokens_used": [],
+      "pure_css": true,
+      "has_keyframes": true,
+      "lint": "clean",
+      "bytes": 4370,
+      "note": "Cozy warm: sepia/saturate/hue-rotate + amber soft-light tint."
+    },
+    "grade-cool": {
+      "kind": "grade",
+      "file": "grade-cool/grade-cool.html",
+      "files": [
+        "grade-cool/grade-cool.html"
+      ],
+      "suited_for": [
+        "general"
+      ],
+      "dims": "1920x1080",
+      "fonts": [],
+      "tokens_used": [],
+      "pure_css": true,
+      "has_keyframes": true,
+      "lint": "clean",
+      "bytes": 4458,
+      "note": "Crisp cool: saturate/hue-rotate + cool blue soft-light tint."
+    },
+    "grade-clean": {
+      "kind": "grade",
+      "file": "grade-clean/grade-clean.html",
+      "files": [
+        "grade-clean/grade-clean.html"
+      ],
+      "suited_for": [
+        "long-form",
+        "tutorial",
+        "podcast",
+        "general"
+      ],
+      "dims": "1920x1080",
+      "fonts": [],
+      "tokens_used": [],
+      "pure_css": true,
+      "has_keyframes": true,
+      "lint": "clean",
+      "bytes": 4471,
+      "note": "Near-noop 'intentionally crisp' baseline for video-types whose grade is 'none' — slight contrast/saturate + barely-there vignette."
+    },
+    "grade-bw": {
+      "kind": "grade",
+      "file": "grade-bw/grade-bw.html",
+      "files": [
+        "grade-bw/grade-bw.html"
+      ],
+      "suited_for": [
+        "cinematic"
+      ],
+      "dims": "1920x1080",
+      "fonts": [],
+      "tokens_used": [],
+      "pure_css": true,
+      "has_keyframes": true,
+      "lint": "clean",
+      "bytes": 5833,
+      "note": "Dramatic monochrome: grayscale + contrast + grain + strong vignette."
+    },
+    "motion-fast-snap": {
+      "kind": "motion",
+      "file": "motion-fast-snap/motion-fast-snap.html",
+      "files": [
+        "motion-fast-snap/motion-fast-snap.html"
+      ],
+      "suited_for": [
+        "social-short"
+      ],
+      "dims": "1920x1080",
+      "fonts": [
+        "Archivo Black",
+        "Oswald"
+      ],
+      "tokens_used": [
+        "vob-accent",
+        "vob-bg",
+        "vob-surface",
+        "vob-text",
+        "vob-text-muted"
+      ],
+      "pure_css": true,
+      "has_keyframes": true,
+      "lint": "clean",
+      "bytes": 6636,
+      "note": "Energetic entrance: in 0.3s cubic-bezier(.2,.9,.2,1) overshoot, out 0.25s; translateY+scale. Social."
+    },
+    "motion-medium-soft": {
+      "kind": "motion",
+      "file": "motion-medium-soft/motion-medium-soft.html",
+      "files": [
+        "motion-medium-soft/motion-medium-soft.html"
+      ],
+      "suited_for": [
+        "long-form",
+        "tutorial",
+        "podcast",
+        "general"
+      ],
+      "dims": "1920x1080",
+      "fonts": [
+        "Montserrat",
+        "Outfit"
+      ],
+      "tokens_used": [
+        "vob-accent",
+        "vob-bg",
+        "vob-surface",
+        "vob-text",
+        "vob-text-muted"
+      ],
+      "pure_css": true,
+      "has_keyframes": true,
+      "lint": "clean",
+      "bytes": 6377,
+      "note": "Balanced: in 0.5s cubic-bezier(.22,1,.36,1), out 0.4s ease-in; fade + 28px rise."
+    },
+    "motion-slow-cinematic": {
+      "kind": "motion",
+      "file": "motion-slow-cinematic/motion-slow-cinematic.html",
+      "files": [
+        "motion-slow-cinematic/motion-slow-cinematic.html"
+      ],
+      "suited_for": [
+        "cinematic"
+      ],
+      "dims": "1920x1080",
+      "fonts": [
+        "Playfair Display",
+        "EB Garamond"
+      ],
+      "tokens_used": [
+        "vob-accent",
+        "vob-bg",
+        "vob-text",
+        "vob-text-muted"
+      ],
+      "pure_css": true,
+      "has_keyframes": true,
+      "lint": "clean",
+      "bytes": 6337,
+      "note": "Serene: in 0.9s cubic-bezier(.4,0,.2,1), out 0.8s; fade + subtle scale(1.04→1) + long holds."
+    },
+    "callout-arrow-pill": {
+      "kind": "callout",
+      "file": "callout-arrow-pill/callout-arrow-pill.html",
+      "files": [
+        "callout-arrow-pill/callout-arrow-pill.html"
+      ],
+      "suited_for": [
+        "tutorial"
+      ],
+      "dims": "1920x1080",
+      "fonts": [
+        "Inter"
+      ],
+      "tokens_used": [
+        "vob-accent",
+        "vob-bg",
+        "vob-surface",
+        "vob-text"
+      ],
+      "pure_css": true,
+      "has_keyframes": true,
+      "lint": "clean",
+      "bytes": 6328,
+      "note": "Off-center rounded pill label with a CSS-triangle arrow pointing at a target; pop-in, hold, fade. Tutorial callout."
+    },
+    "callout-number-step": {
+      "kind": "callout",
+      "file": "callout-number-step/callout-number-step.html",
+      "files": [
+        "callout-number-step/callout-number-step.html"
+      ],
+      "suited_for": [
+        "tutorial"
+      ],
+      "dims": "1920x1080",
+      "fonts": [
+        "Inter"
+      ],
+      "tokens_used": [
+        "vob-accent",
+        "vob-bg",
+        "vob-text"
+      ],
+      "pure_css": true,
+      "has_keyframes": true,
+      "lint": "clean",
+      "bytes": 6876,
+      "note": "Circular accent number badge + step label beside it (badge then label, staggered). Step-by-step."
+    },
+    "end-card-cta": {
+      "kind": "end_card",
+      "file": "end-card-cta/end-card-cta.html",
+      "files": [
+        "end-card-cta/end-card-cta.html"
+      ],
+      "suited_for": [
+        "social-short",
+        "long-form"
+      ],
+      "dims": "1080x1920",
+      "fonts": [
+        "Archivo Black",
+        "Oswald",
+        "Inter"
+      ],
+      "tokens_used": [
+        "vob-accent",
+        "vob-bg",
+        "vob-surface",
+        "vob-text",
+        "vob-text-muted"
+      ],
+      "pure_css": true,
+      "has_keyframes": true,
+      "lint": "clean",
+      "bytes": 9808,
+      "note": "Strong end card owning the last ~3s: big headline + handle + accent button pill. Slam entrances. CTA."
+    },
+    "backdrop-spotlight": {
+      "kind": "backdrop",
+      "file": "backdrop-spotlight/backdrop-spotlight.html",
+      "files": [
+        "backdrop-spotlight/backdrop-spotlight.html"
+      ],
+      "suited_for": [
+        "social-short",
+        "general"
+      ],
+      "dims": "1080x1920",
+      "fonts": [
+        "Inter"
+      ],
+      "tokens_used": [
+        "vob-accent",
+        "vob-bg"
+      ],
+      "pure_css": true,
+      "has_keyframes": true,
+      "lint": "clean",
+      "bytes": 6022,
+      "note": "Near-black with a soft accent-tinted radial spotlight + vignette + slow glow breathe. Makes foreground pop (vertical)."
+    },
+    "backdrop-gradient-sweep": {
+      "kind": "backdrop",
+      "file": "backdrop-gradient-sweep/backdrop-gradient-sweep.html",
+      "files": [
+        "backdrop-gradient-sweep/backdrop-gradient-sweep.html"
+      ],
+      "suited_for": [
+        "general",
+        "long-form"
+      ],
+      "dims": "1920x1080",
+      "fonts": [
+        "Inter"
+      ],
+      "tokens_used": [
+        "vob-bg"
+      ],
+      "pure_css": true,
+      "has_keyframes": true,
+      "lint": "clean",
+      "bytes": 5958,
+      "note": "Smooth diagonal bg→surface gradient with corner accent pools + a slow panning sheen. Premium/clean."
+    },
+    "backdrop-film-bars": {
+      "kind": "backdrop",
+      "file": "backdrop-film-bars/backdrop-film-bars.html",
+      "files": [
+        "backdrop-film-bars/backdrop-film-bars.html"
+      ],
+      "suited_for": [
+        "cinematic"
+      ],
+      "dims": "1920x1080",
+      "fonts": [
+        "Inter"
+      ],
+      "tokens_used": [
+        "vob-bg"
+      ],
+      "pure_css": true,
+      "has_keyframes": true,
+      "lint": "clean",
+      "bytes": 6398,
+      "note": "Cinemascope letterbox bars + graded center band + vignette + faint grain. Cinematic framing."
+    },
+    "backdrop-grid": {
+      "kind": "backdrop",
+      "file": "backdrop-grid/backdrop-grid.html",
+      "files": [
+        "backdrop-grid/backdrop-grid.html"
+      ],
+      "suited_for": [
+        "tutorial"
+      ],
+      "dims": "1920x1080",
+      "fonts": [
+        "Inter"
+      ],
+      "tokens_used": [
+        "vob-bg"
+      ],
+      "pure_css": true,
+      "has_keyframes": true,
+      "lint": "clean",
+      "bytes": 6501,
+      "note": "Subtle dark tech grid + accent quadrant glow + slow parallax drift. Tech/tutorial."
+    },
+    "backdrop-soft-studio": {
+      "kind": "backdrop",
+      "file": "backdrop-soft-studio/backdrop-soft-studio.html",
+      "files": [
+        "backdrop-soft-studio/backdrop-soft-studio.html"
+      ],
+      "suited_for": [
+        "podcast"
+      ],
+      "dims": "1920x1080",
+      "fonts": [
+        "Inter"
+      ],
+      "tokens_used": [
+        "vob-bg"
+      ],
+      "pure_css": true,
+      "has_keyframes": true,
+      "lint": "clean",
+      "bytes": 5744,
+      "note": "Soft warm-neutral two-tone studio gradient + smooth vignette + gentle light breathe. Calm talking-head."
+    }
+  }
+}

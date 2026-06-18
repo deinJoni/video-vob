@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=1920, height=1080" />
+    <title>motion-medium-soft</title>
+
+    <!-- ========================================================================
+         MOTION medium-soft: in = 0.5s cubic-bezier(.22,1,.36,1); out = 0.4s ease-in;
+         transform = fade + rise translateY(28px) -> translateY(0).
+         Use for entrances of titles / lower-thirds / overlays in BALANCED video-types
+         (long-form / tutorial / podcast / general) — a smooth, composed fade-and-rise
+         that feels considered rather than punchy: eases in, holds, settles out.
+
+         The composer ADAPTS this technique into compose/index.html; it does NOT copy
+         it verbatim. To apply the preset to a real overlay element, give the element
+         its own class="clip" + stable id + data-start + data-duration +
+         data-track-index, an `animation` whose @keyframes implements
+         in (0 -> ~the first 0.5s) -> hold -> out (last ~0.4s) across the element's
+         lifetime with the eases above. STAGGER siblings with different data-start,
+         NEVER animation-delay (the runtime hijacks it to scrub).
+
+         Rules that apply to EVERY design-system component:
+         1. PURE CSS @keyframes — never GSAP. hyperframes' css adapter scrubs a
+            `paused` CSS animation to each frame via animation-delay = -(T - data-start).
+         2. STAGGER WITH data-start, NEVER animation-delay.
+         3. COLORS via --vob-* tokens (see ../tokens.css) with a literal fallback.
+         4. FONTS use hyperframes' AUTO-RESOLVED families (here "Outfit" / "Montserrat")
+            — concrete names, NOT var(), and NO font <link>.
+         5. Every timed element carries class="clip" + a stable id + data-start +
+            data-duration + data-track-index (>=1; a distinct track per
+            time-overlapping element); animation-duration == data-duration;
+            animation-fill-mode: both; animation-play-state: paused.
+         ===================================================================== -->
+
+    <style>
+      :root {
+        --vob-bg: #000000;
+        --vob-surface: #14141a;
+        --vob-text: #ffffff;
+        --vob-text-muted: #b8b8c0;
+        --vob-accent: #ff3b30;
+        --vob-accent-2: #ffd60a;
+        --vob-safe-top: 200px;
+        --vob-safe-bottom: 280px;
+      }
+      *,
+      *::before,
+      *::after {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        width: 1920px;
+        height: 1080px;
+        margin: 0;
+        overflow: hidden;
+        background: transparent;
+      }
+      #stage {
+        position: relative;
+        width: 1920px;
+        height: 1080px;
+        overflow: hidden;
+        background: var(--vob-bg, #000000);
+      }
+      /* Demo backdrop — stands in for the video spine in this standalone
+         reference. Dropped in the real composition. */
+      .ds-demo-bg {
+        position: absolute;
+        inset: 0;
+        z-index: 0;
+        background: linear-gradient(160deg, #23262f 0%, #14161d 50%, #07080b 100%);
+      }
+      /* The single sample card demonstrating the preset. One clip element. */
+      .ds-card {
+        position: absolute;
+        left: 50%;
+        top: 50%;
+        z-index: 2;
+        width: 1120px;
+        margin: -160px 0 0 -560px;
+        padding: 66px 76px 72px;
+        text-align: center;
+        background: var(--vob-surface, #14141a);
+        border-radius: 24px;
+        border-left: 8px solid var(--vob-accent, #ff3b30);
+        box-shadow: 0 34px 84px rgba(0, 0, 0, 0.5);
+        animation-name: vob-medium-soft;
+        animation-duration: 3s;
+        animation-timing-function: linear;
+        animation-fill-mode: both;
+        animation-play-state: paused;
+        will-change: transform, opacity;
+      }
+      .ds-card-kicker {
+        margin: 0 0 20px;
+        font-family: "Montserrat", "Outfit", sans-serif;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.26em;
+        font-size: 30px;
+        color: var(--vob-accent, #ff3b30);
+      }
+      .ds-card-title {
+        margin: 0;
+        font-family: "Outfit", "Montserrat", sans-serif;
+        font-weight: 700;
+        letter-spacing: -0.01em;
+        line-height: 0.96;
+        font-size: 150px;
+        color: var(--vob-text, #ffffff);
+        text-shadow: 0 10px 38px rgba(0, 0, 0, 0.45);
+      }
+      .ds-card-sub {
+        margin: 28px 0 0;
+        font-family: "Montserrat", "Outfit", sans-serif;
+        font-weight: 600;
+        letter-spacing: 0.12em;
+        font-size: 30px;
+        color: var(--vob-text-muted, #b8b8c0);
+      }
+      /* in 0.5s (0 -> ~16.7% of 3s), hold, out 0.4s ease-in (last ~13.3%). */
+      @keyframes vob-medium-soft {
+        0% {
+          opacity: 0;
+          transform: translateY(28px);
+          animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+        }
+        16.7% {
+          opacity: 1;
+          transform: translateY(0);
+        }
+        86.7% {
+          opacity: 1;
+          transform: translateY(0);
+          animation-timing-function: ease-in;
+        }
+        100% {
+          opacity: 0;
+          transform: translateY(28px);
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div
+      id="stage"
+      data-composition-id="ds-motion-medium-soft"
+      data-timeline-locked
+      data-start="0"
+      data-duration="3"
+      data-fps="30"
+      data-width="1920"
+      data-height="1080"
+    >
+      <div class="ds-demo-bg"></div>
+      <div id="ds-medium-soft-card" class="clip ds-card" data-start="0" data-duration="3" data-track-index="1">
+        <p class="ds-card-kicker">Motion preset</p>
+        <h1 class="ds-card-title">MEDIUM SOFT</h1>
+        <p class="ds-card-sub">in 0.5s &middot; out 0.4s &middot; long-form</p>
+      </div>
+    </div>
+
+    <script>
+      /* Inert timeline stub. The hyperframes render driver calls duration() and
+         pause() unconditionally; a pure-CSS component needs no real timeline and
+         loads no GSAP. duration() returns the master length (data-duration). */
+      window.__timelines = window.__timelines || {};
+      window.__timelines["ds-motion-medium-soft"] = {
+        duration: function () {
+          return 3;
+        },
+        pause: function () {},
+      };
+    </script>
+  </body>
+</html>

@@ -542,6 +542,40 @@ un-vendored) and never appear in your `transition_vocabulary`. If one is planned
 `shader_transitions_allowed:false`, substitute the nearest CSS transition: `glitch`→`whip_pan`,
 `light_leak`→`crossfade`, `chromatic`→`whip_pan`, `cross_warp`→`crossfade`, `swirl`→`zoom_punch`.
 
+## Design system kit — component usage (v3.9)
+
+The kit in `compose/design-system/` is your per-video-type visual system (titles, lower-thirds,
+grades, motion presets, backdrops, callouts, end-cards). Read `./design-system/manifest.json`, take
+`video_types[<your video_type>]` (fallback `general`) for the look's `principles[]` + slot component
+names, set the `--vob-*` tokens from `target.design` ONCE on your root, then ADAPT the recommended
+`./design-system/<name>/<name>.html` references. Three rules make a copied reference actually render:
+
+- **Stagger with `data-start`, never `animation-delay`** — the css adapter sets
+  `animation-delay = -(T − data-start)` per frame to scrub, so any delay you set is overwritten. Two
+  title lines 0.13s apart = two `class="clip"` elements at `data-start` 0 and 0.13, each its own animation.
+- **`animation-fill-mode: both` + `animation-play-state: paused`** on every animated clip;
+  `animation-duration == data-duration`.
+- **Substitute the reference's font** with `target.design.typography.*` via `./fonts.css`; keep colors
+  on `var(--vob-*, <fallback>)`.
+
+Per kind:
+- **title** (`title_card` / `section_title`) — full-frame; headline in the headline family, accent
+  emphasis line / rule; in→hold→out. Stamp `data-vob-overlay-id` if the plan declared the overlay.
+- **lower_third** — anchored above `--vob-safe-bottom`; name + role; slide/fade in, hold `dwell_min_s`,
+  exit before the cut. Bind the id if planned.
+- **grade** — copy the reference's documented `filter:` onto the scene `<video class="clip">`; add its
+  overlay layers (vignette / tint / grain) as full-frame `class="clip"` divs on HIGHER tracks. Use the
+  look's grade; `grade-clean` for a "none" brief.
+- **motion** — NOT an element: copy the preset's in/out eases + durations onto the entrances/exits you
+  author elsewhere (titles, overlays, captions) so motion is consistent and video-type-tuned.
+- **backdrop** — a full-frame `class="clip"` background for a title card, a `design_token` subject
+  backdrop, or a b-roll gap; subtle motion is fine; keep it BEHIND content (low track).
+- **callout / end_card** — adapt for the `callout` / `cta` / `end_card` overlay types; bind the id if planned.
+
+Components are lint-clean by construction (`scripts/build-design-system.js` verifies each). They add
+NO new QC codes — the usual rules apply (timed = `class="clip"` + id + timing; ≤6 `<video>`;
+reference `target.design.typography` families, not system fonts).
+
 ---
 If your code isn't here, `lint_report_path` is ground truth — fix what the report's
 file/line/message says.

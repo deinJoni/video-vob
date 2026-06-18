@@ -1,0 +1,201 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=1920, height=1080" />
+    <title>lower-third-accent-edge</title>
+
+    <!-- ========================================================================
+         video-vob design-system REFERENCE component — lower-third-accent-edge
+         A clean, editorial 16:9 lower-third: name + role on a translucent dark
+         pill with a THICK accent left edge. Slides + fades in from the left,
+         holds, then exits. ~5s.
+
+         The composer ADAPTS this technique into compose/index.html; it does NOT
+         copy it verbatim. Rules that apply to EVERY design-system component:
+
+         1. PURE CSS @keyframes — never GSAP. hyperframes' css adapter scrubs a
+            `paused` CSS animation to each frame via
+            `animation-delay = -(T - element data-start)`.
+         2. STAGGER WITH data-start, NEVER animation-delay.
+         3. COLORS via --vob-* tokens (see ../tokens.css), with a literal fallback.
+         4. FONTS use hyperframes' AUTO-RESOLVED families (here "Outfit" /
+            "Montserrat") — concrete names, NOT var(), and NO font <link>.
+         5. Every timed element carries class="clip" + a stable id + data-start +
+            data-duration + data-track-index (>=1; distinct track per
+            time-overlapping element); animation-duration == data-duration;
+            animation-fill-mode: both; animation-play-state: paused.
+         ===================================================================== -->
+
+    <style>
+      :root {
+        --vob-bg: #000000;
+        --vob-surface: #14141a;
+        --vob-text: #ffffff;
+        --vob-text-muted: #b8b8c0;
+        --vob-accent: #ff3b30;
+        --vob-safe-bottom: 160px;
+      }
+      *,
+      *::before,
+      *::after {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        width: 1920px;
+        height: 1080px;
+        margin: 0;
+        overflow: hidden;
+        background: transparent;
+      }
+      #stage {
+        position: relative;
+        width: 1920px;
+        height: 1080px;
+        overflow: hidden;
+        background: var(--vob-bg, #000000);
+      }
+      /* Demo backdrop — stands in for the video spine. Dropped in the real comp. */
+      .ds-demo-bg {
+        position: absolute;
+        inset: 0;
+        z-index: 0;
+        background: radial-gradient(140% 120% at 78% 18%, #262a34 0%, #14161d 52%, #07080b 100%);
+      }
+      /* The pill, anchored above the bottom safe band on the left. */
+      .ds-lt {
+        position: absolute;
+        left: 120px;
+        bottom: calc(var(--vob-safe-bottom, 160px) + 40px);
+        z-index: 2;
+        display: flex;
+        align-items: stretch;
+        max-width: 980px;
+        border-radius: 14px;
+        overflow: hidden;
+        background: var(--vob-surface, #14141a);
+        /* surface at ~0.85 — composited literal so it lints standalone */
+        background: rgba(20, 20, 26, 0.85);
+        backdrop-filter: blur(8px);
+        box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5);
+        border-left: 8px solid var(--vob-accent, #ff3b30);
+        transform-origin: left center;
+        animation-name: vob-pill-in;
+        animation-duration: 5s;
+        animation-timing-function: linear;
+        animation-fill-mode: both;
+        animation-play-state: paused;
+        will-change: transform, opacity;
+      }
+      .ds-lt-body {
+        padding: 26px 48px 30px 40px;
+      }
+      .ds-name {
+        margin: 0;
+        font-family: "Outfit", "Montserrat", sans-serif;
+        font-weight: 700;
+        letter-spacing: -0.005em;
+        line-height: 1.04;
+        font-size: 52px;
+        color: var(--vob-text, #ffffff);
+        white-space: nowrap;
+        /* text rises in just behind the pill */
+        animation-name: vob-text-in;
+        animation-duration: 5s;
+        animation-timing-function: linear;
+        animation-fill-mode: both;
+        animation-play-state: paused;
+      }
+      .ds-role {
+        margin: 8px 0 0;
+        font-family: "Montserrat", sans-serif;
+        font-weight: 500;
+        letter-spacing: 0.06em;
+        font-size: 30px;
+        color: var(--vob-text-muted, #b8b8c0);
+        white-space: nowrap;
+        animation-name: vob-text-in;
+        animation-duration: 4.7s;
+        animation-timing-function: linear;
+        animation-fill-mode: both;
+        animation-play-state: paused;
+      }
+      @keyframes vob-pill-in {
+        0% {
+          opacity: 0;
+          transform: translateX(-72px);
+          animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+        }
+        10% {
+          opacity: 1;
+          transform: translateX(0);
+        }
+        90% {
+          opacity: 1;
+          transform: translateX(0);
+          animation-timing-function: cubic-bezier(0.55, 0, 0.85, 0.2);
+        }
+        100% {
+          opacity: 0;
+          transform: translateX(-40px);
+        }
+      }
+      @keyframes vob-text-in {
+        0% {
+          opacity: 0;
+          transform: translateX(26px);
+        }
+        7% {
+          opacity: 0;
+          transform: translateX(26px);
+          animation-timing-function: cubic-bezier(0.2, 0.8, 0.3, 1);
+        }
+        15% {
+          opacity: 1;
+          transform: translateX(0);
+        }
+        90% {
+          opacity: 1;
+          transform: translateX(0);
+        }
+        100% {
+          opacity: 0;
+          transform: translateX(0);
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div
+      id="stage"
+      data-composition-id="ds-lower-third-accent-edge"
+      data-timeline-locked
+      data-start="0"
+      data-duration="5"
+      data-fps="30"
+      data-width="1920"
+      data-height="1080"
+    >
+      <div class="ds-demo-bg"></div>
+      <div id="ds-lt" class="clip ds-lt" data-start="0" data-duration="5" data-track-index="1">
+        <div class="ds-lt-body">
+          <h1 id="ds-name" class="clip ds-name" data-start="0.16" data-duration="5" data-track-index="2">Dr. Mara Okafor</h1>
+          <p id="ds-role" class="clip ds-role" data-start="0.3" data-duration="4.7" data-track-index="3">Lead Researcher, Atlas Bio</p>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      /* Inert timeline stub. duration() returns the master length (data-duration);
+         no GSAP is loaded at render. */
+      window.__timelines = window.__timelines || {};
+      window.__timelines["ds-lower-third-accent-edge"] = {
+        duration: function () {
+          return 5;
+        },
+        pause: function () {},
+      };
+    </script>
+  </body>
+</html>

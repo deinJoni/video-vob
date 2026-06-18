@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=1920, height=1080" />
+    <title>backdrop-soft-studio</title>
+
+    <!-- ========================================================================
+         video-vob design-system REFERENCE BACKDROP — backdrop-soft-studio
+         Landscape (1920×1080). A soft two-tone STUDIO gradient (gentle radial +
+         diagonal, warm-neutral / token-tinted) with a smooth vignette and a very
+         gentle light breathe — a calm talking-head backdrop (podcast). No hard
+         edges.
+
+         HOW THE COMPOSER USES A BACKDROP:
+           Full-frame background on the LOWEST track, framing a talking head or a
+           `design_token` subject composite. Drop the ghost box and put the real
+           subject above.
+
+         Render contract (shared by every design-system component):
+         1. PURE CSS @keyframes — never GSAP. window.__timelines is a no-op stub.
+         2. STAGGER WITH data-start, NEVER animation-delay. The breathing light is
+            one class="clip" element; animation-duration == data-duration;
+            data-start=0; distinct data-track-index per overlapping timed clip.
+         3. COLORS via --vob-* tokens with a literal fallback; the composer
+            re-skins from target.design.
+         4. Static base + vignette need no data-start. Any label uses a concrete
+            auto-resolved family (Inter) + generic fallback — no var() in
+            font-family, no font <link>.
+         ===================================================================== -->
+
+    <style>
+      :root {
+        --vob-bg: #000000;
+        --vob-surface: #14141a;
+        --vob-accent: #ff3b30;
+        --vob-accent-2: #ffd60a;
+        --vob-text: #ffffff;
+      }
+      *,
+      *::before,
+      *::after {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        width: 1920px;
+        height: 1080px;
+        margin: 0;
+        overflow: hidden;
+        background: transparent;
+      }
+      #stage {
+        position: relative;
+        width: 1920px;
+        height: 1080px;
+        overflow: hidden;
+        background: var(--vob-bg, #000000);
+      }
+      /* Studio base — a warm-neutral two-tone: a soft raised pool of surface
+         light off-center, a cooler diagonal field, settling to a darker floor.
+         All large, soft stops so there are no hard edges. The accent is wired in
+         as a whisper-faint warm tint so a re-skin reads through. */
+      .ds-base {
+        position: absolute;
+        inset: 0;
+        z-index: 0;
+        background:
+          radial-gradient(62% 78% at 40% 40%, rgba(58, 56, 64, 0.85) 0%, rgba(36, 35, 42, 0.5) 44%, rgba(22, 22, 28, 0) 78%),
+          radial-gradient(40% 50% at 40% 38%, rgba(255, 59, 48, 0.05) 0%, rgba(255, 59, 48, 0) 64%),
+          linear-gradient(125deg, #1a1a20 0%, #15151b 40%, #101015 68%, #0b0b0f 100%);
+      }
+      /* Gentle light breathe — the soft key pool brightens and eases a touch of
+         scale, like a calm studio fill. Very low amplitude. */
+      .ds-light {
+        position: absolute;
+        inset: 0;
+        z-index: 1;
+        transform-origin: 40% 40%;
+        background: radial-gradient(46% 58% at 40% 40%, rgba(255, 246, 232, 0.1) 0%, rgba(255, 246, 232, 0) 60%);
+        will-change: opacity, transform;
+        animation-name: vob-studio-breathe;
+        animation-duration: 5s;
+        animation-timing-function: ease-in-out;
+        animation-fill-mode: both;
+        animation-play-state: paused;
+      }
+      /* Smooth all-around vignette — keeps the subject zone lifted, edges calm. */
+      .ds-vignette {
+        position: absolute;
+        inset: 0;
+        z-index: 2;
+        background: radial-gradient(120% 92% at 44% 42%, rgba(0, 0, 0, 0) 50%, rgba(0, 0, 0, 0.42) 100%);
+      }
+      .ds-ghost {
+        position: absolute;
+        inset: 0;
+        z-index: 3;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .ds-ghost-box {
+        width: 360px;
+        height: 520px;
+        border-radius: 180px 180px 24px 24px;
+        border: 2px dashed rgba(255, 255, 255, 0.1);
+        display: flex;
+        align-items: flex-end;
+        justify-content: center;
+        padding-bottom: 40px;
+        font-family: "Inter", sans-serif;
+        font-weight: 500;
+        font-size: 26px;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        color: rgba(255, 255, 255, 0.2);
+      }
+      @keyframes vob-studio-breathe {
+        0% {
+          opacity: 0.85;
+          transform: scale(1);
+        }
+        50% {
+          opacity: 1;
+          transform: scale(1.02);
+        }
+        100% {
+          opacity: 0.85;
+          transform: scale(1);
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div
+      id="stage"
+      data-composition-id="ds-backdrop-soft-studio"
+      data-timeline-locked
+      data-start="0"
+      data-duration="5"
+      data-fps="30"
+      data-width="1920"
+      data-height="1080"
+    >
+      <div class="ds-base"></div>
+      <div id="ds-light" class="clip ds-light" data-start="0" data-duration="5" data-track-index="1"></div>
+      <div class="ds-vignette"></div>
+      <div class="ds-ghost"><div class="ds-ghost-box">talking head</div></div>
+    </div>
+
+    <script>
+      /* Inert timeline stub — the render driver calls duration()/pause()
+         unconditionally; a pure-CSS component loads no GSAP. */
+      window.__timelines = window.__timelines || {};
+      window.__timelines["ds-backdrop-soft-studio"] = {
+        duration: function () {
+          return 5;
+        },
+        pause: function () {},
+      };
+    </script>
+  </body>
+</html>

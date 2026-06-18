@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=1920, height=1080" />
+    <title>lower-third-name-role</title>
+
+    <!-- ========================================================================
+         video-vob design-system REFERENCE component — lower-third-name-role
+         A clean speaker-intro lower-third (podcast / long-form): two lines, a
+         large name + muted role, with a small accent tick before the name.
+         Gentle slide-up + fade in, hold, then fade out. ~5s.
+
+         The composer ADAPTS this technique; it does NOT copy it verbatim.
+         1. PURE CSS @keyframes — never GSAP (css adapter scrubs paused anims).
+         2. STAGGER WITH data-start, NEVER animation-delay.
+         3. COLORS via --vob-* tokens (see ../tokens.css), literal fallbacks.
+         4. FONTS use AUTO-RESOLVED families ("Outfit" / "Montserrat") — concrete
+            names, NOT var(), and NO font <link>. (A Hanken-Grotesk-style face;
+            Hanken is a house font loaded via ./fonts.css in the real comp, so the
+            reference substitutes the kit-auto-resolved Outfit.)
+         5. Every timed element: class="clip" + stable id + data-start +
+            data-duration + data-track-index (>=1; distinct track when overlapping);
+            animation-duration == data-duration; fill-mode both; play-state paused.
+         ===================================================================== -->
+
+    <style>
+      :root {
+        --vob-bg: #000000;
+        --vob-text: #ffffff;
+        --vob-text-muted: #b8b8c0;
+        --vob-accent: #ff3b30;
+        --vob-safe-bottom: 160px;
+      }
+      *,
+      *::before,
+      *::after {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        width: 1920px;
+        height: 1080px;
+        margin: 0;
+        overflow: hidden;
+        background: transparent;
+      }
+      #stage {
+        position: relative;
+        width: 1920px;
+        height: 1080px;
+        overflow: hidden;
+        background: var(--vob-bg, #000000);
+      }
+      /* Demo backdrop — stands in for the video spine; dropped in the real comp. */
+      .ds-demo-bg {
+        position: absolute;
+        inset: 0;
+        z-index: 0;
+        background: linear-gradient(160deg, #1d2027 0%, #121419 50%, #06070a 100%);
+      }
+      /* Anchored above the bottom safe band, left. */
+      .ds-lt {
+        position: absolute;
+        left: 128px;
+        bottom: calc(var(--vob-safe-bottom, 160px) + 40px);
+        z-index: 2;
+      }
+      /* Name line: accent tick + name on one row. */
+      .ds-name-row {
+        display: flex;
+        align-items: center;
+        animation-name: vob-rise-in;
+        animation-duration: 5s;
+        animation-timing-function: linear;
+        animation-fill-mode: both;
+        animation-play-state: paused;
+        will-change: transform, opacity;
+      }
+      /* Small accent tick before the name. */
+      .ds-tick {
+        width: 8px;
+        height: 56px;
+        margin-right: 24px;
+        border-radius: 4px;
+        background: var(--vob-accent, #ff3b30);
+        transform-origin: bottom center;
+        /* the tick draws up on its own track, just before the name */
+        animation-name: vob-tick-grow;
+        animation-duration: 5s;
+        animation-timing-function: linear;
+        animation-fill-mode: both;
+        animation-play-state: paused;
+      }
+      .ds-name {
+        margin: 0;
+        font-family: "Outfit", "Montserrat", sans-serif;
+        font-weight: 700;
+        letter-spacing: -0.005em;
+        line-height: 1.0;
+        font-size: 56px;
+        color: var(--vob-text, #ffffff);
+        white-space: nowrap;
+      }
+      .ds-role {
+        margin: 12px 0 0 32px; /* align under the name past the tick gutter */
+        font-family: "Montserrat", sans-serif;
+        font-weight: 500;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        font-size: 32px;
+        color: var(--vob-text-muted, #b8b8c0);
+        white-space: nowrap;
+        animation-name: vob-rise-in;
+        animation-duration: 4.62s;
+        animation-timing-function: linear;
+        animation-fill-mode: both;
+        animation-play-state: paused;
+        will-change: transform, opacity;
+      }
+      @keyframes vob-rise-in {
+        0% {
+          opacity: 0;
+          transform: translateY(34px);
+          animation-timing-function: cubic-bezier(0.16, 1, 0.3, 1);
+        }
+        14% {
+          opacity: 1;
+          transform: translateY(0);
+        }
+        90% {
+          opacity: 1;
+          transform: translateY(0);
+          animation-timing-function: cubic-bezier(0.4, 0, 0.7, 1);
+        }
+        100% {
+          opacity: 0;
+          transform: translateY(8px);
+        }
+      }
+      @keyframes vob-tick-grow {
+        0% {
+          opacity: 0;
+          transform: scaleY(0);
+          animation-timing-function: cubic-bezier(0.16, 1, 0.3, 1);
+        }
+        12% {
+          opacity: 1;
+          transform: scaleY(1);
+        }
+        90% {
+          opacity: 1;
+          transform: scaleY(1);
+          animation-timing-function: cubic-bezier(0.4, 0, 0.7, 1);
+        }
+        100% {
+          opacity: 0;
+          transform: scaleY(1);
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div
+      id="stage"
+      data-composition-id="ds-lower-third-name-role"
+      data-timeline-locked
+      data-start="0"
+      data-duration="5"
+      data-fps="30"
+      data-width="1920"
+      data-height="1080"
+    >
+      <div class="ds-demo-bg"></div>
+      <div class="ds-lt">
+        <div id="ds-name-row" class="clip ds-name-row" data-start="0" data-duration="5" data-track-index="1">
+          <span id="ds-tick" class="clip ds-tick" data-start="0" data-duration="5" data-track-index="2"></span>
+          <h1 class="ds-name">Samuel Ortega</h1>
+        </div>
+        <p id="ds-role" class="clip ds-role" data-start="0.34" data-duration="4.62" data-track-index="3">Host, The Long Game</p>
+      </div>
+    </div>
+
+    <script>
+      /* Inert timeline stub. duration() returns the master length; no GSAP. */
+      window.__timelines = window.__timelines || {};
+      window.__timelines["ds-lower-third-name-role"] = {
+        duration: function () {
+          return 5;
+        },
+        pause: function () {},
+      };
+    </script>
+  </body>
+</html>

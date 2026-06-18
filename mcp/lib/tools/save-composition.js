@@ -8,7 +8,7 @@ const { assertSafeProjectId, composeDir, statePath, storyboardPath } = require("
 const { withSessionLock, writeFileAtomic } = require("../storage.js");
 const { readSessionStateStrict } = require("../session-state.js");
 const { validateCompositionFiles, htmlAndCssEntries } = require("../composition-files.js");
-const { recreateSourceSymlinks, resolveLayoutLinks, resolveSceneClipLinks, resolveSourceLinks, injectFontKit, injectCaptionKit } = require("../source-symlink.js");
+const { recreateSourceSymlinks, resolveLayoutLinks, resolveSceneClipLinks, resolveSourceLinks, injectFontKit, injectCaptionKit, injectDesignKit } = require("../source-symlink.js");
 const { runCompositionQc } = require("../composition-qc.js");
 const { findTimeline, storyboardHasShorts, storyboardTimelines } = require("../storyboard-schema.js");
 const { planSegmentById, renderPlanOf } = require("../render-segments.js");
@@ -191,6 +191,14 @@ async function saveComposition(args) {
       skip: writtenRelPaths.some((p) => p === "captions" || p.startsWith("captions/")),
     });
     symlinkResult.warnings.push(...captionKitResult.warnings);
+    // Design-system kit (v3.9): symlink compose/design-system -> mcp/assets/design-system
+    // so the composer can read ./design-system/manifest.json + the per-component reference
+    // HTML (vetted pure-CSS titles/lower-thirds/grades/motion/backdrops per video-type). A
+    // composer-supplied design-system/ dir wins.
+    const designKitResult = injectDesignKit(composeRoot, {
+      skip: writtenRelPaths.some((p) => p === "design-system" || p.startsWith("design-system/")),
+    });
+    symlinkResult.warnings.push(...designKitResult.warnings);
 
     const ts = nowIso();
     const prev = state.composition && typeof state.composition === "object" && !Array.isArray(state.composition)
@@ -221,6 +229,7 @@ async function saveComposition(args) {
         qc: { error_count: 0, warning_count: qc.warning_count, findings: qc.findings.slice(0, 10) },
         fonts: { linked: fontResult.linked, css_path: fontResult.linked ? "fonts.css" : null },
         captions: { linked: captionKitResult.linked },
+        design_system: { linked: designKitResult.linked },
         ...(symlinkResult.warnings.length > 0
           ? { source_link_warnings: symlinkResult.warnings }
           : {}),
@@ -268,6 +277,7 @@ async function saveComposition(args) {
       qc: { error_count: 0, warning_count: qc.warning_count, findings: qc.findings.slice(0, 10) },
       fonts_linked: fontResult.linked,
       captions_kit_linked: captionKitResult.linked,
+      design_system_linked: designKitResult.linked,
     };
   });
 

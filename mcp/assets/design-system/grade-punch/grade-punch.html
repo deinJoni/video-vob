@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=1920, height=1080" />
+    <title>grade-punch</title>
+
+    <!-- ========================================================================
+         video-vob design-system REFERENCE GRADE — grade-punch
+         High-contrast, vivid, punchy color treatment for retention/social.
+
+         HOW THE COMPOSER REALIZES A GRADE (two parts):
+           (a) Apply this CSS filter to the scene clip element (the video):
+                 filter: contrast(1.12) saturate(1.28) brightness(1.02);
+           (b) Add the overlay layer(s) below as full-frame "clip" divs on
+                 a track ABOVE the video (they tint/darken the framed image):
+                 • OVERLAY 1 — radial vignette: a subtle dark radial gradient
+                   (transparent center to ~0.34 black at the corners), normal
+                   blend, gently faded in over ~0.4s. Centers the eye, adds depth.
+
+         In this STANDALONE reference the filter is applied to a wrapper around a
+         rich, photo-like .ds-demo-bg (layered gradients simulating a lit subject
+         against a bright sky) so the punch is visible; the vignette overlay rides
+         on top exactly as it would in the real composition.
+
+         Render contract (shared by every design-system component):
+         1. PURE CSS keyframes — never GSAP. window.__timelines is a no-op stub.
+         2. STAGGER WITH the start attribute, NEVER animation-delay (the runtime
+            hijacks animation-delay to scrub a paused animation to each frame).
+         3. A static (non-timed) tint/vignette div needs no start attribute; a
+            faded-in overlay is a "clip" with id + start + duration + track-index.
+         4. Grades are imagery — no fonts needed. (If a label were added it would
+            use a concrete auto-resolved family + generic fallback, no var().)
+         ===================================================================== -->
+
+    <style>
+      *,
+      *::before,
+      *::after {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        width: 1920px;
+        height: 1080px;
+        margin: 0;
+        overflow: hidden;
+        background: transparent;
+      }
+      #stage {
+        position: relative;
+        width: 1920px;
+        height: 1080px;
+        overflow: hidden;
+        background: #000;
+      }
+      /* The graded layer. In the real comp the filter rides the scene <video>;
+         here it wraps the photo-like demo scene so the look is visible. */
+      .ds-grade-wrap {
+        position: absolute;
+        inset: 0;
+        z-index: 0;
+        filter: contrast(1.12) saturate(1.28) brightness(1.02);
+      }
+      /* Photo-like scene: warm sky + a lit subject mass + cooler foreground.
+         Layered gradients stand in for a real lit shot so the grade transforms
+         something with real tonal range, not a flat fill. */
+      .ds-demo-bg {
+        position: absolute;
+        inset: 0;
+        background:
+          radial-gradient(46% 58% at 38% 56%, rgba(255, 214, 170, 0.55) 0%, rgba(150, 90, 60, 0.16) 42%, rgba(0, 0, 0, 0) 66%),
+          radial-gradient(38% 50% at 72% 40%, rgba(120, 190, 220, 0.42) 0%, rgba(40, 90, 120, 0) 60%),
+          linear-gradient(8deg, rgba(20, 14, 24, 0.92) 0%, rgba(60, 40, 56, 0.35) 30%, rgba(0, 0, 0, 0) 52%),
+          linear-gradient(190deg, #8fc6e6 0%, #b9d6e2 18%, #e7c9a3 46%, #b07d54 70%, #3a2620 100%);
+      }
+      /* OVERLAY 1 — subtle vignette, faded in. */
+      .ds-vignette {
+        position: absolute;
+        inset: 0;
+        z-index: 2;
+        background: radial-gradient(118% 80% at 50% 48%, rgba(0, 0, 0, 0) 52%, rgba(0, 0, 0, 0.34) 100%);
+        animation-name: vob-overlay-in;
+        animation-duration: 0.4s;
+        animation-timing-function: ease-out;
+        animation-fill-mode: both;
+        animation-play-state: paused;
+      }
+      @keyframes vob-overlay-in {
+        0% {
+          opacity: 0;
+        }
+        100% {
+          opacity: 1;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div
+      id="stage"
+      data-composition-id="ds-grade-punch"
+      data-timeline-locked
+      data-start="0"
+      data-duration="4"
+      data-fps="30"
+      data-width="1920"
+      data-height="1080"
+    >
+      <div class="ds-grade-wrap">
+        <div class="ds-demo-bg"></div>
+      </div>
+      <div id="ds-vignette" class="clip ds-vignette" data-start="0" data-duration="4" data-track-index="1"></div>
+    </div>
+
+    <script>
+      /* Inert timeline stub — the render driver calls duration()/pause()
+         unconditionally; a pure-CSS component loads no GSAP. */
+      window.__timelines = window.__timelines || {};
+      window.__timelines["ds-grade-punch"] = {
+        duration: function () {
+          return 4;
+        },
+        pause: function () {},
+      };
+    </script>
+  </body>
+</html>

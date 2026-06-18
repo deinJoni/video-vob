@@ -1,0 +1,203 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=1920, height=1080" />
+    <title>callout-number-step</title>
+
+    <!-- ========================================================================
+         video-vob design-system REFERENCE component — callout-number-step
+         A circular numbered BADGE ("1") filled with the accent + a short step label
+         beside it. The badge pops in first; the label slides in 0.1s later (the
+         stagger is two clip elements at different data-start — NEVER animation-delay).
+         Holds, then fades. A step-by-step tutorial callout.
+
+         The composer ADAPTS this technique into compose/index.html; it does NOT
+         copy it verbatim. Rules that apply to EVERY design-system component:
+
+         1. PURE CSS @keyframes — never GSAP. hyperframes' css adapter scrubs a
+            `paused` CSS animation to each frame via animation-delay = -(T - data-start).
+         2. STAGGER WITH data-start, NEVER animation-delay. Here the badge is at
+            data-start 0 and the label at data-start 0.1 — two separate clips.
+         3. COLORS via --vob-* tokens (see ../tokens.css) with a literal fallback.
+         4. FONTS use hyperframes' AUTO-RESOLVED families (here "Inter") — concrete
+            names, NOT var(), and NO font <link>.
+         5. Every timed element carries class="clip" + a stable id + data-start +
+            data-duration + data-track-index (>=1; a distinct track per
+            time-overlapping element); animation-duration == data-duration;
+            animation-fill-mode: both; animation-play-state: paused.
+         ===================================================================== -->
+
+    <style>
+      :root {
+        --vob-bg: #000000;
+        --vob-surface: #14141a;
+        --vob-text: #ffffff;
+        --vob-text-muted: #b8b8c0;
+        --vob-accent: #ff3b30;
+        --vob-accent-2: #ffd60a;
+        --vob-safe-top: 200px;
+        --vob-safe-bottom: 280px;
+      }
+      *,
+      *::before,
+      *::after {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        width: 1920px;
+        height: 1080px;
+        margin: 0;
+        overflow: hidden;
+        background: transparent;
+      }
+      #stage {
+        position: relative;
+        width: 1920px;
+        height: 1080px;
+        overflow: hidden;
+        background: var(--vob-bg, #000000);
+      }
+      /* Demo backdrop — stands in for the video spine in this standalone
+         reference. Dropped in the real composition. */
+      .ds-demo-bg {
+        position: absolute;
+        inset: 0;
+        z-index: 0;
+        background: linear-gradient(155deg, #20232b 0%, #131620 50%, #07080b 100%);
+      }
+      /* Step group anchored upper-left, a comfortable inset from the edge. */
+      .ds-step {
+        position: absolute;
+        left: 220px;
+        top: 360px;
+        z-index: 2;
+        display: flex;
+        align-items: center;
+        gap: 36px;
+      }
+      /* Circular accent badge carrying the numeral. */
+      .ds-badge {
+        flex: 0 0 auto;
+        width: 124px;
+        height: 124px;
+        border-radius: 50%;
+        background: var(--vob-accent, #ff3b30);
+        box-shadow: 0 18px 44px rgba(0, 0, 0, 0.5);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        transform-origin: 50% 50%;
+        animation-name: vob-badge-pop;
+        animation-duration: 3s;
+        animation-timing-function: linear;
+        animation-fill-mode: both;
+        animation-play-state: paused;
+        will-change: transform, opacity;
+      }
+      .ds-badge-num {
+        font-family: "Inter", "Helvetica Neue", sans-serif;
+        font-weight: 800;
+        font-size: 72px;
+        line-height: 1;
+        color: var(--vob-text, #ffffff);
+      }
+      /* Step label — its own clip, slides in just after the badge. */
+      .ds-step-label {
+        margin: 0;
+        font-family: "Inter", "Helvetica Neue", sans-serif;
+        font-weight: 600;
+        font-size: 56px;
+        letter-spacing: -0.005em;
+        line-height: 1.04;
+        color: var(--vob-text, #ffffff);
+        text-shadow: 0 8px 26px rgba(0, 0, 0, 0.45);
+        white-space: nowrap;
+        transform-origin: left center;
+        animation-name: vob-label-in;
+        animation-duration: 2.9s;
+        animation-timing-function: linear;
+        animation-fill-mode: both;
+        animation-play-state: paused;
+        will-change: transform, opacity;
+      }
+      /* badge: pop-in 0.3s (0 -> 10% of 3s), hold, fade out (last ~13.3%). */
+      @keyframes vob-badge-pop {
+        0% {
+          opacity: 0;
+          transform: scale(0.6);
+          animation-timing-function: cubic-bezier(0.2, 0.85, 0.25, 1);
+        }
+        10% {
+          opacity: 1;
+          transform: scale(1);
+        }
+        86.7% {
+          opacity: 1;
+          transform: scale(1);
+          animation-timing-function: ease-in;
+        }
+        100% {
+          opacity: 0;
+          transform: scale(0.92);
+        }
+      }
+      /* label: slides in from the left (window normalized to its own 2.9s lifetime,
+         which begins 0.1s after the badge via data-start). */
+      @keyframes vob-label-in {
+        0% {
+          opacity: 0;
+          transform: translateX(-28px);
+          animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+        }
+        12% {
+          opacity: 1;
+          transform: translateX(0);
+        }
+        86% {
+          opacity: 1;
+          transform: translateX(0);
+          animation-timing-function: ease-in;
+        }
+        100% {
+          opacity: 0;
+          transform: translateX(0);
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div
+      id="stage"
+      data-composition-id="ds-callout-number-step"
+      data-timeline-locked
+      data-start="0"
+      data-duration="3"
+      data-fps="30"
+      data-width="1920"
+      data-height="1080"
+    >
+      <div class="ds-demo-bg"></div>
+      <div class="ds-step">
+        <div id="ds-step-badge" class="clip ds-badge" data-start="0" data-duration="3" data-track-index="1">
+          <span class="ds-badge-num">1</span>
+        </div>
+        <p id="ds-step-label" class="clip ds-step-label" data-start="0.1" data-duration="2.9" data-track-index="2">Open the dashboard</p>
+      </div>
+    </div>
+
+    <script>
+      /* Inert timeline stub. The hyperframes render driver calls duration() and
+         pause() unconditionally; a pure-CSS component needs no real timeline and
+         loads no GSAP. duration() returns the master length (data-duration). */
+      window.__timelines = window.__timelines || {};
+      window.__timelines["ds-callout-number-step"] = {
+        duration: function () {
+          return 3;
+        },
+        pause: function () {},
+      };
+    </script>
+  </body>
+</html>
