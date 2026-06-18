@@ -20,7 +20,7 @@ const { readSessionStateStrict } = require("../session-state.js");
 const { runHyperframesWithRetry, buildRenderArgv, renderTimeoutMs, defaultRenderQuality } = require("../hyperframes-runner.js");
 const { stderrTail } = require("../spawn-with-shutdown.js");
 const { verifyRenderedMp4 } = require("../render-verify.js");
-const { expectedTimelineDurationSeconds, findTimeline } = require("../storyboard-schema.js");
+const { expectedTimelineDurationSeconds, findTimeline, allStoryboardScenes, realizedScopeDurationSeconds } = require("../storyboard-schema.js");
 const { planSegmentById } = require("../render-segments.js");
 
 function nowIso() {
@@ -115,22 +115,34 @@ async function renderFull(args) {
   let sbTotal = null;
   let expectedDurationSeconds = null;
   if (planSegment) {
+    // declared fallback (refined to the realized cut below if the storyboard reads)
     sbTotal = Number.isFinite(planSegment.target_duration_seconds) ? planSegment.target_duration_seconds : null;
     expectedDurationSeconds = sbTotal;
-  } else {
-    try {
-      const sb = JSON.parse(fs.readFileSync(storyboardPath(id), "utf8"));
-      const shortId = typeof composition.short_id === "string" && composition.short_id !== ""
-        ? composition.short_id
-        : null;
+  }
+  try {
+    const sb = JSON.parse(fs.readFileSync(storyboardPath(id), "utf8"));
+    const shortId = typeof composition.short_id === "string" && composition.short_id !== ""
+      ? composition.short_id
+      : null;
+    let scopeScenes = null;
+    if (planSegment && Array.isArray(planSegment.scene_ids)) {
+      const want = new Set(planSegment.scene_ids);
+      scopeScenes = allStoryboardScenes(sb).filter((s) => s && want.has(s.scene_id));
+    } else {
       sbTotal = expectedTimelineDurationSeconds(sb, shortId);
       const timeline = findTimeline(sb, shortId);
+      scopeScenes = timeline && Array.isArray(timeline.scenes) ? timeline.scenes : null;
       expectedDurationSeconds = timeline
         && Number.isFinite(timeline.total_target_duration_seconds) && timeline.total_target_duration_seconds > 0
         ? timeline.total_target_duration_seconds
         : null;
-    } catch {}
-  }
+    }
+    // Drift expectation = the REALIZED cut (speed/layout-baked), not the declared
+    // target (which legitimately differs — see PLAN_DURATION_INFEASIBLE). Fall
+    // back to declared when scenes don't resolve.
+    const realized = scopeScenes ? realizedScopeDurationSeconds(scopeScenes) : 0;
+    if (realized > 0) expectedDurationSeconds = realized;
+  } catch {}
   const timeoutMs = renderTimeoutMs("full", sbTotal);
 
   const ts = filenameSafeTimestamp();
@@ -202,8 +214,10 @@ async function renderFull(args) {
 
   const renderDurationSeconds = (Date.now() - start) / 1000;
   const sizeBytes = fileSizeBytes(outPath);
-  // Silent-truncation detector: ffprobe the MP4 vs the storyboard expectation.
-  const verification = verifyRenderedMp4({ mp4Path: outPath, expectedDurationSeconds });
+  // Silent-truncation detector + content QC: ffprobe vs the realized cut, and
+  // sample luma/volume so an all-black or silent render (dropped <video> clip /
+  // failed audio mux — the dominant low-RAM render-fragility class) is flagged.
+  const verification = verifyRenderedMp4({ mp4Path: outPath, expectedDurationSeconds, checkContent: true });
   const completedTs = nowIso();
 
   return withSessionLock(id, () => {

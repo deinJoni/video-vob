@@ -190,6 +190,19 @@ function sceneOutputSeconds(scene) {
     : 0;
 }
 
+// (v3.8) The REALIZED on-screen duration of a scope's scenes — the speed/layout-
+// baked cut the composer actually builds, summed via sceneOutputSeconds. This is
+// what render drift verification should expect (NOT the declared
+// total_target_duration_seconds, which is the plan's aspiration and legitimately
+// differs — the whole reason PLAN_DURATION_INFEASIBLE exists). Returns 0 when no
+// scene resolves, so callers fall back to the declared total.
+function realizedScopeDurationSeconds(scenes) {
+  if (!Array.isArray(scenes)) return 0;
+  let total = 0;
+  for (const scene of scenes) total += sceneOutputSeconds(scene);
+  return Math.round(total * 1000) / 1000;
+}
+
 function isPlainObject(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
@@ -3074,6 +3087,7 @@ module.exports = {
   distributionFromStoryboard,
   effectiveClipDuration,
   expectedTimelineDurationSeconds,
+  realizedScopeDurationSeconds,
   findTimeline,
   isGapPlacement,
   isSubjectPlacement,

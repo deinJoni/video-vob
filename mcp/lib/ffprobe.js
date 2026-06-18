@@ -212,21 +212,32 @@ function escapeLavfiSource(p) {
 // unprobeable frame must not abort the pass. `ymax` is the discriminator for a
 // blank/dropped-clip frame (nothing bright rendered → low ymax) vs an
 // intentionally dark frame with a bright subject (high ymax).
-function signalstatsLuma(filePath, { timeoutMs = SIGNALSTATS_TIMEOUT_MS } = {}) {
+function signalstatsLuma(filePath, { timeoutMs = SIGNALSTATS_TIMEOUT_MS, seekSeconds = null } = {}) {
   if (typeof filePath !== "string" || !filePath) {
     return { probed: false, error: "no path" };
   }
+  // Optional seek into the source: `movie=<file>:seek_point=<s>` reads the frame
+  // at <s> instead of frame 0 — lets a caller sample luma ACROSS a video (the
+  // appended colon is the real option separator; the filename's own colons are
+  // escaped by escapeLavfiSource). Default (null) preserves the first-frame
+  // behavior every existing caller (still QC) relies on.
+  const seekOpt = Number.isFinite(seekSeconds) && seekSeconds > 0 ? `:seek_point=${seekSeconds}` : "";
+  const argv = [
+    "-v", "error",
+    "-f", "lavfi",
+    "-i", `movie=${escapeLavfiSource(filePath)}${seekOpt},signalstats`,
+    "-show_entries", "frame_tags=lavfi.signalstats.YMIN,lavfi.signalstats.YAVG,lavfi.signalstats.YMAX",
+    "-of", "default=noprint_wrappers=1",
+  ];
+  // When seeking into a video, cap output to ONE frame — otherwise signalstats
+  // would emit every frame from the seek to EOF (huge stdout + a full decode).
+  // The no-seek still path (single image) is left exactly as it was.
+  if (seekOpt) argv.push("-read_intervals", "%+#1");
   let result;
   try {
     result = spawnSync(
       "ffprobe",
-      [
-        "-v", "error",
-        "-f", "lavfi",
-        "-i", `movie=${escapeLavfiSource(filePath)},signalstats`,
-        "-show_entries", "frame_tags=lavfi.signalstats.YMIN,lavfi.signalstats.YAVG,lavfi.signalstats.YMAX",
-        "-of", "default=noprint_wrappers=1",
-      ],
+      argv,
       { encoding: "utf8", timeout: timeoutMs, maxBuffer: 4 * 1024 * 1024 },
     );
   } catch (error) {
@@ -250,6 +261,34 @@ function signalstatsLuma(filePath, { timeoutMs = SIGNALSTATS_TIMEOUT_MS } = {}) 
     return { probed: false, error: "could not parse signalstats luma from ffprobe output" };
   }
   return { probed: true, ymin, yavg, ymax };
+}
+
+const VOLUMEDETECT_TIMEOUT_MS = 5 * 60 * 1000;
+
+// Max/mean audio volume (dBFS) over the whole file via ffmpeg volumedetect.
+// Audio-only decode (-vn) so it's far cheaper than a video pass. Used to flag a
+// SILENT render (a failed audio mux): max_volume at/below the silence floor means
+// no audible program even though the file "has audio". NEVER throws — returns
+// { measured:false } on any failure (advisory, like signalstatsLuma).
+function measureMaxVolumeDb(filePath, { timeoutMs = VOLUMEDETECT_TIMEOUT_MS } = {}) {
+  if (typeof filePath !== "string" || !filePath) return { measured: false, error: "no path" };
+  let result;
+  try {
+    result = spawnSync(
+      "ffmpeg",
+      ["-hide_banner", "-nostats", "-vn", "-i", filePath, "-af", "volumedetect", "-f", "null", "-"],
+      { encoding: "utf8", timeout: timeoutMs, maxBuffer: 8 * 1024 * 1024 },
+    );
+  } catch (error) {
+    return { measured: false, error: error.message || String(error) };
+  }
+  if (result && result.error) return { measured: false, error: result.error.message || String(result.error) };
+  // volumedetect writes to stderr: "[Parsed_volumedetect_0 @ ..] max_volume: -3.2 dB".
+  const text = `${(result && result.stderr) || ""}`;
+  const max = text.match(/max_volume:\s*(-?\d+(?:\.\d+)?)\s*dB/i);
+  const mean = text.match(/mean_volume:\s*(-?\d+(?:\.\d+)?)\s*dB/i);
+  if (!max) return { measured: false, error: "could not parse max_volume" };
+  return { measured: true, max_volume_db: Number(max[1]), mean_volume_db: mean ? Number(mean[1]) : null };
 }
 
 // Per-audio-stream detail for the v3.2 audio-analysis pass (channels/layout/
@@ -321,6 +360,7 @@ function summarizeProbe(filePath, probe) {
 
 module.exports = {
   FFPROBE_INSTALL_HINT,
+  measureMaxVolumeDb,
   probeFile,
   probeKeyframeInterval,
   signalstatsLuma,

@@ -33,8 +33,8 @@ Bump VERSION + CHANGELOG + CLAUDE.md invariants as changes land. Commit per cohe
 | 3 | INTENT→PLAN | **done** ✓ | P1 (teeth/caption-silent/key-moment) + P2 (target-drift/floors/safe-area) + P3 (hook-no-speech); brief-validator audio + stale-vs-intent gate deferred |
 | 4 | PLAN (FSM gate) | pending | |
 | 5 | COMPOSE | **done** ✓ | master_duration_long, design_font_partial, broadened+aimed inspect QC, layout_degraded_fallback; safe-band stays PLAN-side (no bbox from inspect) |
-| 6 | PREVIEW | pending | |
-| 7 | RENDER | pending | |
+| 6 | PREVIEW | **done** ✓ | XC-1 realized-cut drift + XC-2 content QC (black-frame/silent-audio); confirm-revision cross-check (P3) deferred |
+| 7 | RENDER | shared done; P2 next | XC-1/XC-2 done (shared w/ PREVIEW); segment-confirm + music-duck + screenshot-fallback pending |
 | 8 | PACKAGE | pending | |
 | 9 | ITERATE | pending | |
 | X | FSM core / cross-cutting | pending | |
@@ -159,6 +159,12 @@ _(record non-obvious choices here as they're made)_
 - _Verified: layout-qc helper unit tests, runCompositionQc master-long + design-partial (+ no-false-positive when matched/both-used), module load, boot, spans walker._
 - _Note: rendered-text **safe-band** intrusion (COMPOSE#2) is NOT engine-detectable — `hyperframes inspect` gives overflow only (no bbox/safe-area), stills are luma-only (band always has video pixels). Safe-band lever lives at PLAN (planned positions, done Stage 2/3) + COMPOSE edge-overflow (broadened above)._
 - _Deferred (low): caption-sidecar multi-clip anchoring (COMPOSE#12 → fold into PACKAGE sidecar work); wipeComposeDir atomicity (COMPOSE#11); snapshot timecode→filename map (COMPOSE#7)._
+
+### Stage 5/6 — PREVIEW + RENDER shared verification (commit) ✓
+- **XC-1 realized-cut drift**: `realizedScopeDurationSeconds(scenes)` (sum of `sceneOutputSeconds`, speed/layout-baked) replaces the DECLARED `total_target_duration_seconds` as the drift expectation in render-preview + render-full (per active scope: segment/short/doc; declared fallback when scenes don't resolve). Fixes false silent-truncation flags / masked real ones. (RENDER#4 = PREVIEW#6)
+- **XC-2 content QC**: `verifyRenderedMp4({checkContent:true})` now samples peak luma across the output (`signalstatsLuma` w/ new `seekSeconds`) → `black_frame_count`/`all_black`, and measures `max_volume_db` (new `measureMaxVolumeDb`, audio-only volumedetect) → `silent_audio`. Advisory, never gates. Catches the dropped-`<video>` all-black / failed-audio-mux class that duration drift can't. Wired into preview + full render. (RENDER#12 = PREVIEW#1)
+- _Verified on REAL generated videos: black+silent → all_black/silent flagged; normal → clean; realized 7 ≠ declared 14; module load; boot. Existing still-QC path untouched (seek only added on a video seek)._
+- _Deferred: PREVIEW confirm-revision cross-check (PREVIEW#9, P3) → fold into CORE stage._
 
 ## Loop bookkeeping
 
