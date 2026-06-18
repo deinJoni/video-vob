@@ -1556,6 +1556,88 @@ function warnHookNoSpeech(scenes, ctx, disabledRules, warnings) {
   }
 }
 
+// (v3.9) Hook GROUNDING — the INSPECT signals (ranked hook candidates +
+// per-segment energy) made load-bearing. A mediocre cut that opens on quiet,
+// un-ranked footage passes every structural lint but reads flat; these two
+// WARNINGS surface that at the plan gate. Both fail-safe (any missing signal =>
+// skip — graceful absence is never a blocker) and both RETENTION-gated (off for
+// chaptered/montage/general via disabled_rules, like the other hook lints).
+// Recipes: editorial-patterns.md. Hook-candidate source-seconds are on the WINNER
+// transcribed file, so PLAN_HOOK_NOT_GROUNDED only applies when the opening clip
+// is from that file (else skipped — never a cross-file false positive).
+const HOOK_GROUNDING_TOP_N = 3;
+const HOOK_LOW_ENERGY_DB = 3; // dB below the file median that reads as "quiet"
+
+function warnHookGrounding(scenes, ctx, disabledRules, warnings) {
+  const disabled = disabledRules instanceof Set ? disabledRules : new Set();
+  const checkGrounded = !disabled.has("PLAN_HOOK_NOT_GROUNDED");
+  const checkEnergy = !disabled.has("PLAN_OPENING_LOW_ENERGY");
+  if (!checkGrounded && !checkEnergy) return;
+  const first = scenes.length > 0 && isPlainObject(scenes[0]) ? scenes[0] : null;
+  if (!first || first.purpose !== "hook") return;
+  const clips = Array.isArray(first.source_clips) ? first.source_clips : [];
+  // The footage the hook actually shows: its first windowed a_roll clip (or any
+  // windowed clip if the opening is b-roll-driven).
+  const open = clips.find((c) => isPlainObject(c) && clipRoleOf(c) === "a_roll" && clipHasWindow(c) && Number.isInteger(c.manifest_file_index))
+    || clips.find((c) => isPlainObject(c) && clipHasWindow(c) && Number.isInteger(c.manifest_file_index));
+  if (!open) return;
+  const fileIndex = open.manifest_file_index;
+  const inS = open.in_seconds;
+  const outS = open.out_seconds;
+  if (!isFiniteNumber(inS) || !isFiniteNumber(outS)) return;
+
+  // (a) PLAN_HOOK_NOT_GROUNDED — opening window overlaps no top-N ranked candidate.
+  if (checkGrounded && isPlainObject(ctx.summary)) {
+    const cands = (Array.isArray(ctx.summary.hook_candidates) ? ctx.summary.hook_candidates : [])
+      .filter((c) => isPlainObject(c) && isFiniteNumber(c.start_seconds) && isFiniteNumber(c.end_seconds));
+    const winnerFile = Number.isInteger(ctx.summary.transcribed_file_index) ? ctx.summary.transcribed_file_index : null;
+    if (cands.length > 0 && winnerFile !== null && fileIndex === winnerFile) {
+      const top = cands.slice(0, HOOK_GROUNDING_TOP_N);
+      const grounded = top.some((c) => inS < c.end_seconds && outS > c.start_seconds);
+      if (!grounded) {
+        const best = top[0];
+        warnings.push({
+          code: "PLAN_HOOK_NOT_GROUNDED",
+          message: `the hook opens at ${round1(inS)}–${round1(outS)}s, which matches none of the top ${top.length} hook candidate(s) INSPECT ranked — the strongest available candidate (rank ${Number.isInteger(best.rank) ? best.rank : 1}) is ${round1(best.start_seconds)}–${round1(best.end_seconds)}s${isNonEmptyString(best.text) ? ` ("${best.text.trim().slice(0, 60)}")` : ""}. Open on a ranked hook, or note in the scene summary why you deviated.`,
+          scene_index: 0,
+          scene_id: sceneIdOf(first),
+          data: { open_in_seconds: round1(inS), open_out_seconds: round1(outS), top_candidate_start_seconds: round1(best.start_seconds), top_candidate_end_seconds: round1(best.end_seconds) },
+        });
+      }
+    }
+  }
+
+  // (b) PLAN_OPENING_LOW_ENERGY — opening drawn from a quiet span while louder
+  // delivery exists on the same file (a flat open rarely hooks). Generous: uses
+  // the LOUDEST overlapping segment, and only fires when a clearly-louder span
+  // was available — so a hook that happens to include a peak never trips.
+  if (checkEnergy) {
+    const segs = segmentsForFile(ctx.segments, fileIndex).filter(
+      (s) => isPlainObject(s) && s.is_silence !== true
+        && isFiniteNumber(s.energy_rms_db) && isFiniteNumber(s.start_seconds) && isFiniteNumber(s.end_seconds),
+    );
+    if (segs.length >= 3) {
+      const energies = segs.map((s) => s.energy_rms_db).slice().sort((a, b) => a - b);
+      const mid = energies.length >> 1;
+      const median = energies.length % 2 ? energies[mid] : (energies[mid - 1] + energies[mid]) / 2;
+      const fileMax = energies[energies.length - 1];
+      const overlapping = segs.filter((s) => inS < s.end_seconds && outS > s.start_seconds);
+      if (overlapping.length > 0) {
+        const openEnergy = Math.max(...overlapping.map((s) => s.energy_rms_db));
+        if (openEnergy < median - HOOK_LOW_ENERGY_DB && fileMax - openEnergy >= HOOK_LOW_ENERGY_DB) {
+          warnings.push({
+            code: "PLAN_OPENING_LOW_ENERGY",
+            message: `the hook opens on a low-energy span (~${round1(openEnergy)} dB vs the file's ${round1(median)} dB median; louder delivery up to ${round1(fileMax)} dB is available) — open on a higher-energy moment so the first seconds land.`,
+            scene_index: 0,
+            scene_id: sceneIdOf(first),
+            data: { open_energy_db: round1(openEnergy), median_energy_db: round1(median), file_max_energy_db: round1(fileMax) },
+          });
+        }
+      }
+    }
+  }
+}
+
 // Rhythm-arc lints over the existing scene `pacing` field (no schema change).
 //   PLAN_PACING_MONOTONE — ≥4 scenes all the SAME pace read as a flat edit
 //     (universal: an all-identical pacing track is monotonous in any format).
@@ -2771,6 +2853,7 @@ function lintStoryboardPlan(parsed, context) {
 
   warnHookShape(scenes, warnings, disabled);
   warnHookNoSpeech(scenes, ctx, disabled, warnings);
+  warnHookGrounding(scenes, ctx, disabled, warnings);
   warnPacingArc(scenes, warnings, disabled);
   warnSceneFloors(scenes, warnings);
   warnDurations(parsed, scenes, ctx.targetSeconds, warnings);
@@ -2896,6 +2979,43 @@ function loadCleanSpeech(state) {
   }
 }
 
+// (v3.9) The full ranked hook candidates live in inspect/summary.json (the lean
+// state slot keeps only the count); state.inspect.summary_path points at it.
+function loadInspectSummary(state) {
+  const p = state && isPlainObject(state.inspect) && isNonEmptyString(state.inspect.summary_path)
+    ? state.inspect.summary_path
+    : null;
+  if (!p || !fs.existsSync(p)) return null;
+  try {
+    const parsed = readJsonFile(p);
+    return isPlainObject(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+// (v3.9) inspect/segments.json carries per-segment energy_rms_db / speech_rate_wpm.
+function loadSegments(state) {
+  const p = state && isPlainObject(state.inspect) && isNonEmptyString(state.inspect.segments_path)
+    ? state.inspect.segments_path
+    : null;
+  if (!p || !fs.existsSync(p)) return null;
+  try {
+    const parsed = readJsonFile(p);
+    return isPlainObject(parsed) && Array.isArray(parsed.files) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+// Non-silence segments for one manifest file index, from a loaded segments.json
+// ({ files:[{ file_index, segments:[] }] }). Best-effort: [] on any miss.
+function segmentsForFile(segmentsDoc, fileIndex) {
+  if (!isPlainObject(segmentsDoc) || !Array.isArray(segmentsDoc.files)) return [];
+  const file = segmentsDoc.files.find((f) => isPlainObject(f) && f.file_index === fileIndex);
+  return file && Array.isArray(file.segments) ? file.segments : [];
+}
+
 function resolveTargetSeconds(state, parsed) {
   const intent = state && isPlainObject(state.intent) ? state.intent : null;
   const answers = intent && isPlainObject(intent.answers) ? intent.answers : null;
@@ -2995,6 +3115,10 @@ function validateStoryboardContent(parsed, state) {
     transcript: winnerTranscript,
     transcriptForFileIndex: buildTranscriptResolver(state, winnerTranscript),
     cleanSpeech: loadCleanSpeech(state),
+    // (v3.9) INSPECT signals made load-bearing for the hook-grounding lints: the
+    // full ranked hook candidates (summary.json) + per-segment energy (segments.json).
+    summary: loadInspectSummary(state),
+    segments: loadSegments(state),
     lintRules,
   };
   const errors = [...lintDuplicateSceneIds(parsed)];

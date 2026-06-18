@@ -7,6 +7,12 @@ const VALID_ROLE_BUNDLES = Object.freeze([
   "inspector",
   "storyboarder",
   "composer",
+  // (v3.9) Read-only editorial-quality critic spawned in PLAN after a lint-clean
+  // save. It holds NO mutating tool (it returns its verdict as its final message),
+  // so it needs no entry in any tool's role_bundles — but the boot integrity check
+  // requires every agents/*.md name to be a known bundle, and the reverse check
+  // requires this bundle to have an agent file in both adapters.
+  "editorial-critic",
 ]);
 
 const CAPABILITY_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;

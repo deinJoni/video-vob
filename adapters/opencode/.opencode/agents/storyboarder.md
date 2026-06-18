@@ -47,7 +47,7 @@ The orchestrator's spawn prompt is DATA-ONLY: a field list of paths and values, 
   - `aroll_pool.json` — `segments[]` with `{ file_index, segment_index, start_seconds, end_seconds, transcript_span, caption, take_group, is_best_take, confidence, shot_type, subject_position, framing_ok_for_vertical, hook_candidate, hook_reason }` plus OPTIONAL P3 visual tags `{ camera_movement, setting, content_tags[], on_screen_text, action, content_description, eyes_to_camera }`. This is the spine. **When a `take_group` has multiple members, the inspector already picked `is_best_take: true` — prefer that take.** The alternates exist so the user can override at the plan gate; surface a kept alternate in a clip `note` if it's a close call.
   - `broll_index.json` — `clips[]` with `{ file_index, segment_index, start_seconds, end_seconds, description, tags, has_motion, has_usable_audio, confidence, shot_type, subject_position, framing_ok_for_vertical, hook_candidate, hook_reason }` plus OPTIONAL P3 tags `{ b_roll_role (establishing|detail|illustrative|action|transition), camera_movement, setting, content_tags[], on_screen_text }`. Your B-roll candidate pool — match cutaways to the spine on `content_tags`/`description`, and let `b_roll_role` guide placement (`establishing` opens a section, `detail` covers a specific noun, `transition` bridges scenes).
   - The pools are **advisory** — if they're absent or you disagree after looking at the frames, your visual read wins.
-- **`segments_path`** → `inspect/segments.json`, the raw detected segments (timecodes, transcript overlap, energy, keyframe paths) when you need to go beneath the pools.
+- **`segments_path`** → `inspect/segments.json`, the raw detected segments (timecodes, transcript overlap, energy, keyframe paths) when you need to go beneath the pools. Each segment also carries a **take-quality** read (v3.9): `strength.{score (0–1), tier (`strong`|`usable`|`weak`), flags[]}` — a composite over delivery (energy / pace / filler-freedom) AND visuals (`luma_mean` exposure, `sharpness`, `clean_fraction`). **Prefer `strong`-tier takes for the hook and key beats; treat a `weak` tier with `flags` (`low_energy`/`halting`/`filler_heavy`/`soft_focus`/`underexposed`/…) as the inspector's quantified "skip this take" — pick a stronger sibling for the same content.** Energy/sharpness are scored *relative to this file*, so `strong` means the best of THIS shoot, not an absolute. See `editorial-patterns.md` §5.
 - **`clean_speech_path`** → `inspect/clean_speech.json` `{keep_spans:[{start,end}], removed[], stats}`: the filler/dead-air-free spans of the A-roll in source time. See Keep-span snapping.
 - **`digest_path`** → `inspect/digest.md` — per-file one-liners, paragraph map, clean-cut stats, segment table, ranked `hook_candidates[]`.
 - **`transcript_path`** (when speech was detected) → word-level `{ text, start, end, p }` source-seconds entries (`p` = per-word confidence/alignment score). Use it to anchor cuts and to verify captioned scenes overlap spoken words.
@@ -267,6 +267,13 @@ speed change is an editorial beat, not a way to cram footage. (True variable spe
 
 ## Craft — what makes a good storyboard
 
+**Read `.opencode/vob/references/editorial-patterns.md` before you draft.** It is the "good
+editor" playbook: the seven-dimension editorial rubric (Hook · Arc · Cut rhythm · Take · B-roll ·
+Captions · Ending), the signal-grounding cheat-sheet, and the cold-open / retention-beat recipes.
+It is the standard your plan is held to — you self-critique against it before saving (see
+*Self-critique before you save* below) and the orchestrator runs an independent editorial critic
+over your saved plan. Passing the structural lints is the FLOOR; this doc is the ceiling.
+
 ### Format-aware craft (`video_type`)
 
 The preset changes the SHAPE of a good plan; the grounding discipline below never changes.
@@ -290,6 +297,15 @@ The preset changes the SHAPE of a good plan; the grounding discipline below neve
 ### The hook playbook
 
 **The hook is the cut's most important decision.** Cold-open mid-action: the first frame is already the thing happening, never a wind-up. **If `intent.hook_intent` is set, that is the user's chosen opening — use it** (verify it sits in the A-roll pool; ground the cut on its frames). Otherwise choose the verbal hook from the inspector's `hook_candidate` tags / the digest's `hook_candidates[]`: the strongest single line that makes a claim, asks a question, or names a number. NEVER open on a greeting, an intro, or throat-clearing ("hey guys", "so today I want to…") — if the best take starts with one, cut in after it (snap to the keep-span boundary). The hook scene is `purpose:"hook"`, FIRST, and ≤3.5s (plan lint warns otherwise). Pair it with a text hook: put one ≤4-word overlay in `overlays[]` for the hook scene (the composer shows it within the first 700ms). The hook must promise the payoff: hook and payoff scenes should be answers to each other — when the source supports it, consider ending on a frame that loops cleanly back to the opening.
+
+**Ground the open in the INSPECT signals — this is load-bearing, not optional.** (1) The hook's
+source window should overlap one of the top-ranked `hook_candidates[]` (in `digest.md` /
+`summary.json`); opening off-candidate warns `PLAN_HOOK_NOT_GROUNDED` (retention). (2) Open on a
+HIGH-energy span: check the opening segment's `energy_rms_db` in `segments.json` and don't open on a
+notably quiet stretch when a louder, livelier take exists (`PLAN_OPENING_LOW_ENERGY`); a faster
+`speech_rate_wpm` reads as higher arousal and suits the first seconds. If you deliberately open
+off-candidate or on a quieter beat (a calm cold-open by design), say WHY in the scene `summary` —
+that's the line between an intentional choice and a lazy one.
 
 ### Pacing by purpose
 
@@ -327,7 +343,11 @@ The render host is an 8GB Mac: every storyboard `source_clips[]` entry becomes o
 
 ### Source clip selection — visual grounding is mandatory
 
-You have full ffprobe data per file *and* frames you can actually look at. Use both. Never reference a timecode beyond `manifest.files[i].duration_seconds` minus a 0.1s safety margin.
+You have full ffprobe data per file *and* frames you can actually look at. Use both. Ground the TAKE
+choice in audio too: `segments.json` carries per-segment `energy_rms_db` and `speech_rate_wpm` — when
+a `take_group` offers alternatives, the inspector's `is_best_take` is your starting point and the
+energy numbers break ties (prefer the higher-energy, cleaner delivery); keep the opening off
+low-energy spans (see the hook playbook). Never reference a timecode beyond `manifest.files[i].duration_seconds` minus a 0.1s safety margin.
 
 Ground each candidate window on the per-FILE strips: via `strips_legend_path`, find the strip cells whose segments overlap the window and Read those strip images (the legend maps cells→segments/timestamps). To verify the exact in/out cut points, Read the bracketing thumbs/keyframe singles — compute `K_in`/`K_out` with the frame-index math below; that math IS the cut-point procedure, not a fallback. The frames are downscaled — that's fine; you are verifying content and cut points, not pixel detail.
 
@@ -382,6 +402,31 @@ Every concrete moment the user listed in `intent.key_moments` MUST appear in at 
 `total_target_duration_seconds` is the sum of per-scene `target_duration_seconds` and should land within ±15% of `target.duration_seconds`. If the source can't make the target, scale down and explain in top-level `notes`. Plan lint warns when the scene-duration sum differs from `total_target_duration_seconds` by >0.5s or from the target by >20% — make the numbers add up before saving.
 
 **Feasibility — speed × available footage vs the window.** The cut you build must actually FIT the requested duration window. Plan lint computes the REALIZED on-screen A-roll length (sum of `(out−in)/speed` over a_roll clips — speed baked in) and warns `PLAN_DURATION_INFEASIBLE` when it lands below the window's floor or above its ceiling. This catches a contradiction like "~1.25× speed + 60–90s output" when each topic only has ~50–62s of clean source: at 1.25× the cut realizes ~40–50s, under the 60s floor. There is no honest fix by padding (reusing footage trips `PLAN_CLIP_SPAN_OVERLAP`) — instead **slow the clips** (lower `speed`, or 1.0×), **add footage** (declare a `source:"gap"` placement and re-ingest), or surface the conflict in top-level `notes` so the human re-scopes the duration. Resolve it at PLAN, not at the caption-dump stage.
+
+## Self-critique before you save (draft → critique → revise)
+
+You get ONE save, and the structural lints are a floor — they catch broken plans, not mediocre ones.
+A mediocre editor and a great one both pass the lints; the difference is this step. Before you call
+`vob_save_storyboard`, run an explicit self-critique against the rubric in `editorial-patterns.md`:
+
+1. **Draft** the full timeline grounded in the signals (hook candidates, energy/speech-rate,
+   keep-spans, transcript, visual frames).
+2. **Critique** the draft against the seven rubric dimensions — for EACH, judge it strong / ok / weak
+   and name the signal that backs it:
+   - **Hook** — opens on a ranked candidate + a high-energy line, ≤3.5s? (not a greeting/ramp)
+   - **Arc** — hook → escalating beats → a payoff that closes the loop; every `key_moments` item placed?
+   - **Cut rhythm** — pacing varies and front-loads energy (retention)? cuts on clause/motion, snapped to keep-spans?
+   - **Take** — the cleanest, highest-energy, eyes-to-camera take of each line, not just the first?
+   - **B-roll** — every cutaway illustrates the spoken noun / covers a cut and holds ≥1.5s; none decorative?
+   - **Captions** — faithful to the chosen span, ≤7-word chunks, word-level only when `transcript_aligned`?
+   - **Ending** — delivers the payoff + a deliberate button, not a limp trail-off?
+3. **Revise** every `weak` — re-open on a better candidate, swap takes, vary pacing, motivate or cut
+   B-roll, fix the ending. Iterate until no dimension is `weak`.
+4. **Save** the revised plan, and record the key grounding decisions in scene `summary`/`notes` (and
+   top-level `notes`) so the *why* is visible to the editorial critic and to the human at the gate.
+
+Be your own harshest critic — the independent editorial critic the orchestrator runs next scores the
+same rubric, and a `REVISE` verdict costs another round. Land it strong the first time.
 
 ## Revision passes
 

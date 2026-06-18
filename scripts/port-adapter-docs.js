@@ -54,7 +54,7 @@ function baseTransform(text) {
   t = t.replace(/any other `vob_\*` tool\b/g, "any other `vob_vob_*` tool");
   // Spawn wrapper: Task(...) -> the `task` tool phrasing with a bare DATA block.
   t = t.replace(
-    /(\n)( {3}```\n) {3}Task\(subagent_type: "([a-z]+)",\n {8}description: "[^"]*",\n {8}prompt: "DATA\n/g,
+    /(\n)( {3}```\n) {3}Task\(subagent_type: "([a-z-]+)",\n {8}description: "[^"]*",\n {8}prompt: "DATA\n/g,
     (_, nl, fence, agent) => `${nl}   Invoke the \`${agent}\` subagent with the \`task\` tool, passing:\n${fence}   DATA\n`,
   );
   t = t.replace(/Follow your agent instructions\."\)/g, "Follow your agent instructions.");
@@ -129,12 +129,12 @@ for (const phase of PHASES) {
   writeOut(path.join(OC, "vob", "phases", `${phase}.md`), t);
 }
 
-for (const ref of ["lint-rules.md", "brief-design.md", "clarifying-questions.md"]) {
+for (const ref of ["lint-rules.md", "brief-design.md", "clarifying-questions.md", "editorial-patterns.md"]) {
   writeOut(path.join(OC, "vob", "references", ref), baseTransform(read(path.join(CC, "skills", "vob", "references", ref))));
 }
 
 // --- subagents: keep the OpenCode frontmatter, port the body ----------------
-for (const agent of ["inspector", "storyboarder", "composer"]) {
+for (const agent of ["inspector", "storyboarder", "composer", "editorial-critic"]) {
   const ccBody = splitFrontmatter(read(path.join(CC, "agents", `${agent}.md`))).body;
   const ocPath = path.join(OC, "agents", `${agent}.md`);
   const ocFm = splitFrontmatter(read(ocPath)).fm;
