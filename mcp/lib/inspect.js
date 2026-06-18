@@ -95,6 +95,12 @@ const SEGMENT_SCHEMA_VERSION = "1.0";
 const SEGMENTS_DOC_VERSION = "1.1";
 const FEATURES_VERSION = 1; // audio_features cache slot version
 const SCENE_THRESHOLD = 0.4;
+// Adaptive fallback: a long, video-bearing file that yields ZERO cuts at the
+// standard threshold is usually soft-cut (slow dissolves/vlog) or a single-shot
+// interview — both collapse to one giant silence-only segment, starving the
+// storyboarder of clip-level granularity. Retry ONCE at this lower threshold.
+const RETRY_SCENE_THRESHOLD = 0.2;
+const SCENE_RETRY_MIN_SECONDS = 45; // don't bother retrying short clips
 const SILENCE_NOISE_DB = -30;
 const SILENCE_MIN_SECONDS = 0.5;
 const MIN_SEGMENT_SECONDS = 0.4;
@@ -110,6 +116,7 @@ const SILENCE_DETECT_CEILING_MS = 30 * 60 * 1000;
 const AUDIO_EXTRACT_CEILING_MS = 30 * 60 * 1000;
 const DETECT_PARAMS = Object.freeze({
   sceneThreshold: SCENE_THRESHOLD,
+  retrySceneThreshold: RETRY_SCENE_THRESHOLD,
   noiseDb: SILENCE_NOISE_DB,
   minSilenceSeconds: SILENCE_MIN_SECONDS,
 });
@@ -454,7 +461,7 @@ async function transcribeAudio({ audioPath, inspectDirAbs, expectedTranscriptPat
     durationSeconds,
   });
   if (res.ok) {
-    return { ok: true, word_count: res.word_count || 0, backend: res.backend, aligned: res.aligned === true, attempts: res.attempts || [] };
+    return { ok: true, word_count: res.word_count || 0, backend: res.backend, language: res.language || null, aligned: res.aligned === true, attempts: res.attempts || [] };
   }
   return { ok: false, reason: res.reason || "transcription_failed", attempts: res.attempts || [] };
 }
@@ -484,11 +491,14 @@ function readTranscriptCache(projectId, hash, params) {
     words: doc.words,
     word_count: Number.isFinite(doc.word_count) ? doc.word_count : doc.words.length,
     backend_used: doc.backend_used || null,
+    // The DETECTED language (distinct from params.language, the configured one) —
+    // surfaced so cache hits stay language-aware for hook scoring.
+    language: typeof doc.detected_language === "string" ? doc.detected_language : null,
     aligned: doc.aligned === true,
   };
 }
 
-function writeTranscriptCache(projectId, hash, params, words, backendUsed, aligned) {
+function writeTranscriptCache(projectId, hash, params, words, backendUsed, aligned, detectedLanguage) {
   if (typeof hash !== "string" || !hash || !Array.isArray(words)) return;
   let cachePath;
   try { cachePath = transcriptCachePath(projectId, hash); } catch { return; }
@@ -499,6 +509,7 @@ function writeTranscriptCache(projectId, hash, params, words, backendUsed, align
     file_hash: hash,
     params,
     backend_used: backendUsed || null,
+    detected_language: typeof detectedLanguage === "string" ? detectedLanguage : null,
     aligned: aligned === true,
     word_count: words.length,
     words,
@@ -523,6 +534,7 @@ function readDetectionCache(projectId, hash) {
   const p = doc.params || {};
   if (
     p.sceneThreshold !== DETECT_PARAMS.sceneThreshold
+    || p.retrySceneThreshold !== DETECT_PARAMS.retrySceneThreshold
     || p.noiseDb !== DETECT_PARAMS.noiseDb
     || p.minSilenceSeconds !== DETECT_PARAMS.minSilenceSeconds
   ) return null;
@@ -530,17 +542,20 @@ function readDetectionCache(projectId, hash) {
   // scene_detected records whether scene_cuts is AUTHORITATIVE (the pass actually
   // ran) vs. an empty placeholder from a skip_scene_detection run. Old caches
   // (predating the field) were always full detections -> treat missing as true.
+  // scene_detection_basis records HOW the cuts were obtained (scene / retry /
+  // single-shot) so the storyboarder knows the clip granularity it's working with.
   // audio_features passes through untouched; the features_version check happens
   // at the call site (a v1 cache lacking it stays valid for silences/scenes).
   return {
     scene_cuts: doc.scene_cuts,
     silences: doc.silences,
     scene_detected: doc.scene_detected !== false,
+    scene_detection_basis: typeof doc.scene_detection_basis === "string" ? doc.scene_detection_basis : null,
     audio_features: doc.audio_features || null,
   };
 }
 
-function writeDetectionCache(projectId, hash, sceneCuts, silences, sceneDetected, audioFeatures) {
+function writeDetectionCache(projectId, hash, sceneCuts, silences, sceneDetected, audioFeatures, sceneBasis) {
   if (typeof hash !== "string" || !hash) return;
   let cachePath;
   try { cachePath = segmentCachePath(projectId, hash); } catch { return; }
@@ -551,6 +566,7 @@ function writeDetectionCache(projectId, hash, sceneCuts, silences, sceneDetected
     params: DETECT_PARAMS,
     scene_cuts: sceneCuts,
     scene_detected: sceneDetected === true,
+    scene_detection_basis: typeof sceneBasis === "string" ? sceneBasis : null,
     silences,
     audio_features: audioFeatures
       ? {
@@ -602,10 +618,15 @@ async function segmentSourceFiles({ projectId, manifest, transcriptsByFile, skip
     let sceneCuts = [];
     let silences = [];
     let sceneDetected = !hasVideo;
+    // How the cuts were obtained, surfaced to the storyboarder so it knows the
+    // clip granularity it has: audio_only | scene | low_threshold_retry |
+    // single_shot | silence_only | detect_failed | skipped | cached.
+    let sceneBasis = hasVideo ? null : "audio_only";
     const cached = readDetectionCache(projectId, file.hash);
     if (cached && cached.scene_detected) {
       sceneCuts = cached.scene_cuts;
       sceneDetected = true;
+      sceneBasis = cached.scene_detection_basis || "cached";
     }
 
     if (hasVideo && !skipSceneDetection && !sceneDetected) {
@@ -615,8 +636,33 @@ async function segmentSourceFiles({ projectId, manifest, transcriptsByFile, skip
         envVar: "VOB_SCENE_DETECT_TIMEOUT_MS",
       });
       const sc = await detectSceneChanges(file.path, { threshold: SCENE_THRESHOLD, timeoutMs: sceneTimeoutMs });
-      sceneCuts = sc.ok ? sc.cuts : [];
+      if (!sc.ok) {
+        sceneCuts = [];
+        sceneBasis = "detect_failed";
+      } else if (sc.cuts.length > 0) {
+        sceneCuts = sc.cuts;
+        sceneBasis = "scene";
+      } else if (duration >= SCENE_RETRY_MIN_SECONDS) {
+        // Zero cuts on a long file: retry once at the lower threshold before
+        // accepting silence-only segmentation.
+        const rc = await detectSceneChanges(file.path, { threshold: RETRY_SCENE_THRESHOLD, timeoutMs: sceneTimeoutMs });
+        if (rc.ok && rc.cuts.length > 0) {
+          sceneCuts = rc.cuts;
+          sceneBasis = "low_threshold_retry";
+        } else {
+          // Even the lower threshold found nothing: genuinely single-shot, so the
+          // file will be partitioned on silence alone.
+          sceneCuts = [];
+          sceneBasis = rc.ok ? "single_shot" : "scene";
+        }
+      } else {
+        // Short clip with no cuts — silence/whole-clip segmentation is expected.
+        sceneCuts = [];
+        sceneBasis = "silence_only";
+      }
       sceneDetected = true;
+    } else if (hasVideo && skipSceneDetection && !sceneDetected) {
+      sceneBasis = "skipped";
     }
 
     // Audio pass: a v1 cache hit that lacks features re-runs the (cheap, audio-
@@ -657,7 +703,7 @@ async function segmentSourceFiles({ projectId, manifest, transcriptsByFile, skip
     // Persist when there's something new to store: a first detection, an
     // upgrade from "scenes skipped" to "scenes detected", or fresh features.
     if (!cached || (sceneDetected && !cached.scene_detected) || (audioFeatures && !cachedHasFeatures)) {
-      writeDetectionCache(projectId, file.hash, sceneCuts, silences, sceneDetected, audioFeatures);
+      writeDetectionCache(projectId, file.hash, sceneCuts, silences, sceneDetected, audioFeatures, sceneBasis);
     }
 
     let segments = buildSegments({
@@ -701,6 +747,7 @@ async function segmentSourceFiles({ projectId, manifest, transcriptsByFile, skip
       has_video: hasVideo,
       has_audio: hasAudio,
       scene_cut_count: sceneCuts.length,
+      scene_detection_basis: sceneBasis,
       silence_count: silences.length,
       segment_count: segments.length,
       loudness: audioFeatures ? audioFeatures.loudness || null : null,
@@ -1012,6 +1059,7 @@ async function runInspect({ projectId, manifest, options = {} }) {
   let skippedReason = null;
   let asrBackend = null;
   let asrAttempts = null;
+  let winnerLanguage = null; // detected language of the winner transcript (for crosslingual hook scoring)
   let transcriptAligned = false; // winner timing is karaoke-grade (forced-aligned)?
   let transcriptsSummary = [];
   let transcriptCacheHits = 0;
@@ -1044,6 +1092,7 @@ async function runInspect({ projectId, manifest, options = {} }) {
         perFile.set(idx, {
           ok: true, path: outPath, words: cached.words,
           word_count: cached.word_count, backend: cached.backend_used,
+          language: cached.language || null,
           aligned: cached.aligned === true,
           from_cache: true, reason: null, attempts: null, wav: null,
         });
@@ -1071,7 +1120,7 @@ async function runInspect({ projectId, manifest, options = {} }) {
           const w = readJsonFile(outPath);
           if (Array.isArray(w)) words = w;
         } catch { words = null; }
-        if (words) writeTranscriptCache(projectId, file.hash, asrParams, words, tr.backend, tr.aligned);
+        if (words) writeTranscriptCache(projectId, file.hash, asrParams, words, tr.backend, tr.aligned, tr.language);
       }
       perFile.set(idx, {
         ok: tr.ok && !!words,
@@ -1079,6 +1128,7 @@ async function runInspect({ projectId, manifest, options = {} }) {
         words,
         word_count: words ? words.length : 0,
         backend: tr.backend || null,
+        language: tr.language || null,
         aligned: tr.aligned === true,
         from_cache: false,
         reason: tr.ok ? null : (tr.reason || "transcription_failed"),
@@ -1098,6 +1148,7 @@ async function runInspect({ projectId, manifest, options = {} }) {
     const win = perFile.get(winnerIdx);
     asrBackend = win.backend;
     asrAttempts = win.attempts;
+    winnerLanguage = win.language || null;
     // audio.wav: copy the winner's temp wav, or (cache hit ⇒ no wav) extract it now.
     if (win.wav && fs.existsSync(win.wav)) {
       try { fs.copyFileSync(win.wav, audioAbs); audioPathOut = audioAbs; } catch { audioPathOut = null; }
@@ -1261,6 +1312,7 @@ async function runInspect({ projectId, manifest, options = {} }) {
       paragraphs: paragraphsOut,
       energyWindows: winnerFeatures ? winnerFeatures.energy_windows : null,
       durationSeconds: fileWithAudio ? Number(fileWithAudio.duration_seconds) : null,
+      language: winnerLanguage,
     }) || [];
   } catch { hookCandidates = []; }
   let digestPathOut = null;

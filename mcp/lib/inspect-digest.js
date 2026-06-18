@@ -13,7 +13,12 @@ const NUMBER_WORD_RE = /\b(hundred|thousand|million|billion|percent|half|double|
 const CLAIM_RE = /\b(never|always|nobody|no one|everyone|every|biggest|worst|best|only|secret|mistake|wrong|stop|truth|insane|crazy|free|hate|love|guarantee|warning|problem|nothing|impossible)\b/gi;
 const SECOND_PERSON_RE = /\byou(r|rs)?\b/i;
 const GREETING_RE = /^(hi|hey|hello|welcome|what's up|good (morning|afternoon|evening)|today (i|we)|in this video|so today|my name is|i('m| am) (going to|gonna))/i;
-const SENTENCE_END_RE = /[.?!]["')\]]*$/;
+// Terminal punctuation INCLUDES CJK fullwidth stops (。？！) so non-English
+// sentences flush on punctuation rather than only on gaps/the 30-word cap.
+const SENTENCE_END_RE = /[.?!。？！]["')\]]*$/;
+// Question punctuation is language-agnostic (incl. fullwidth ？); the
+// interrogative WORD list (INTERROGATIVE_RE) is English-only.
+const QUESTION_PUNCT_RE = /[?？]["')\]]*\s*$/;
 
 const MAX_SENTENCE_WORDS = 30;
 const SENTENCE_GAP_SECONDS = 1.0;
@@ -83,11 +88,20 @@ function containingParagraph(paragraphs, start) {
  * @param {Array}      args.paragraphs      [{n,start,end,text}] (or [])
  * @param {Array|null} args.energyWindows   [{t,rms_db}] 0.5s windows (or null)
  * @param {number|null} args.durationSeconds source duration
+ * @param {string|null} args.language        detected language code (e.g. "en", "zh")
  * @returns {Array} ≤5 entries: {rank, score, start_seconds, end_seconds, paragraph, text, signals}
  */
-function rankHookCandidates({ words, paragraphs, energyWindows, durationSeconds } = {}) {
+function rankHookCandidates({ words, paragraphs, energyWindows, durationSeconds, language } = {}) {
   const sentences = assembleSentences(words);
   if (sentences.length === 0) return [];
+
+  // The lexical hook signals (interrogative word, claim words, second person,
+  // greeting, number WORDS) are English regexes — on a non-English source they
+  // all score ~0, leaving the ranking near-random and often below threshold. For
+  // non-English we GATE those signals and lean harder on the language-agnostic
+  // ones (energy, position, digits, question punctuation), so the cold-open hook
+  // — the highest-leverage retention moment — still has a real basis.
+  const isEnglish = !language || /^en/i.test(String(language));
 
   // File-level energy stats (population σ); skipped entirely without windows.
   const windows = Array.isArray(energyWindows)
@@ -104,25 +118,27 @@ function rankHookCandidates({ words, paragraphs, energyWindows, durationSeconds 
     const signals = [];
     let score = 0;
     const firstWord = (s.text.split(/\s+/)[0] || "").replace(/^[^A-Za-z']+|[^A-Za-z']+$/g, "");
-    if (QUESTION_END_RE.test(s.text) || INTERROGATIVE_RE.test(firstWord)) {
+    if (QUESTION_PUNCT_RE.test(s.text) || (isEnglish && INTERROGATIVE_RE.test(firstWord))) {
       score += 2.0; signals.push("question");
     }
-    if (/\d/.test(s.text) || NUMBER_WORD_RE.test(s.text)) {
+    if (/\d/.test(s.text) || (isEnglish && NUMBER_WORD_RE.test(s.text))) {
       score += 1.0; signals.push("number");
     }
-    const claims = distinctClaimCount(s.text);
-    if (claims > 0) {
-      score += Math.min(claims, 2); signals.push("claim");
-    }
-    if (SECOND_PERSON_RE.test(s.text)) {
-      score += 0.5; signals.push("second_person");
+    if (isEnglish) {
+      const claims = distinctClaimCount(s.text);
+      if (claims > 0) {
+        score += Math.min(claims, 2); signals.push("claim");
+      }
+      if (SECOND_PERSON_RE.test(s.text)) {
+        score += 0.5; signals.push("second_person");
+      }
     }
     const para = containingParagraph(paragraphs, s.start);
     if (para && s.start <= para.start + 0.75) {
-      score += 0.75; signals.push("paragraph_start");
+      score += isEnglish ? 0.75 : 1.0; signals.push("paragraph_start");
     }
     if (isNum(durationSeconds) && s.start <= 0.2 * durationSeconds) {
-      score += 0.5; signals.push("early");
+      score += isEnglish ? 0.5 : 1.0; signals.push("early");
     }
     if (windows.length > 0) {
       // Window midpoint t+0.25 inside [start,end) attributes it to this sentence.
@@ -131,9 +147,9 @@ function rankHookCandidates({ words, paragraphs, energyWindows, durationSeconds 
         const mean = hits.reduce((a, w) => a + w.rms_db, 0) / hits.length;
         const z = sigma > 0 ? (mean - mu) / sigma : 0;
         if (z >= 1.0) {
-          score += 1.0; signals.push("energy_high");
+          score += isEnglish ? 1.0 : 1.5; signals.push("energy_high");
         } else if (z >= 0) {
-          score += 0.5; signals.push("energy_above_avg");
+          score += isEnglish ? 0.5 : 0.75; signals.push("energy_above_avg");
         }
       }
     }
@@ -143,7 +159,7 @@ function rankHookCandidates({ words, paragraphs, energyWindows, durationSeconds 
     if (s.word_count > 25) {
       score -= 0.5; signals.push("long_penalty");
     }
-    if (GREETING_RE.test(s.text)) {
+    if (isEnglish && GREETING_RE.test(s.text)) {
       score -= 3.0; signals.push("greeting_penalty");
     }
     return { sentence: s, score, signals, paragraph: para ? para.n : null };
@@ -220,6 +236,16 @@ function filesSection({ manifestFiles, fileSummaries, transcripts, sceneDetectio
     const lufs = fs && fs.loudness && isNum(fs.loudness.lufs_integrated) ? String(fs.loudness.lufs_integrated) : "—";
     const notes = [];
     if (sceneDetectionSkipped && hasVideo) notes.push("scene detection skipped");
+    // Surface low clip granularity so the storyboarder knows it can't cut on
+    // shot boundaries (no scene cuts → silence-only partition of the file).
+    const basis = fs && typeof fs.scene_detection_basis === "string" ? fs.scene_detection_basis : null;
+    if (hasVideo && (basis === "single_shot" || basis === "silence_only")) {
+      notes.push("single-shot/soft — silence-only segmentation (no shot-level cuts)");
+    } else if (basis === "low_threshold_retry") {
+      notes.push("soft cuts (low-threshold detect)");
+    } else if (basis === "detect_failed") {
+      notes.push("scene detect failed — silence-only");
+    }
     if (tr && tr.path == null) notes.push(`transcription failed${tr.reason ? `: ${tr.reason}` : ""}`);
     if (hasAudio && !hasVideo) notes.push("audio-only");
     if (!hasAudio) notes.push("no audio");

@@ -28,9 +28,9 @@ Bump VERSION + CHANGELOG + CLAUDE.md invariants as changes land. Commit per cohe
 | # | Stage | Status | Notes |
 |---|-------|--------|-------|
 | 0 | PLAN (this effort) | **done** | 5/5 audits in; PRD.md written + committed |
-| 1 | INGEST | folded into INSPECT (preflight note) | |
-| 2 | INSPECT | implementing | ASR multilingual + VAD + scene-detect fallback |
-| 3 | INTENT | pending | |
+| 1 | INGEST | folded into INSPECT (preflight note) | ASR `.en` advisory in checkAsrAvailable |
+| 2 | INSPECT | **done** ✓ | ASR multilingual default + VAD + scene-detect fallback + crosslingual hooks + openai lang + balance penalty; verified |
+| 3 | INTENT→PLAN | implementing | plan-lint intent teeth next |
 | 4 | PLAN (FSM gate) | pending | |
 | 5 | COMPOSE | pending | |
 | 6 | PREVIEW | pending | |
@@ -126,7 +126,16 @@ _(record non-obvious choices here as they're made)_
 
 ## Change log (what actually shipped in v3.8)
 
-_(append per landed slice)_
+### Stage 1 — INSPECT (commit) ✓
+- ASR default model `small.en` → **`small` (multilingual)** in `asr-backend.js` + all 3 Python driver defaults; unlocks advertised CJK/bilingual transcript. (INSPECT#1)
+- `checkAsrAvailable` now returns `model`/`language`/`model_advisory` — flags an `*.en` model in INGEST preflight + doctor. (INSPECT#1)
+- faster-whisper VAD filter default **ON** behind `VOB_ASR_VAD` (auto|on|off); kills hallucinated words over silence/music. (INSPECT#2)
+- Scene-detect **zero-cut adaptive retry** (0.4→0.2) on files ≥45s; `scene_detection_basis` stamped into file summary + cache (cache key bumped via `retrySceneThreshold` in DETECT_PARAMS); digest surfaces "single-shot/soft → silence-only segmentation". (INSPECT#3,#6)
+- openai-whisper driver now reports detected `language` in envelope (was dropped). (INSPECT#5)
+- Hook scoring (`rankHookCandidates`) **crosslingual**: gates English-lexicon signals + boosts language-agnostic energy/position/digit/question-punct (incl. CJK ？！。) when detected lang≠en; detected language threaded INSPECT→cache→hooks. English path byte-identical. (INSPECT#7)
+- Clean-audio-track picker penalizes one-sided `|balance_db|` beyond center band. (INSPECT#8)
+- _Verified: py_compile, module load, boot clean, targeted EN/ZH hook test, advisory test, balance test._
+- _Deferred to PACKAGE: reuse INSPECT-measured LUFS in loudnorm (INSPECT#4a). Deferred (low): per-segment level surfacing (INSPECT#4b), ASR concurrency (INSPECT#9)._
 
 ## Loop bookkeeping
 

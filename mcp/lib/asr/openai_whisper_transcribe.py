@@ -26,7 +26,7 @@ def main():
     audio = sys.argv[1]
     out = sys.argv[2]
     model_name = (sys.argv[3] if len(sys.argv) > 3 and sys.argv[3]
-                  else os.environ.get("VOB_ASR_MODEL") or "small.en")
+                  else os.environ.get("VOB_ASR_MODEL") or "small")
     language = (sys.argv[4] if len(sys.argv) > 4 and sys.argv[4]
                 else os.environ.get("VOB_ASR_LANGUAGE") or None)
     if language in ("", "auto", None):
@@ -41,6 +41,7 @@ def main():
     try:
         model = whisper.load_model(model_name)
         result = model.transcribe(audio, language=language, word_timestamps=True)
+        detected_language = result.get("language")
         words = []
         for seg in result.get("segments", []):
             seg_words = seg.get("words")
@@ -84,6 +85,7 @@ def main():
         "wordCount": len(words),
         "transcriptPath": out,
         "model": model_name,
+        "language": detected_language or None,
         "backend": "openai-whisper",
     })
     return 0
