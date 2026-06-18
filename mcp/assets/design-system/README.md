@@ -42,6 +42,8 @@ reference HTML and ADAPTS the technique — it does **not** copy them verbatim.
 - **motion**: `motion-fast-snap`
 - **backdrop**: `backdrop-spotlight` (alt: `backdrop-gradient-sweep`)
 - **end_card**: `end-card-cta`
+- **caption**: `caption-pop` (alt: `caption-word-rise`)
+- **cold_open**: `cold-open-claim`
 
   Transitions: Cut-heavy; reserve whip_pan / zoom_punch (≤0.35s) for energy beats.
 
@@ -58,6 +60,7 @@ reference HTML and ADAPTS the technique — it does **not** copy them verbatim.
 - **motion**: `motion-medium-soft`
 - **backdrop**: `backdrop-gradient-sweep`
 - **end_card**: `end-card-cta`
+- **caption**: `caption-pop`
 
   Transitions: cut / dip between scenes; crossfade at section boundaries.
 
@@ -89,6 +92,7 @@ reference HTML and ADAPTS the technique — it does **not** copy them verbatim.
 - **motion**: `motion-medium-soft`
 - **callout**: `callout-arrow-pill` (alt: `callout-number-step`)
 - **backdrop**: `backdrop-grid`
+- **caption**: `caption-pop`
 
   Transitions: cut / dip; slide for step-to-step; avoid flashy transitions.
 
@@ -103,6 +107,7 @@ reference HTML and ADAPTS the technique — it does **not** copy them verbatim.
 - **grade**: `grade-clean` (alt: `grade-warm`)
 - **motion**: `motion-medium-soft`
 - **backdrop**: `backdrop-soft-studio`
+- **caption**: `caption-pop`
 
   Transitions: cut / dip; gentle crossfade between segments.
 
@@ -117,6 +122,8 @@ reference HTML and ADAPTS the technique — it does **not** copy them verbatim.
 - **grade**: `grade-clean` (alt: `grade-warm`, `grade-cool`)
 - **motion**: `motion-medium-soft`
 - **backdrop**: `backdrop-gradient-sweep` (alt: `backdrop-spotlight`)
+- **caption**: `caption-pop` (alt: `caption-word-rise`)
+- **cold_open**: `cold-open-claim`
 
   Transitions: cut / crossfade / dip — match the destination platform's energy.
 
@@ -184,6 +191,19 @@ reference HTML and ADAPTS the technique — it does **not** copy them verbatim.
 | component | suited for | fonts | lint |
 |---|---|---|---|
 | `end-card-cta` | social-short, long-form | Archivo Black, Oswald, Inter | clean |
+
+### caption
+
+| component | suited for | fonts | lint |
+|---|---|---|---|
+| `caption-pop` | social-short, general, long-form, tutorial, podcast | Montserrat | clean |
+| `caption-word-rise` | social-short, general | Montserrat | clean |
+
+### cold_open
+
+| component | suited for | fonts | lint |
+|---|---|---|---|
+| `cold-open-claim` | social-short, general | Archivo Black | clean |
 
 `manifest.json` carries the machine-readable form (per-component `kind`, `file`, `fonts`,
 `tokens_used`, `pure_css`, `lint`, `bytes`; the per-video-type `video_types` map). See

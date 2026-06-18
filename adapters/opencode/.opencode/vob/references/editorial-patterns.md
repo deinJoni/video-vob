@@ -16,8 +16,9 @@ a signal, say why in the scene `summary`/`notes` — that's the difference betwe
 
 ## 1. The editorial rubric (the scoring spine)
 
-Seven dimensions. For each: the question, what **great** looks like, what **mediocre** looks like, and the signal
-that grounds it. The critic scores each `strong | ok | weak`; the storyboarder self-checks each before saving.
+Eight dimensions (Hook · Arc · Cut rhythm · Take · B-roll · Visual variety · Captions · Ending). For each: the
+question, what **great** looks like, what **mediocre** looks like, and the signal that grounds it. The critic scores
+each `strong | ok | weak`; the storyboarder self-checks each before saving.
 
 ### H — Hook (first ~3 seconds, ≤3.5s)
 - **Question:** does the opening earn the next 3 seconds?
@@ -66,6 +67,21 @@ that grounds it. The critic scores each `strong | ok | weak`; the storyboarder s
   `PLAN_BROLL_TOO_SHORT`, `PLAN_BROLL_REPEATED_BACK_TO_BACK`, `PLAN_BROLL_LONGER_THAN_SPAN`,
   `editorial/broll_unmotivated`.
 
+### V — Visual variety (cutaway rhythm)
+- **Question:** does something on screen **change** often enough, or does it sit on a static talking head?
+- **Distinct from Cut rhythm:** Cut rhythm is *shot-length / pacing* rhythm (how often you cut); Visual variety is
+  *on-screen change* (b-roll, punch-ins, text cards, layouts, kinetic captions). A string of plain cuts between two
+  same-framing talking-head takes has rhythm but **zero** variety — it's still a static stretch.
+- **Great:** no static stretch runs past the per-video-type budget. A talking-head with little/no b-roll still breaks
+  every long hold with a **variety beat** — a `scene.motion` punch-in, a design-system text card / lower-third, a
+  multi-cell `scene.layout`, a kinetic-caption emphasis, an energetic `transition_in`, or a matted-subject moment.
+- **Mediocre:** a 30s+ unbroken locked-off head; "I had no b-roll so I just let it sit"; nothing on screen moves but
+  the mouth.
+- **Ground in:** the realized (speed/layout-baked) master timeline modeled as covered-vs-uncovered intervals; the
+  per-video-type `variety_budget.max_static_stretch_seconds`; `scene.motion`, beat-class overlays, `scene.layout`,
+  `caption_segments[].animation`. → `PLAN_STATIC_STRETCH`, `PLAN_MOTION_INVALID`, `editorial/static_stretch`,
+  `editorial/no_visual_variety`.
+
 ### L — Captions / legibility
 - **Question:** are captions readable, well-timed, and faithful to what's said?
 - **Great:** ≤7-word chunks, emphasis on the load-bearing word, word-level animation **only** on an aligned transcript,
@@ -105,18 +121,29 @@ that grounds it. The critic scores each `strong | ok | weak`; the storyboarder s
 Pick the structure that fits the material — don't default to "first clip." Hook scene `purpose:"hook"`, **≤3.5s**,
 must contain spoken words (unless it's a deliberate visual cold-open with an overlay).
 
+Each ranked candidate carries a `hook_type` (the digest names it) — let it pick the structure:
+
 - **In-medias-res** — drop into the most intense moment, *then* context. Use when a candidate has `signals:["energy_high"]`
-  or a mid-story climax exists. ✓ open on the payoff-action, cut back to setup.
-- **Question hook** — open on a candidate with `signals:["question"]`. Poses the loop the video answers. ✓ "Why does X…?"
-- **Bold claim / number** — open on `signals:["claim"]` or `["number"]`. A stat or contrarian statement. ✓ "90% of people get this wrong."
+  / `strong_take` or a mid-story climax exists. ✓ open on the payoff-action, cut back to setup.
+- **Question hook** (`hook_type:"question"`) — poses the loop the video answers. ✓ "Why does X…?"
+- **Bold claim / number** (`hook_type:"bold_claim"` / `"number_stat"`) — a stat or absolute. ✓ "90% of people get this wrong."
+- **Curiosity gap / contrarian** (`hook_type:"curiosity_gap"` / `"contrarian"`) — withhold the payoff or invert the
+  assumption. ✓ "Here's what nobody tells you…" / "Everyone does this — and it's wrong."
+- **Negative / stakes** (`hook_type:"stakes"`) — lead with the mistake/pain ("Don't do this"). High retention for how-to.
 - **Pattern interrupt** — an unexpected visual/audio jolt in frame 1 (motion, hard sound, on-screen text). Use when no
   strong spoken hook exists; pair with a kinetic caption overlay.
 - **Payoff tease** — flash the end result for <1s, then "here's how." Use for transformation/tutorial content.
-- **Negative hook** — lead with the mistake/pain ("Don't do this"). High retention for how-to.
+
+**Realize the cold-open with a PUNCH — it is NOT a beat.** Whatever the archetype, plan scene 0 so the composer can
+treat it as first-class: (1) the hook LINE goes in `caption_segments` with `emphasis_words` (the load-bearing word) —
+not merely a vague overlay note — so it renders as the **kinetic claim** (design-system `cold_open` slot, emphasis word
+in the accent); (2) the composer adds a **punch-in** on the scene video. A flat scene-0 with a generic caption is the
+single biggest retention leak.
 
 **Grounding rule:** the hook scene's source window **should overlap a top-ranked hook candidate**. If you open elsewhere,
 justify it in the scene `summary` (e.g., "rank-1 candidate is mid-story; using rank-2 question hook for a cold open").
-Opening off-candidate with no reason → `PLAN_HOOK_NOT_GROUNDED`.
+Opening off-candidate with no reason → `PLAN_HOOK_NOT_GROUNDED`; a hook caption with no emphasis word →
+`PLAN_HOOK_CAPTION_NO_EMPHASIS`.
 
 ---
 
@@ -183,6 +210,32 @@ back-to-back (`PLAN_BROLL_REPEATED_BACK_TO_BACK`); don't run B-roll longer than 
 
 ---
 
+## 7b. Visual variety / cutaway rhythm
+
+The #1 reason an agent-edited talking head reads flat: long **static stretches** where nothing on screen changes. Fight
+them proactively — you do **not** need literal b-roll footage to add visual variety.
+
+- **The static-stretch budget.** Each video-type carries `variety_budget.max_static_stretch_seconds`; `PLAN_STATIC_STRETCH`
+  (WARNING, OFF under `montage`) models the realized (speed/layout-baked) master time as covered-vs-uncovered intervals and
+  warns per uncovered gap longer than the budget: **social-short 10s · general 14s · long-form 18s · tutorial 22s · podcast
+  24s · cinematic 30s** (off under montage — holds are intentional). Knobs: `VOB_VARIETY_BUDGET=off`,
+  `VOB_VARIETY_MAX_STATIC_SECONDS=n`.
+- **Plain cuts don't count.** A cut between two **same-framing** talking-head takes is *not* variety — only on-screen
+  CHANGE breaks a static stretch.
+- **The variety-beat toolkit** (any one satisfies the budget): a **B-roll cutaway**; a **`scene.motion`** punch-in /
+  ken-burns (string `"punch_in"|"push_in"|"ken_burns"`, or `{type,scale 1.0–2.0,ease?,start_seconds?,end_seconds?}`; a bad
+  value → `PLAN_MOTION_INVALID`, never rejects); a **beat-class typed overlay** (`title_card`, `lower_third`, `callout`,
+  `data_viz`, `chapter_marker`, `section_title`, `cta`, `end_card`, `kinetic_caption`, `pip` — NOT static
+  `caption_block`/`logo_bug`/`progress_bar`); a multi-cell **`scene.layout`**; an animated **`caption_segments[].animation`**;
+  a **matted-subject** b-roll moment; or an energetic (non `cut`/`dip`/`fade`) **`transition_in`**.
+- **`scene.motion` is the no-b-roll workhorse.** An intra-scene camera move on the A-roll spine adds change without any
+  cutaway footage — punch in on the emphasis beat, ken-burns a slow line.
+- **No b-roll? Reach for the design system.** Break static stretches with **design-system beats** (title / text-card,
+  lower-thirds, backdrops, grades from `compose/design-system/`) + **`scene.motion` punch-ins** + **kinetic-caption
+  emphasis**. A talking-head with zero variety devices planned → `editorial/no_visual_variety`.
+
+---
+
 ## 8. Endings
 
 - **Deliver the payoff** the hook promised (close the loop).
@@ -198,12 +251,17 @@ back-to-back (`PLAN_BROLL_REPEATED_BACK_TO_BACK`); don't run B-roll longer than 
 The active `lint_ruleset` (from the video-type preset) shifts what "great" means:
 
 - **retention** (social short-form): hook + open loops + front-loaded energy are everything. Hook lints ON. Inverted arc
-  is a defect. Tight, no dead air.
+  is a defect. Tight, no dead air. **Visual variety matters most here** — break every static stretch (§7b).
 - **chaptered** (long-form/tutorial): signposting and section balance matter; building to a climax is correct (inverted-arc
-  check OFF). Each chapter re-hooks. `PLAN_CHAPTERS_MISSING` / `PLAN_SECTION_IMBALANCE` apply.
+  check OFF). Each chapter re-hooks. Visual variety still applies (longer budget). `PLAN_CHAPTERS_MISSING` /
+  `PLAN_SECTION_IMBALANCE` apply.
 - **montage** (music-driven): rhythm and variety win; cut to the beat; transition-inconsistency check is OFF.
+  `PLAN_STATIC_STRETCH` is **OFF** (the cutting itself is the variety).
 - **tutorial:** step clarity, on-screen legibility, "show the result first" tease; don't sacrifice clarity for pace.
-- **podcast / general:** speaker focus, minimal gratuitous cutting, clean audio; let moments breathe.
+  Visual variety applies (generous budget).
+- **podcast / general:** speaker focus, minimal gratuitous cutting, clean audio; let moments breathe. Visual variety
+  applies — general talking-heads benefit most; podcast gets a generous budget. (`PLAN_STATIC_STRETCH` is gated OFF only
+  under `montage`; cinematic carries a long 30s budget so intentional holds rarely trip it.)
 
 ---
 
@@ -222,11 +280,15 @@ finding is handed back as a revision note, apply the fix for exactly that code:
 | `editorial/arc_inverted` | Energy back-loaded (retention) | Front-load the high-energy material. |
 | `editorial/weak_take` | A better take exists | Swap to the best-take/high-energy/eyes-to-camera take (§5). |
 | `editorial/broll_unmotivated` | Decorative cutaway | Tie it to the spoken noun, a cut to cover, or cut it (§7). |
+| `editorial/static_stretch` | A stretch over budget with no on-screen change | Add a `scene.motion` punch-in / b-roll cutaway / text card / layout / kinetic emphasis (§7b). |
+| `editorial/no_visual_variety` | A whole talking-head with essentially no variety devices planned | Plan design-system beats + punch-ins across the timeline; break every long hold (§7b). |
 | `editorial/straddles_dead_air` | Clip includes a removed span | Snap `in/out` to `keep_spans`. |
 | `editorial/limp_ending` | Ending dribbles out | Deliver the payoff + a deliberate button (§8). |
 
 Plan-lint grounding codes this doc backs (all WARNINGS, retention-gated): `PLAN_HOOK_NOT_GROUNDED` (opening window
 overlaps no top-N hook candidate), `PLAN_OPENING_LOW_ENERGY` (opening segment energy/speech-rate below the file's norm).
+Visual-variety codes (WARNINGS, OFF under `montage`): `PLAN_STATIC_STRETCH` (an uncovered realized-time gap longer than
+the video-type budget), `PLAN_MOTION_INVALID` (a malformed `scene.motion` — falls back to static, never rejects).
 
 ---
 
@@ -235,10 +297,11 @@ overlaps no top-N hook candidate), `PLAN_OPENING_LOW_ENERGY` (opening segment en
 Before your single `vob_save_storyboard` call, run this in your head — **draft → critique → revise → save**:
 
 1. **Draft** the full timeline grounded in the signals (§2).
-2. **Self-critique** against the 7-dimension rubric (§1). For each dimension, ask "strong, ok, or weak — and what signal
+2. **Self-critique** against the 8-dimension rubric (§1). For each dimension, ask "strong, ok, or weak — and what signal
    backs it?" Be your own harshest critic: would a great editor open here? Is the best take chosen? Does every cutaway earn
-   its place? Does it end on a button?
-3. **Revise** every `weak`. Re-open on a better candidate, swap takes, vary pacing, motivate or cut B-roll, fix the ending.
+   its place? Does any static stretch run past the budget? Does it end on a button?
+3. **Revise** every `weak`. Re-open on a better candidate, swap takes, vary pacing, motivate or cut B-roll, break static
+   stretches with motion/text-cards, fix the ending.
 4. **Save** only the revised plan. Note your key grounding decisions in scene `summary`/`notes` so the critic and the human
    see the *why*.
 

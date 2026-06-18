@@ -669,6 +669,37 @@ function runCompositionQc({ files, storyboard, sourceLinks, sceneClipLinks, layo
         }
       }
     }
+
+    // (v3.9) Advisory: the plan declares emphasis_words but the composition stamps
+    // no data-vob-emphasis — the load-bearing word isn't accented, so captions read
+    // generic (the emphasis_words-driven realization the composer is asked for). INFO
+    // only — captions stay advisory and this never blocks the errors-only gate; one
+    // global note, fail-safe (any parse gap simply skips it).
+    let plannedEmphasisCount = 0;
+    for (const scene of scenes) {
+      if (!scene || typeof scene.scene_id !== "string") continue;
+      for (const seg of captionSegmentsOf(scene)) {
+        if (seg && Array.isArray(seg.emphasis_words) && seg.emphasis_words.some((w) => typeof w === "string" && w.trim() !== "")) {
+          plannedEmphasisCount += 1;
+        }
+      }
+    }
+    if (plannedEmphasisCount > 0) {
+      // Raw-content scan: data-vob-emphasis is a valueless boolean attr the composer
+      // stamps on an inline <span>, which the tag extractor doesn't surface — so
+      // match the marker in the source text directly (parser-independent, fail-safe).
+      let hasEmphasisEl = false;
+      for (const f of parsedFiles) {
+        if (typeof f.content === "string" && f.content.includes("data-vob-emphasis")) { hasEmphasisEl = true; break; }
+      }
+      if (!hasEmphasisEl) {
+        findings.push(makeFinding(
+          "info",
+          "vob/caption_emphasis_generic",
+          `the plan declares emphasis_words on ${plannedEmphasisCount} caption(s) but no element carries data-vob-emphasis — render each load-bearing word in a <span class="emph" data-vob-emphasis> in the design accent (--vob-accent). Emphasis is the highest-leverage caption detail; without it captions read generic.`,
+        ));
+      }
+    }
   }
 
   // --- E6/W1: <video> element count -------------------------------------------

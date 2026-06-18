@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=1080, height=1920" />
+    <title>caption-word-rise</title>
+
+    <!-- ========================================================================
+         video-vob design-system REFERENCE component — caption-word-rise
+         (kind: caption)  Word-by-word reveal done in PURE CSS — the reliable,
+         GSAP-free realization of caption_segment animation:"word-by-word", and the
+         DOWNGRADE target for word-level animations on an unaligned transcript. Each
+         WORD is its own class="clip" element at a staggered data-start; it rises +
+         fades in and STAYS (data-duration runs to the master end, so no reflow as
+         later words appear). The emphasis word is in the brand accent (--vob-accent)
+         — map caption_segment.emphasis_words[] onto <span class="emph"
+         data-vob-emphasis>.
+
+         Render contract (shared by every design-system component):
+         1. PURE CSS @keyframes — never GSAP. window.__timelines is a no-op stub.
+         2. STAGGER WITH data-start, NEVER animation-delay — each word is a separate
+            class="clip" element at an increasing data-start (the runtime scrubs).
+         3. COLORS via --vob-* tokens with a literal fallback.
+         4. FONTS = a concrete auto-resolved kit family, NO var() in font-family,
+            NO font <link>/@import. The composer swaps it for target.design.typography.caption.
+         5. Every timed element: class="clip" + id + data-start + data-duration +
+            data-track-index; animation-duration == data-duration; fill-mode both;
+            play-state paused.
+         ===================================================================== -->
+
+    <style>
+      :root {
+        --vob-bg: #0c0d10;
+        --vob-text: #ffffff;
+        --vob-accent: #ff3b30;
+        --vob-safe-bottom: 280px;
+      }
+      *,
+      *::before,
+      *::after {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        width: 1080px;
+        height: 1920px;
+        margin: 0;
+        overflow: hidden;
+        background: transparent;
+      }
+      #stage {
+        position: relative;
+        width: 1080px;
+        height: 1920px;
+        overflow: hidden;
+        background: var(--vob-bg, #0c0d10);
+      }
+      .ds-demo-bg {
+        position: absolute;
+        inset: 0;
+        z-index: 0;
+        background: radial-gradient(120% 90% at 50% 38%, #23252e 0%, #131419 58%, #08090c 100%);
+      }
+      /* Static flow line (NOT timed) — words always occupy space, so revealing a
+         later word never reflows the earlier ones. */
+      .cap-line {
+        position: absolute;
+        left: 70px;
+        right: 70px;
+        bottom: var(--vob-safe-bottom, 280px);
+        z-index: 5;
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: center;
+        gap: 0 22px;
+        font-family: "Montserrat", "Helvetica Neue", sans-serif;
+        font-weight: 800;
+        font-size: 80px;
+        line-height: 1.1;
+        letter-spacing: -0.01em;
+        color: var(--vob-text, #ffffff);
+        text-shadow: 0 6px 28px rgba(0, 0, 0, 0.55);
+      }
+      .word {
+        display: inline-block;
+        transform-origin: 50% 100%;
+        animation-name: vob-word-rise;
+        animation-timing-function: linear;
+        animation-fill-mode: both;
+        animation-play-state: paused;
+        will-change: transform, opacity;
+      }
+      .word .emph {
+        color: var(--vob-accent, #ff3b30);
+        font-weight: 900;
+      }
+      /* All words end together at the master end; each animation-duration equals the
+         element's data-duration (master_end − data-start). The rise plays in the
+         first fraction of each word's window, so the staggered data-starts read as a
+         word-by-word reveal. */
+      .w1 { animation-duration: 2.6s; }
+      .w2 { animation-duration: 2.44s; }
+      .w3 { animation-duration: 2.28s; }
+      .w4 { animation-duration: 2.12s; }
+      @keyframes vob-word-rise {
+        0% {
+          opacity: 0;
+          transform: translateY(30px) scale(0.96);
+          animation-timing-function: cubic-bezier(0.2, 0.9, 0.2, 1);
+        }
+        12% {
+          opacity: 1;
+          transform: translateY(0) scale(1);
+        }
+        92% {
+          opacity: 1;
+          transform: translateY(0) scale(1);
+          animation-timing-function: cubic-bezier(0.4, 0, 0.7, 0.2);
+        }
+        100% {
+          opacity: 0;
+          transform: translateY(-8px) scale(1);
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div
+      id="stage"
+      data-composition-id="ds-caption-word-rise"
+      data-timeline-locked
+      data-start="0"
+      data-duration="2.6"
+      data-fps="30"
+      data-width="1080"
+      data-height="1920"
+    >
+      <div class="ds-demo-bg"></div>
+      <div class="cap-line">
+        <span id="cw-1" class="clip word w1" data-start="0" data-duration="2.6" data-track-index="1">Wait</span>
+        <span id="cw-2" class="clip word w2" data-start="0.16" data-duration="2.44" data-track-index="2">for</span>
+        <span id="cw-3" class="clip word w3" data-start="0.32" data-duration="2.28" data-track-index="3">the</span>
+        <span id="cw-4" class="clip word w4" data-start="0.48" data-duration="2.12" data-track-index="4"><span class="emph">drop</span></span>
+      </div>
+    </div>
+
+    <script>
+      /* Inert timeline stub — the render driver calls duration()/pause()
+         unconditionally; a pure-CSS component loads no GSAP. */
+      window.__timelines = window.__timelines || {};
+      window.__timelines["ds-caption-word-rise"] = {
+        duration: function () {
+          return 2.6;
+        },
+        pause: function () {},
+      };
+    </script>
+  </body>
+</html>

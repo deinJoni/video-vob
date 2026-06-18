@@ -41,9 +41,9 @@ const PROJECT_ID = process.env.VOB_WALKER_PROJECT || "dji-aerial";
 // video file ≥15s via VOB_WALKER_SOURCE:
 //   VOB_WALKER_SOURCE=/path/to/clip.mp4 node scripts/m5-walker.js [phase]
 const SOURCE = process.env.VOB_WALKER_SOURCE || "";
-// `stillsqc` (synthetic test stills), `spans`, `editorial`, and `takequality`
-// (source-free unit harnesses) need no source video — every other phase lays out a fixture against a real clip.
-if (!SOURCE && !["stillsqc", "spans", "editorial", "takequality"].includes(process.argv[2])) {
+// `stillsqc` (synthetic test stills), `spans`, `editorial`, `takequality`, and
+// `variety` (source-free unit harnesses) need no source video — every other phase lays out a fixture against a real clip.
+if (!SOURCE && !["stillsqc", "spans", "editorial", "takequality", "variety", "hook"].includes(process.argv[2])) {
   console.error(
     "m5-walker: set VOB_WALKER_SOURCE to a video file or directory, e.g.\n" +
     "  VOB_WALKER_SOURCE=/path/to/clip.mp4 node scripts/m5-walker.js [phase]",
@@ -3315,6 +3315,182 @@ async function runEditorial() {
   console.log("\n=== editorial: hook-grounding lint negative paths verified");
 }
 
+// v3.9 `hook` walker phase — the semantic hook scorer (mcp/lib/hook-scoring.js) +
+// its integration in rankHookCandidates. Source-free unit harness: faithful legacy
+// superset (VOB_HOOK_SCORING=off == old weights), rhetorical archetype
+// classification (hook_type), the strength blend, crosslingual gating, and the
+// end-to-end ranking. Model-free, deterministic — a permanent regression test.
+async function runHook() {
+  console.log("=== v3.9 hook walker (semantic hook scoring) — source-free unit harness");
+  const { scoreHook } = require("../mcp/lib/hook-scoring.js");
+  const { rankHookCandidates } = require("../mcp/lib/inspect-digest.js");
+
+  await step("faithful legacy superset — off==legacy, enriched only ADDS", () => {
+    const q = { text: "Why do so many people get this completely wrong?", wordCount: 9, isEnglish: true };
+    const leg = scoreHook({ ...q, enriched: false });
+    assert(leg.score === 3.0, `legacy score expected 3.0 (question+claim), got ${leg.score}`);
+    assert(leg.hook_type === "question", `legacy hook_type expected question, got ${leg.hook_type}`);
+    const enr = scoreHook({ ...q, enriched: true });
+    assert(enr.score === 3.5, `enriched expected legacy+self_contained(0.5)=3.5, got ${enr.score}`);
+    assert(enr.signals.includes("self_contained"), "enriched missing self_contained");
+  });
+
+  await step("greeting penalty preserved", () => {
+    const g = scoreHook({ text: "hey guys welcome to my channel today", wordCount: 7, isEnglish: true, enriched: false });
+    assert(g.signals.includes("greeting_penalty") && g.score <= -1, `greeting not penalized: ${g.score}`);
+  });
+
+  await step("hook_type — specific multiword families beat generic bold_claim", () => {
+    const cur = "Here's what nobody tells you about saving money.";
+    assert(scoreHook({ text: cur, wordCount: 8, isEnglish: true, enriched: true }).hook_type === "curiosity_gap", "curiosity_gap should outrank bold_claim");
+    assert(scoreHook({ text: cur, wordCount: 8, isEnglish: true, enriched: false }).hook_type === "bold_claim", "legacy lacks curiosity family => bold_claim");
+    assert(scoreHook({ text: "3 ways to fix this", wordCount: 5, isEnglish: true, enriched: true }).hook_type === "number_stat", "number_stat misclassified");
+  });
+
+  await step("strength blend — strong take out-ranks flat (enriched only)", () => {
+    const base = { text: "The single best way to do this.", wordCount: 7, isEnglish: true, enriched: true };
+    assert(scoreHook({ ...base, strengthScore: 0.9 }).score > scoreHook({ ...base, strengthScore: 0.1 }).score, "strength did not lift score");
+    const offBase = { ...base, enriched: false };
+    assert(scoreHook({ ...offBase, strengthScore: 0.9 }).score === scoreHook({ ...offBase, strengthScore: 0.1 }).score, "strength leaked into legacy mode");
+  });
+
+  await step("crosslingual — non-English leans on structure; fullwidth ？ language-agnostic", () => {
+    const zh = scoreHook({ text: "这是真的吗？", wordCount: 4, isEnglish: false, enriched: true });
+    assert(zh.signals.includes("question"), "fullwidth ？ question not detected");
+    assert(!zh.signals.includes("claim") && !zh.signals.includes("self_contained"), "English-only families fired on non-English");
+  });
+
+  await step("rankHookCandidates — ranks, stamps hook_type, filters greetings", () => {
+    const words = [];
+    const push = (txt, t0) => { const ws = txt.split(" "); ws.forEach((w, i) => words.push({ text: w + (i === ws.length - 1 ? "." : ""), start: t0 + i * 0.3, end: t0 + i * 0.3 + 0.28 })); };
+    push("Why do most people fail at this", 1.0);
+    push("hi everyone welcome to the channel", 4.0);
+    push("This is the biggest mistake you can make", 7.0);
+    const cands = rankHookCandidates({ words, paragraphs: [], energyWindows: null, durationSeconds: 30, language: "en", segments: [{ start_seconds: 1, end_seconds: 3, strength: { score: 0.9 } }] });
+    assert(cands.length >= 2, `expected >=2 candidates, got ${cands.length}`);
+    assert(cands.every((c) => typeof c.hook_type === "string"), "candidate missing hook_type");
+    assert(!cands.some((c) => /welcome to the channel/.test(c.text)), "greeting not filtered/deranked");
+  });
+
+  await step("VOB_HOOK_SCORING=off env — rankHookCandidates drops the enrichments", () => {
+    const prev = process.env.VOB_HOOK_SCORING;
+    process.env.VOB_HOOK_SCORING = "off";
+    try {
+      const words = [{ text: "The", start: 0, end: 0.3 }, { text: "single", start: 0.3, end: 0.6 }, { text: "best", start: 0.6, end: 0.9 }, { text: "way.", start: 0.9, end: 1.2 }];
+      const cands = rankHookCandidates({ words, paragraphs: [], energyWindows: null, durationSeconds: 30, language: "en", segments: [{ start_seconds: 0, end_seconds: 2, strength: { score: 0.95 } }] });
+      if (cands.length) assert(!cands[0].signals.includes("strong_take") && !cands[0].signals.includes("self_contained"), "enrichment leaked with VOB_HOOK_SCORING=off");
+    } finally {
+      if (prev === undefined) delete process.env.VOB_HOOK_SCORING; else process.env.VOB_HOOK_SCORING = prev;
+    }
+  });
+
+  console.log("\n=== hook: semantic hook scoring verified");
+}
+
+// v3.9 `variety` walker phase — the visual-variety / cutaway-rhythm budget that
+// fights static talking-head monotony: PLAN_STATIC_STRETCH (the longest uncovered
+// static gap in realized master time > the per-video-type budget) and
+// PLAN_MOTION_INVALID (malformed scene.motion). A source-free unit harness — calls
+// lintStoryboardPlan / validateStoryboardContent directly with a synthetic
+// lintRules.variety_budget — so the gap model, the device resets, the ruleset
+// gate, the fan-out tagging, and the fail-safes are deterministic, model-free, and
+// a permanent regression test.
+async function runVariety() {
+  console.log("=== v3.9 variety walker (visual-variety / static-stretch lint) — source-free unit harness");
+  const { lintStoryboardPlan, validateStoryboardContent } = require("../mcp/lib/storyboard-schema.js");
+  const codesOf = (r) => r.errors.concat(r.warnings).map((f) => f.code);
+  const has = (r, c) => codesOf(r).includes(c);
+  const clip = (i, o, role = "a_roll") => ({ manifest_file_index: 0, source_path: "/x.mp4", in_seconds: i, out_seconds: o, role });
+  const scene = (id, seq, target, clips, extra = {}) => ({ scene_id: id, sequence: seq, purpose: seq === 1 ? "hook" : "beat", target_duration_seconds: target, summary: "s", source_clips: clips, overlays: [], captions: null, pacing: "medium", ...extra });
+  const tc = (s, e) => ({ id: `o${s}`, type: "title_card", start_seconds: s, end_seconds: e, track: 2 });
+  const ctx = (max = 10, disabled = []) => ({ lintRules: { disabled: new Set(disabled), variety_budget: { max_static_stretch_seconds: max } } });
+  const S = "PLAN_STATIC_STRETCH", M = "PLAN_MOTION_INVALID";
+
+  await step("PLAN_STATIC_STRETCH — a long plain talking-head run fires", () => {
+    const sb = { schema_version: "1.2", scenes: [scene("s1", 1, 8, [clip(0, 8)]), scene("s2", 2, 8, [clip(20, 28)]), scene("s3", 3, 8, [clip(40, 48)])] };
+    assert(has(lintStoryboardPlan(sb, ctx()), S), "24s static run not flagged");
+  });
+
+  await step("a beat (title_card) every scene within budget — does NOT fire", () => {
+    const sb = { schema_version: "1.2", scenes: [
+      scene("s1", 1, 8, [clip(0, 8)], { overlays: [tc(2, 4)] }),
+      scene("s2", 2, 8, [clip(20, 28)], { overlays: [tc(2, 4)] }),
+      scene("s3", 3, 8, [clip(40, 48)], { overlays: [tc(2, 4)] }),
+    ] };
+    assert(!has(lintStoryboardPlan(sb, ctx()), S), "beat-every-scene false-flagged");
+  });
+
+  await step("gap model — one 30s scene with a single brief beat still fires (back half static)", () => {
+    const sb = { schema_version: "1.2", scenes: [scene("s1", 1, 30, [clip(0, 30)], { overlays: [tc(2, 4.5)] })] };
+    assert(has(lintStoryboardPlan(sb, ctx()), S), "long scene with one brief beat not flagged");
+  });
+
+  await step("device resets — b-roll clip / scene.motion / layout / kinetic caption keep a 30s scene alive", () => {
+    const broll = { schema_version: "1.2", scenes: [scene("s1", 1, 30, [clip(0, 30), clip(0, 5, "b_roll")])] };
+    assert(!has(lintStoryboardPlan(broll, ctx()), S), "b-roll scene flagged");
+    const motion = { schema_version: "1.2", scenes: [scene("s1", 1, 30, [clip(0, 30)], { motion: "punch_in" })] };
+    assert(!has(lintStoryboardPlan(motion, ctx()), S), "punch-in scene flagged");
+    const layout = { schema_version: "1.2", scenes: [scene("s1", 1, 30, [clip(0, 30), clip(0, 30)], { layout: { type: "split_vertical", cells: [{ clip_index: 0 }, { clip_index: 1 }] } })] };
+    assert(!has(lintStoryboardPlan(layout, ctx()), S), "layout scene flagged");
+    const kinetic = { schema_version: "1.2", scenes: [scene("s1", 1, 30, [clip(0, 30)], { caption_segments: [{ text: "hi", start_seconds: 0, end_seconds: 30, animation: "pop" }] })] };
+    assert(!has(lintStoryboardPlan(kinetic, ctx()), S), "kinetic-caption scene flagged");
+  });
+
+  await step("a concrete broll_placement covering a scene keeps it alive", () => {
+    const sb = { schema_version: "1.2", broll_placements: [{ clip: { scene_id: "s1", clip_index: 0 } }], scenes: [scene("s1", 1, 30, [clip(0, 30)])] };
+    assert(!has(lintStoryboardPlan(sb, ctx()), S), "placement-covered scene flagged");
+  });
+
+  await step("ruleset gate — PLAN_STATIC_STRETCH disabled (montage) never fires", () => {
+    const sb = { schema_version: "1.2", scenes: [scene("s1", 1, 30, [clip(0, 30)])] };
+    assert(!has(lintStoryboardPlan(sb, ctx(10, [S])), S), "gated-off lint fired");
+  });
+
+  await step("fail-safe — no variety_budget / no lintRules => no check, no crash", () => {
+    const sb = { schema_version: "1.2", scenes: [scene("s1", 1, 30, [clip(0, 30)])] };
+    assert(!has(lintStoryboardPlan(sb, { lintRules: { disabled: new Set() } }), S), "no-budget fired");
+    assert(!has(lintStoryboardPlan(sb, {}), S), "no-lintRules fired");
+  });
+
+  await step("multiple over-budget stretches each warn (a mid break splits the run)", () => {
+    const sb = { schema_version: "1.2", scenes: [
+      scene("s1", 1, 30, [clip(0, 30)]),
+      scene("s2", 2, 6, [clip(0, 6)], { overlays: [tc(0, 6)] }), // a full-scene beat breaks the run
+      scene("s3", 3, 20, [clip(0, 20)]),
+    ] };
+    const n = codesOf(lintStoryboardPlan(sb, ctx())).filter((c) => c === S).length;
+    assert(n === 2, `expected 2 static stretches, got ${n}`);
+  });
+
+  await step("PLAN_MOTION_INVALID — off-vocab type / out-of-range scale warn; valid motion is clean", () => {
+    const bad = { schema_version: "1.2", scenes: [scene("s1", 1, 8, [clip(0, 8)], { motion: "zoooom" })] };
+    assert(has(lintStoryboardPlan(bad, ctx()), M), "bad motion not warned");
+    const good = { schema_version: "1.2", scenes: [scene("s1", 1, 8, [clip(0, 8)], { motion: { type: "ken_burns", scale: 1.2 } })] };
+    assert(!has(lintStoryboardPlan(good, ctx()), M), "valid motion warned");
+    const badScale = { schema_version: "1.2", scenes: [scene("s1", 1, 8, [clip(0, 8)], { motion: { type: "punch_in", scale: 9 } })] };
+    assert(has(lintStoryboardPlan(badScale, ctx()), M), "out-of-range scale not warned");
+  });
+
+  await step("E2E budget threading — social-short (10s) fires, cinematic (montage) gated off", () => {
+    const sb = { schema_version: "1.2", total_target_duration_seconds: 30, scenes: [scene("s1", 1, 30, [clip(0, 30)])] };
+    const st = (c) => ({ project_id: "v", intent: { answers: { video_type: { canonical: c } } } });
+    assert(has(validateStoryboardContent(sb, st("social-short")), S), "social-short E2E not flagged");
+    assert(!has(validateStoryboardContent(sb, st("cinematic")), S), "cinematic E2E flagged");
+  });
+
+  await step("E2E fan-out — the static short is tagged; the b-roll short is clean", () => {
+    const fan = { schema_version: "1.1", shorts: [
+      { short_id: "a", sequence: 1, total_target_duration_seconds: 30, scenes: [scene("a1", 1, 30, [clip(0, 30)])] },
+      { short_id: "b", sequence: 2, total_target_duration_seconds: 30, scenes: [scene("b1", 1, 30, [clip(0, 30), clip(0, 5, "b_roll")])] },
+    ] };
+    const st = { project_id: "v", intent: { answers: { video_type: { canonical: "social-short" } } } };
+    const ss = validateStoryboardContent(fan, st).warnings.filter((w) => w.code === S);
+    assert(ss.length === 1 && ss[0].short_id === "a", `expected 1 static warn on short a, got ${ss.length} (${ss.map((w) => w.short_id)})`);
+  });
+
+  console.log("\n=== variety: visual-variety / static-stretch lint negative paths verified");
+}
+
 async function main() {
   const phase = process.argv[2] || "all";
   if (phase === "stillsqc") {
@@ -3367,6 +3543,14 @@ async function main() {
   }
   if (phase === "takequality") {
     await runTakeQuality();
+    return;
+  }
+  if (phase === "variety") {
+    await runVariety();
+    return;
+  }
+  if (phase === "hook") {
+    await runHook();
     return;
   }
   console.log(`=== M5 walker v2 — phase: ${phase} — project: ${PROJECT_ID}`);

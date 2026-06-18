@@ -79,6 +79,22 @@ const LAYOUT_TYPE_SET = new Set(LAYOUT_TYPES);
 // Canonical cell count per layout type (the plan-lint cell-count check).
 const LAYOUT_CELL_COUNTS = Object.freeze({ split_horizontal: 2, split_vertical: 2, grid_2x2: 4, pip: 2 });
 
+// Intra-scene camera move on the A-roll spine (v3.9) — the no-b-roll visual-
+// variety workhorse: a punch-in / push-in or a slow Ken Burns drift over an
+// otherwise-static talking head. Loosely validated + FAIL-SAFE like transition_in
+// / target.design: scene.motion is a string shorthand ("punch_in") OR an object
+// { type, scale?, ease?, start_seconds?, end_seconds? }. A malformed/off-vocab
+// value NEVER rejects the save (it is not checked in validateScene) — the composer
+// falls back to a static frame and plan-lint WARNS (PLAN_MOTION_INVALID). Realized
+// as a CSS scale @keyframes scrubbed by hyperframes' css adapter (no GSAP);
+// advisory at COMPOSE QC (a data-vob-motion marker, no hard binding). "none" /
+// "static" are explicit opt-outs and do NOT count as a variety beat.
+const SCENE_MOTION_TYPES = Object.freeze(["punch_in", "push_in", "ken_burns", "none", "static"]);
+const SCENE_MOTION_TYPE_SET = new Set(SCENE_MOTION_TYPES);
+const LIVE_MOTION_TYPES = new Set(["punch_in", "push_in", "ken_burns"]);
+const MOTION_SCALE_MIN = 1.0;
+const MOTION_SCALE_MAX = 2.0;
+
 function clipRoleOf(clip) {
   return clip && typeof clip.role === "string" && clip.role.trim() ? clip.role : "a_roll";
 }
@@ -1598,7 +1614,7 @@ function warnHookGrounding(scenes, ctx, disabledRules, warnings) {
         const best = top[0];
         warnings.push({
           code: "PLAN_HOOK_NOT_GROUNDED",
-          message: `the hook opens at ${round1(inS)}–${round1(outS)}s, which matches none of the top ${top.length} hook candidate(s) INSPECT ranked — the strongest available candidate (rank ${Number.isInteger(best.rank) ? best.rank : 1}) is ${round1(best.start_seconds)}–${round1(best.end_seconds)}s${isNonEmptyString(best.text) ? ` ("${best.text.trim().slice(0, 60)}")` : ""}. Open on a ranked hook, or note in the scene summary why you deviated.`,
+          message: `the hook opens at ${round1(inS)}–${round1(outS)}s, which matches none of the top ${top.length} hook candidate(s) INSPECT ranked — the strongest available candidate (rank ${Number.isInteger(best.rank) ? best.rank : 1}${isNonEmptyString(best.hook_type) && best.hook_type !== "none" ? `, a ${best.hook_type} hook` : ""}) is ${round1(best.start_seconds)}–${round1(best.end_seconds)}s${isNonEmptyString(best.text) ? ` ("${best.text.trim().slice(0, 60)}")` : ""}. Open on a ranked hook and realize it as the cold-open kinetic claim, or note in the scene summary why you deviated.`,
           scene_index: 0,
           scene_id: sceneIdOf(first),
           data: { open_in_seconds: round1(inS), open_out_seconds: round1(outS), top_candidate_start_seconds: round1(best.start_seconds), top_candidate_end_seconds: round1(best.end_seconds) },
@@ -1636,6 +1652,32 @@ function warnHookGrounding(scenes, ctx, disabledRules, warnings) {
       }
     }
   }
+}
+
+// (v3.9) The cold-open caption IS the kinetic claim, and a claim lands harder
+// with one emphasized word (the emphasis_words-driven realization the composer
+// renders in the design accent). When the hook scene plans captions but none
+// carry emphasis_words, nudge. WARNING + fail-safe; retention-gated WITHOUT a
+// video-types.js edit by piggybacking on the hook-grounding gate
+// (PLAN_HOOK_NOT_GROUNDED is disabled in exactly the non-retention rulesets, so
+// this tracks the other hook lints). A scene with NO planned captions is not this
+// lint's concern (PLAN_HOOK_NO_SPEECH already covers a silent open).
+function warnHookCaptionEmphasis(scenes, ctx, disabledRules, warnings) {
+  const disabled = disabledRules instanceof Set ? disabledRules : new Set();
+  if (disabled.has("PLAN_HOOK_CAPTION_NO_EMPHASIS")) return;
+  if (disabled.has("PLAN_HOOK_NOT_GROUNDED")) return; // retention-only proxy
+  const first = scenes.length > 0 && isPlainObject(scenes[0]) ? scenes[0] : null;
+  if (!first || first.purpose !== "hook") return;
+  const caps = Array.isArray(first.caption_segments) ? first.caption_segments.filter(isPlainObject) : [];
+  if (caps.length === 0) return;
+  const hasEmphasis = caps.some((c) => Array.isArray(c.emphasis_words) && c.emphasis_words.some((w) => isNonEmptyString(w)));
+  if (hasEmphasis) return;
+  warnings.push({
+    code: "PLAN_HOOK_CAPTION_NO_EMPHASIS",
+    message: "the cold-open caption carries no emphasis_words — the hook caption is the kinetic claim, and one emphasized word (rendered in the design accent) makes it land. Add emphasis_words to scene 0's caption_segments.",
+    scene_index: 0,
+    scene_id: sceneIdOf(first),
+  });
 }
 
 // Rhythm-arc lints over the existing scene `pacing` field (no schema change).
@@ -2789,6 +2831,191 @@ function warnLayouts(scenes, warnings) {
   });
 }
 
+// --- Visual variety / cutaway rhythm (v3.9) ----------------------------------
+// The #1 reason an agent-edited talking-head reads as flat: long static stretches
+// where nothing on screen changes. The variety machinery exists (b-roll, layouts,
+// subject mattes, typed overlays, kinetic captions, intra-scene punch-ins) but
+// isn't proactively planned. PLAN_STATIC_STRETCH gives the storyboarder a
+// per-video-type BUDGET (ctx.lintRules.variety_budget.max_static_stretch_seconds,
+// from video-types.js): the longest acceptable run of uninterrupted static A-roll.
+// WARNING-level, fail-safe (no budget => skip), ruleset-gated OFF under montage.
+//
+// It models the timeline as COVERED vs uncovered intervals in REALIZED
+// (speed/layout-baked) master time and warns per uncovered gap > budget — so a
+// beat every ~Ns is fine, but one brief title card in a 30s take is NOT (the back
+// half is still static), which a per-scene binary check would miss.
+
+// Normalize scene.motion (string | object) to { type, scale, ease, start_seconds,
+// end_seconds, valid } or null when absent. `valid` is false when present but
+// off-vocabulary / wrong-typed / scale out of range (plan-lint warns; the variety
+// model ignores it). Mirrors the loose, fail-safe transition_in handling.
+function sceneMotionOf(scene) {
+  if (!isPlainObject(scene)) return null;
+  const m = scene.motion;
+  if (m === undefined || m === null) return null;
+  if (typeof m === "string") {
+    const type = m.trim();
+    return { type, scale: null, ease: null, start_seconds: null, end_seconds: null, valid: SCENE_MOTION_TYPE_SET.has(type) };
+  }
+  if (isPlainObject(m)) {
+    const type = isNonEmptyString(m.type) ? m.type.trim() : "";
+    const scaleOk = m.scale === undefined || m.scale === null
+      || (isFiniteNumber(m.scale) && m.scale >= MOTION_SCALE_MIN && m.scale <= MOTION_SCALE_MAX);
+    return {
+      type,
+      scale: isFiniteNumber(m.scale) ? m.scale : null,
+      ease: isNonEmptyString(m.ease) ? m.ease : null,
+      start_seconds: isFiniteNumber(m.start_seconds) && m.start_seconds >= 0 ? m.start_seconds : null,
+      end_seconds: isFiniteNumber(m.end_seconds) && m.end_seconds > 0 ? m.end_seconds : null,
+      valid: SCENE_MOTION_TYPE_SET.has(type) && scaleOk,
+    };
+  }
+  return { type: "", scale: null, ease: null, start_seconds: null, end_seconds: null, valid: false };
+}
+
+function sceneHasLiveMotion(scene) {
+  const m = sceneMotionOf(scene);
+  return m !== null && m.valid && LIVE_MOTION_TYPES.has(m.type);
+}
+
+function sceneHasKineticCaption(scene) {
+  return captionSegmentsOf(scene).some((s) => isNonEmptyString(s.animation));
+}
+
+// Beat-class typed overlays add a visual EVENT; persistent furniture (a static
+// caption block, a logo bug, a progress bar) does not break monotony (the eye
+// habituates to it), so it does not count toward variety coverage.
+const VARIETY_FURNITURE_OVERLAY_TYPES = new Set(["caption_block", "logo_bug", "progress_bar"]);
+
+// A scene whose ENTIRE window carries on-screen life (continuous), so it breaks a
+// static run end-to-end: a multi-cell layout, a b-roll cutaway clip, a subject
+// matte / b-roll placement covering it, an intra-scene camera move, or kinetic
+// (animated) captions. A scene with b-roll is deliberately treated as fully alive
+// — b-roll-driven cuts are not the "static talking head, no b-roll" target.
+function sceneIsContinuouslyAlive(scene, subjectSceneIds, brollSceneIds) {
+  if (sceneLayoutOf(scene)) return true;
+  if (sceneHasLiveMotion(scene)) return true;
+  if (sceneHasKineticCaption(scene)) return true;
+  const clips = Array.isArray(scene.source_clips) ? scene.source_clips : [];
+  if (clips.some((c) => clipRoleOf(c) === "b_roll" && clipHasWindow(c))) return true;
+  const id = sceneIdOf(scene);
+  if (id && (subjectSceneIds.has(id) || brollSceneIds.has(id))) return true;
+  return false;
+}
+
+// Beat windows WITHIN an otherwise-static scene (scene-relative seconds, clamped
+// to [0, sceneRealized]): each beat-class typed overlay's window, plus a short
+// window at the scene head for an energetic (non-seam) transition_in. Plain
+// cut/dip/fade do NOT count — a cut between same-framing takes isn't real variety.
+function sceneBeatWindows(scene, sceneRealized) {
+  const out = [];
+  for (const o of typedOverlaysOf(scene)) {
+    if (!isNonEmptyString(o.type) || VARIETY_FURNITURE_OVERLAY_TYPES.has(o.type)) continue;
+    if (!isFiniteNumber(o.start_seconds) || !isFiniteNumber(o.end_seconds)) continue;
+    const s = Math.max(0, Math.min(o.start_seconds, sceneRealized));
+    const e = Math.max(0, Math.min(o.end_seconds, sceneRealized));
+    if (e > s) out.push([s, e]);
+  }
+  const tType = scene && scene.transition_in !== undefined && scene.transition_in !== null
+    ? transitionTypeOf(scene.transition_in)
+    : null;
+  if (isNonEmptyString(tType) && tType !== "cut" && !SEAM_TRANSITION_TYPES.includes(tType)) {
+    out.push([0, Math.min(0.5, sceneRealized)]);
+  }
+  return out;
+}
+
+// PLAN_STATIC_STRETCH — the visual-variety budget enforcer. Warns per uncovered
+// gap (in realized master time) longer than max_static_stretch_seconds.
+const STATIC_STRETCH_MAX_WARN = 5;
+function warnVisualVariety(parsed, scenes, ctx, disabled, warnings) {
+  if (disabled instanceof Set && disabled.has("PLAN_STATIC_STRETCH")) return;
+  const rules = isPlainObject(ctx) && isPlainObject(ctx.lintRules) ? ctx.lintRules : null;
+  const budget = rules && isPlainObject(rules.variety_budget) ? rules.variety_budget : null;
+  const maxStatic = budget && isFiniteNumber(budget.max_static_stretch_seconds) ? budget.max_static_stretch_seconds : null;
+  if (maxStatic === null || maxStatic <= 0) return; // fail-safe: no budget => no check
+
+  const list = Array.isArray(scenes) ? scenes.filter(isPlainObject) : [];
+  if (list.length === 0) return;
+
+  // scene_ids covered by a concrete b-roll / subject placement (the fan-out view
+  // passes the active timeline's broll_placements, so this is mode-agnostic).
+  const placements = isPlainObject(parsed) && Array.isArray(parsed.broll_placements) ? parsed.broll_placements : [];
+  const brollSceneIds = new Set();
+  const subjectSceneIds = new Set();
+  for (const p of placements) {
+    if (!isPlainObject(p) || !isPlainObject(p.clip) || !isNonEmptyString(p.clip.scene_id)) continue;
+    brollSceneIds.add(p.clip.scene_id);
+    if (p.render_mode === "subject") subjectSceneIds.add(p.clip.scene_id);
+  }
+
+  // Build covered intervals in realized master time + each scene's span (to locate gaps).
+  const covered = [];
+  const spans = []; // { scene, start, end }
+  let offset = 0;
+  for (const scene of list) {
+    const sr = sceneOutputSeconds(scene);
+    if (!isFiniteNumber(sr) || sr <= 0) continue;
+    const base = offset;
+    spans.push({ scene, start: base, end: base + sr });
+    if (sceneIsContinuouslyAlive(scene, subjectSceneIds, brollSceneIds)) {
+      covered.push([base, base + sr]);
+    } else {
+      for (const [s, e] of sceneBeatWindows(scene, sr)) covered.push([base + s, base + e]);
+    }
+    offset += sr;
+  }
+  const total = offset;
+  if (spans.length === 0 || total <= maxStatic) return; // whole cut within budget
+
+  // Complement of the merged covered set within [0, total] = the static gaps.
+  covered.sort((a, b) => a[0] - b[0]);
+  const gaps = [];
+  let cursor = 0;
+  for (const [s, e] of covered) {
+    if (s > cursor) gaps.push([cursor, s]);
+    if (e > cursor) cursor = e;
+  }
+  if (cursor < total) gaps.push([cursor, total]);
+
+  const over = gaps.filter(([s, e]) => e - s > maxStatic).sort((a, b) => (b[1] - b[0]) - (a[1] - a[0]));
+  for (const [gs, ge] of over.slice(0, STATIC_STRETCH_MAX_WARN)) {
+    const g = ge - gs;
+    const startSpan = spans.find((sp) => gs >= sp.start && gs < sp.end) || spans[0];
+    const endSpan = spans.find((sp) => ge > sp.start && ge <= sp.end) || spans[spans.length - 1];
+    const startSeq = isFiniteNumber(startSpan.scene.sequence) ? startSpan.scene.sequence : null;
+    const endSeq = isFiniteNumber(endSpan.scene.sequence) ? endSpan.scene.sequence : null;
+    const where = startSeq && endSeq && endSeq > startSeq
+      ? `scenes ${startSeq}–${endSeq}`
+      : (startSeq ? `scene ${startSeq}` : "the timeline");
+    warnings.push({
+      code: "PLAN_STATIC_STRETCH",
+      message: `${where} run ~${round1(g)}s of uninterrupted static A-roll (budget ${round1(maxStatic)}s) — break it up with a punch-in (scene.motion), a B-roll cutaway, a title/text-card beat, a layout shift, or kinetic-caption emphasis (use the design system when there's no literal B-roll).`,
+      scene_index: list.indexOf(startSpan.scene),
+      scene_id: sceneIdOf(startSpan.scene),
+      data: { static_seconds: round1(g), budget_seconds: round1(maxStatic), start_seconds: round1(gs) },
+    });
+  }
+}
+
+// PLAN_MOTION_INVALID — a present-but-malformed scene.motion (off-vocabulary type
+// or scale out of [1.0, 2.0]). Advisory; the composer falls back to a static frame.
+function warnSceneMotion(scenes, warnings) {
+  (Array.isArray(scenes) ? scenes : []).forEach((scene, ix) => {
+    if (!isPlainObject(scene) || scene.motion === undefined || scene.motion === null) return;
+    const m = sceneMotionOf(scene);
+    if (m && !m.valid) {
+      warnings.push({
+        code: "PLAN_MOTION_INVALID",
+        message: `scene "${sceneIdOf(scene) || ix + 1}" has an unrecognized motion — use one of: ${SCENE_MOTION_TYPES.join(", ")} (a bare string, or { type, scale 1.0–2.0, ease? }); it falls back to a static frame.`,
+        scene_index: ix,
+        scene_id: sceneIdOf(scene),
+        data: { motion: scene.motion },
+      });
+    }
+  });
+}
+
 // context = { state, manifest, transcript, cleanSpeech, targetSeconds,
 // lintRules } — all best-effort/nullable. lintRules (activeLintRules(state))
 // gates the preset-dependent checks: hook heuristics under `retention` only,
@@ -2854,7 +3081,12 @@ function lintStoryboardPlan(parsed, context) {
   warnHookShape(scenes, warnings, disabled);
   warnHookNoSpeech(scenes, ctx, disabled, warnings);
   warnHookGrounding(scenes, ctx, disabled, warnings);
+  warnHookCaptionEmphasis(scenes, ctx, disabled, warnings);
   warnPacingArc(scenes, warnings, disabled);
+  // (v3.9) visual-variety / cutaway-rhythm budget — runs per timeline (so each
+  // short/segment is checked on its own); ruleset-gated off under montage.
+  warnVisualVariety(parsed, scenes, ctx, disabled, warnings);
+  warnSceneMotion(scenes, warnings);
   warnSceneFloors(scenes, warnings);
   warnDurations(parsed, scenes, ctx.targetSeconds, warnings);
   warnDurationFeasibility(scenes, ctx, warnings);

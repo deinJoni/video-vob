@@ -46,7 +46,7 @@ const TOKENS = [
   "vob-safe-bottom",
 ];
 
-const KINDS = ["title", "lower_third", "grade", "motion", "backdrop", "callout", "end_card"];
+const KINDS = ["title", "lower_third", "grade", "motion", "backdrop", "callout", "end_card", "caption", "cold_open"];
 
 // Font families hyperframes auto-resolves (bundled / @fontsource), usable in a
 // reference WITHOUT a font <link>. Probed against hyperframes 0.6.112. House faces
@@ -132,6 +132,12 @@ const COMPONENTS = [
   { name: "backdrop-film-bars", kind: "backdrop", suited_for: ["cinematic"], note: "Cinemascope letterbox bars + graded center band + vignette + faint grain. Cinematic framing." },
   { name: "backdrop-grid", kind: "backdrop", suited_for: ["tutorial"], note: "Subtle dark tech grid + accent quadrant glow + slow parallax drift. Tech/tutorial." },
   { name: "backdrop-soft-studio", kind: "backdrop", suited_for: ["podcast"], note: "Soft warm-neutral two-tone studio gradient + smooth vignette + gentle light breathe. Calm talking-head." },
+  // captions + cold-open (the on-screen retention layer, v3.9) — pure-CSS, token-driven,
+  // emphasis-aware. Captions become PART of the design system (they were divorced from
+  // the --vob-* tokens in the GSAP-only caption kit).
+  { name: "caption-pop", kind: "caption", suited_for: ["social-short", "general", "long-form", "tutorial", "podcast"], note: "Everyday burned-in caption: a 3–5-word chunk pops in (scale+fade), holds, swaps; ONE emphasis word in --vob-accent. Realizes animation:\"pop\". Bottom-third, vertical." },
+  { name: "caption-word-rise", kind: "caption", suited_for: ["social-short", "general"], note: "Pure-CSS word-by-word: each word rises+fades in on its own data-start and holds (no GSAP); emphasis word in accent. Realizes animation:\"word-by-word\" AND the unaligned-transcript downgrade." },
+  { name: "cold-open-claim", kind: "cold_open", suited_for: ["social-short", "general"], note: "The scene-0 HOOK claim: 1–2 big heavy-caps lines slam in line-by-line (data-start stagger) with one accent emphasis word + an accent bar; pairs with a punch-in on the scene video." },
 ];
 
 // Per-video-type LOOK bundles — the opinionated curation. `principles` are taste
@@ -155,6 +161,8 @@ const VIDEO_TYPES = {
       motion: { default: "motion-fast-snap", alternates: [] },
       backdrop: { default: "backdrop-spotlight", alternates: ["backdrop-gradient-sweep"] },
       end_card: { default: "end-card-cta", alternates: [] },
+      caption: { default: "caption-pop", alternates: ["caption-word-rise"] },
+      cold_open: { default: "cold-open-claim", alternates: [] },
     },
     transition_guidance: "Cut-heavy; reserve whip_pan / zoom_punch (≤0.35s) for energy beats.",
   },
@@ -173,6 +181,7 @@ const VIDEO_TYPES = {
       motion: { default: "motion-medium-soft", alternates: [] },
       backdrop: { default: "backdrop-gradient-sweep", alternates: [] },
       end_card: { default: "end-card-cta", alternates: [] },
+      caption: { default: "caption-pop", alternates: [] },
     },
     transition_guidance: "cut / dip between scenes; crossfade at section boundaries.",
   },
@@ -208,6 +217,7 @@ const VIDEO_TYPES = {
       motion: { default: "motion-medium-soft", alternates: [] },
       callout: { default: "callout-arrow-pill", alternates: ["callout-number-step"] },
       backdrop: { default: "backdrop-grid", alternates: [] },
+      caption: { default: "caption-pop", alternates: [] },
     },
     transition_guidance: "cut / dip; slide for step-to-step; avoid flashy transitions.",
   },
@@ -224,6 +234,7 @@ const VIDEO_TYPES = {
       grade: { default: "grade-clean", alternates: ["grade-warm"] },
       motion: { default: "motion-medium-soft", alternates: [] },
       backdrop: { default: "backdrop-soft-studio", alternates: [] },
+      caption: { default: "caption-pop", alternates: [] },
     },
     transition_guidance: "cut / dip; gentle crossfade between segments.",
   },
@@ -240,6 +251,8 @@ const VIDEO_TYPES = {
       grade: { default: "grade-clean", alternates: ["grade-warm", "grade-cool"] },
       motion: { default: "motion-medium-soft", alternates: [] },
       backdrop: { default: "backdrop-gradient-sweep", alternates: ["backdrop-spotlight"] },
+      caption: { default: "caption-pop", alternates: ["caption-word-rise"] },
+      cold_open: { default: "cold-open-claim", alternates: [] },
     },
     transition_guidance: "cut / crossfade / dip — match the destination platform's energy.",
   },

@@ -1,0 +1,197 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=1080, height=1920" />
+    <title>cold-open-claim</title>
+
+    <!-- ========================================================================
+         video-vob design-system REFERENCE component — cold-open-claim
+         (kind: cold_open)  The marquee HOOK claim for scene 0 (purpose:"hook").
+         The hook LINE rendered big and kinetic, designed to sit OVER a punched-in
+         scene video. 1–2 lines SLAM in line-by-line (each line its own class="clip"
+         at a staggered data-start: fast scale-down + fade), with ONE emphasis word
+         in the brand accent (--vob-accent) at extra weight/scale; a thin accent bar
+         wipes in under it. Pairs with a CSS punch-in on the scene <video> (that
+         lives on the video element in the real comp, NOT here — see lint-rules.md
+         §Cold-open). Map the hook caption's emphasis_words[] onto <span class="emph"
+         data-vob-emphasis>.
+
+         Render contract (shared by every design-system component):
+         1. PURE CSS @keyframes — never GSAP. window.__timelines is a no-op stub.
+         2. STAGGER WITH data-start, NEVER animation-delay — each line/bar is its own
+            class="clip" element at an increasing data-start (the runtime scrubs).
+         3. COLORS via --vob-* tokens with a literal fallback.
+         4. FONTS = a concrete auto-resolved kit family (heavy display), NO var() in
+            font-family, NO font <link>/@import. The composer swaps it for
+            target.design.typography.headline.
+         5. Every timed element: class="clip" + id + data-start + data-duration +
+            data-track-index; animation-duration == data-duration; fill-mode both;
+            play-state paused.
+         ===================================================================== -->
+
+    <style>
+      :root {
+        --vob-bg: #0c0d10;
+        --vob-text: #ffffff;
+        --vob-accent: #ff3b30;
+        --vob-safe-top: 200px;
+      }
+      *,
+      *::before,
+      *::after {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        width: 1080px;
+        height: 1920px;
+        margin: 0;
+        overflow: hidden;
+        background: transparent;
+      }
+      #stage {
+        position: relative;
+        width: 1080px;
+        height: 1920px;
+        overflow: hidden;
+        background: var(--vob-bg, #0c0d10);
+      }
+      .ds-demo-bg {
+        position: absolute;
+        inset: 0;
+        z-index: 0;
+        background: radial-gradient(125% 95% at 50% 32%, #262017 0%, #14110c 58%, #07060a 100%);
+      }
+      .claim {
+        position: absolute;
+        left: 70px;
+        right: 70px;
+        top: calc(var(--vob-safe-top, 200px) + 180px);
+        z-index: 5;
+        text-align: center;
+      }
+      .claim-line {
+        margin: 0;
+        font-family: "Archivo Black", "Arial Black", sans-serif;
+        font-weight: 900;
+        font-size: 130px;
+        line-height: 0.96;
+        letter-spacing: -0.02em;
+        text-transform: uppercase;
+        color: var(--vob-text, #ffffff);
+        text-shadow: 0 12px 40px rgba(0, 0, 0, 0.55);
+        transform-origin: 50% 50%;
+        animation-timing-function: linear;
+        animation-fill-mode: both;
+        animation-play-state: paused;
+        will-change: transform, opacity;
+      }
+      .claim-line .emph {
+        color: var(--vob-accent, #ff3b30);
+        display: inline-block;
+        transform: scale(1.04);
+        transform-origin: 50% 50%;
+      }
+      .cl-1 {
+        animation-name: vob-claim-slam;
+        animation-duration: 2.3s;
+      }
+      .cl-2 {
+        animation-name: vob-claim-slam;
+        animation-duration: 2.06s;
+      }
+      .claim-bar {
+        position: absolute;
+        left: 50%;
+        top: calc(var(--vob-safe-top, 200px) + 180px + 320px);
+        z-index: 5;
+        width: 200px;
+        height: 8px;
+        margin-left: -100px;
+        background: var(--vob-accent, #ff3b30);
+        transform-origin: 50% 50%;
+        animation-name: vob-claim-bar;
+        animation-duration: 1.9s;
+        animation-timing-function: linear;
+        animation-fill-mode: both;
+        animation-play-state: paused;
+      }
+      /* fast slam-in (scale down + fade) → hold → fade out. */
+      @keyframes vob-claim-slam {
+        0% {
+          opacity: 0;
+          transform: scale(1.16);
+          animation-timing-function: cubic-bezier(0.2, 0.9, 0.2, 1);
+        }
+        13% {
+          opacity: 1;
+          transform: scale(1);
+        }
+        90% {
+          opacity: 1;
+          transform: scale(1);
+          animation-timing-function: cubic-bezier(0.4, 0, 0.7, 0.2);
+        }
+        100% {
+          opacity: 0;
+          transform: scale(1.02);
+        }
+      }
+      @keyframes vob-claim-bar {
+        0% {
+          opacity: 0;
+          transform: scaleX(0);
+          animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+        }
+        18% {
+          opacity: 0;
+          transform: scaleX(0);
+        }
+        34% {
+          opacity: 1;
+          transform: scaleX(1);
+        }
+        90% {
+          opacity: 1;
+          transform: scaleX(1);
+        }
+        100% {
+          opacity: 0;
+          transform: scaleX(1);
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div
+      id="stage"
+      data-composition-id="ds-cold-open-claim"
+      data-timeline-locked
+      data-start="0"
+      data-duration="2.4"
+      data-fps="30"
+      data-width="1080"
+      data-height="1920"
+    >
+      <div class="ds-demo-bg"></div>
+      <div class="claim">
+        <h1 id="cl-1" class="clip claim-line cl-1" data-start="0.1" data-duration="2.3" data-track-index="1">Most people</h1>
+        <h1 id="cl-2" class="clip claim-line cl-2" data-start="0.34" data-duration="2.06" data-track-index="2">get this <span class="emph">wrong</span></h1>
+      </div>
+      <div id="cl-bar" class="clip claim-bar" data-start="0.5" data-duration="1.9" data-track-index="3"></div>
+    </div>
+
+    <script>
+      /* Inert timeline stub — the render driver calls duration()/pause()
+         unconditionally; a pure-CSS component loads no GSAP. */
+      window.__timelines = window.__timelines || {};
+      window.__timelines["ds-cold-open-claim"] = {
+        duration: function () {
+          return 2.4;
+        },
+        pause: function () {},
+      };
+    </script>
+  </body>
+</html>

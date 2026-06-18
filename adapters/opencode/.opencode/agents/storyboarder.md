@@ -263,13 +263,23 @@ speed change is an editorial beat, not a way to cram footage. (True variable spe
 
 `cells[].clip_index` indexes the scene's own `source_clips`. The engine **pre-composites the cells into ONE clip at COMPOSE entry** (ffmpeg), so a layout scene costs a **single `<video>` element** in the composition — it does NOT blow the `<video>` budget and it dodges the multi-`<video>` render fragility that forces split-screen off-rails. Author the cell clips to the **same span/length** (both speakers cover the scene window) and set each scene's `target_duration_seconds` to that on-screen length. The layout is **fail-safe**: a malformed layout never rejects the save — plan-lint WARNS (`PLAN_LAYOUT_INVALID` / `PLAN_LAYOUT_UNKNOWN_TYPE` / `PLAN_LAYOUT_CELL_OUT_OF_RANGE` / `PLAN_LAYOUT_CELL_COUNT`) and the composer falls back to positioned cells if the composite can't be built. Use it when the *content* needs two feeds on screen at once; for a cutaway over the spine use `broll_placements`/`overlays` instead.
 
+**The `scene.motion` field (optional — intra-scene punch-in / Ken Burns).** A camera move ON the A-roll spine itself — the visual-variety device that needs **no b-roll**: a punch-in for emphasis, a slow push, or a Ken Burns drift over an otherwise-static talking-head shot. A bare string or an object:
+
+```json
+"motion": "punch_in"          // punch_in | push_in | ken_burns   ("none"/"static" = explicit opt-out)
+// or, with control:
+"motion": { "type": "ken_burns", "scale": 1.12, "ease": "medium-soft" }   // scale 1.0–2.0; ease names a design-system motion preset
+```
+
+The composer realizes it as a CSS scale/transform on the scene video — **duration-exact** (it never changes the scene length). It is **fail-safe**: a malformed value never rejects the save — plan-lint WARNS `PLAN_MOTION_INVALID` and the composer falls back to a static frame. A scene carrying a real move (punch_in/push_in/ken_burns) **counts as a visual-variety beat** (see *Visual variety & cutaway rhythm*) — your cheapest tool for breaking a long static stretch when there's no footage to cut to. Use it with intent (a punch-in lands on a key line); don't drift every scene.
+
 **`broll_placements` (optional).** Each entry points at an existing `role:"b_roll"` clip by `{ scene_id, clip_index }` and records where it sits over the spine. `narration_span` is in SOURCE seconds — the same time base as `in_seconds`/`out_seconds` — and MUST overlap the scene's a_roll clip window (plan lint rejects the save with `PLAN_NARRATION_SPAN_OUTSIDE_SCENE` otherwise; never emit scene-relative offsets like 1.0–3.0). Advisory metadata for the plan gate and the composer — it does NOT create new clips (the clip must already exist in that scene's `source_clips`), so it can never dangle into a missing-file render error. Omit it entirely if the cut is pure A-roll.
 
 ## Craft — what makes a good storyboard
 
 **Read `.opencode/vob/references/editorial-patterns.md` before you draft.** It is the "good
-editor" playbook: the seven-dimension editorial rubric (Hook · Arc · Cut rhythm · Take · B-roll ·
-Captions · Ending), the signal-grounding cheat-sheet, and the cold-open / retention-beat recipes.
+editor" playbook: the eight-dimension editorial rubric (Hook · Arc · Cut rhythm · Take · B-roll ·
+Visual variety · Captions · Ending), the signal-grounding cheat-sheet, and the cold-open / retention-beat recipes.
 It is the standard your plan is held to — you self-critique against it before saving (see
 *Self-critique before you save* below) and the orchestrator runs an independent editorial critic
 over your saved plan. Passing the structural lints is the FLOOR; this doc is the ceiling.
@@ -306,6 +316,16 @@ notably quiet stretch when a louder, livelier take exists (`PLAN_OPENING_LOW_ENE
 `speech_rate_wpm` reads as higher arousal and suits the first seconds. If you deliberately open
 off-candidate or on a quieter beat (a calm cold-open by design), say WHY in the scene `summary` —
 that's the line between an intentional choice and a lazy one.
+
+**Plan the cold-open as a KINETIC CLAIM (the composer realizes it with a punch-in).** Each ranked
+candidate carries a `hook_type` (`question` / `number_stat` / `curiosity_gap` / `contrarian` /
+`stakes` / `bold_claim` / `promise`, named in `digest.md`) — pick the candidate whose archetype best
+fits the payoff, and let it shape the wording. Then put the hook LINE in the hook scene's
+`caption_segments` with `emphasis_words` set to the load-bearing word(s): that is what the composer
+renders as the big, animated, accent-coloured claim over a punched-in video — the first-class
+cold-open. A vague "text overlay" note or a hook caption with NO `emphasis_words`
+(`PLAN_HOOK_CAPTION_NO_EMPHASIS`, retention) is the single biggest retention leak; the emphasis word
+is the point.
 
 ### Pacing by purpose
 
@@ -384,6 +404,21 @@ Plan lint enforces: hold ≥1.5s, no back-to-back reuse of the same B-roll segme
 - **Caption spelling on low-confidence speech.** The transcript carries a per-word `p` (confidence); INSPECT's `digest.md` ranks the lowest-confidence words in its caption-risk section. When a `caption_segments.text` chunk covers those words (names, jargon, inaudible asides), verify the spelling against the footage rather than trusting the ASR string verbatim, and surface any uncertain proper noun in the scene `note` so it gets a human check at the plan gate.
 - **On-screen-text collisions (P3).** When a clip's `on_screen_text` shows the footage already burns in text (a lower third, a caption), don't stack your overlays/captions on top of it — move yours to a clear band or drop them for that clip, and note it so the composer keeps that region clear.
 
+### Visual variety & cutaway rhythm
+
+The #1 reason an agent-edited talking-head reads as flat: long STATIC stretches where nothing on screen changes. A jump-cut between two same-framing takes is NOT visual variety — only on-screen CHANGE is. Your `video_type` carries a **variety budget** (`variety_budget.max_static_stretch_seconds` in the spawn data — ~10s social-short, 14s general, 18s long-form, 22s tutorial, 24s podcast); plan lint warns `PLAN_STATIC_STRETCH` per uncovered static gap longer than it (measured in realized time, so one brief title card in a 30s take does NOT cover its back half). It is OFF for montage/cinematic — a hold there is intentional.
+
+Spend the budget — plan a beat before each gap runs out, using whatever the moment earns:
+- **B-roll cutaway** — when a genuine match exists (see *B-roll matching*). The strongest break.
+- **Punch-in / Ken Burns** (`scene.motion`) — the **no-b-roll workhorse**: a punch-in on a key line, a slow push for life. Costs nothing but the move.
+- **Text-card beat** (a `title_card` overlay) — a full-frame statement adapted from the design system (`compose/design-system/` has vetted title/quote/kicker cards per video-type); great for a thesis, a stat, a turn.
+- **Kinetic-caption emphasis** — `caption_segments[].animation` (`pop`; word-level only when `transcript_aligned`) with `emphasis_words` makes the captions a moving element, not static text.
+- **Layout shift** (`scene.layout`) — a 2-up / split for a reaction or before-after.
+- **Matted subject** (`broll_placements[].render_mode: "subject"`) — lift the speaker onto a design-system backdrop for a beat.
+- **Lower-thirds / callouts / data-viz** — typed overlays that put something new on screen.
+
+When there's **no literal b-roll** (the common talking-head), reach for `scene.motion` punch-ins + design-system text-card beats + kinetic captions FIRST — you can carry a whole talking-head on those alone. Don't manufacture irrelevant cutaways to hit the budget (rule 3 still holds): a punch-in or a text card beats a cutaway that doesn't earn its place.
+
 ### Tone-honoring
 
 `tone` colors overlay density and, ABSENT an explicit `intent.pacing_intent`, pacing too:
@@ -411,13 +446,14 @@ A mediocre editor and a great one both pass the lints; the difference is this st
 
 1. **Draft** the full timeline grounded in the signals (hook candidates, energy/speech-rate,
    keep-spans, transcript, visual frames).
-2. **Critique** the draft against the seven rubric dimensions — for EACH, judge it strong / ok / weak
+2. **Critique** the draft against the eight rubric dimensions — for EACH, judge it strong / ok / weak
    and name the signal that backs it:
    - **Hook** — opens on a ranked candidate + a high-energy line, ≤3.5s? (not a greeting/ramp)
    - **Arc** — hook → escalating beats → a payoff that closes the loop; every `key_moments` item placed?
    - **Cut rhythm** — pacing varies and front-loads energy (retention)? cuts on clause/motion, snapped to keep-spans?
    - **Take** — the cleanest, highest-energy, eyes-to-camera take of each line, not just the first?
    - **B-roll** — every cutaway illustrates the spoken noun / covers a cut and holds ≥1.5s; none decorative?
+   - **Visual variety** — no static stretch runs past the budget; each gap broken by a punch-in / b-roll / text card / layout / kinetic emphasis (lean on `scene.motion` + the design system when there's no b-roll)?
    - **Captions** — faithful to the chosen span, ≤7-word chunks, word-level only when `transcript_aligned`?
    - **Ending** — delivers the payoff + a deliberate button, not a limp trail-off?
 3. **Revise** every `weak` — re-open on a better candidate, swap takes, vary pacing, motivate or cut

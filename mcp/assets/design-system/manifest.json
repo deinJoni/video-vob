@@ -20,7 +20,9 @@
     "motion",
     "backdrop",
     "callout",
-    "end_card"
+    "end_card",
+    "caption",
+    "cold_open"
   ],
   "auto_resolved_fonts": [
     "League Gothic",
@@ -82,6 +84,16 @@
         "end_card": {
           "default": "end-card-cta",
           "alternates": []
+        },
+        "caption": {
+          "default": "caption-pop",
+          "alternates": [
+            "caption-word-rise"
+          ]
+        },
+        "cold_open": {
+          "default": "cold-open-claim",
+          "alternates": []
         }
       },
       "transition_guidance": "Cut-heavy; reserve whip_pan / zoom_punch (≤0.35s) for energy beats."
@@ -121,6 +133,10 @@
         },
         "end_card": {
           "default": "end-card-cta",
+          "alternates": []
+        },
+        "caption": {
+          "default": "caption-pop",
           "alternates": []
         }
       },
@@ -194,6 +210,10 @@
         "backdrop": {
           "default": "backdrop-grid",
           "alternates": []
+        },
+        "caption": {
+          "default": "caption-pop",
+          "alternates": []
         }
       },
       "transition_guidance": "cut / dip; slide for step-to-step; avoid flashy transitions."
@@ -226,6 +246,10 @@
         },
         "backdrop": {
           "default": "backdrop-soft-studio",
+          "alternates": []
+        },
+        "caption": {
+          "default": "caption-pop",
           "alternates": []
         }
       },
@@ -267,6 +291,16 @@
           "alternates": [
             "backdrop-spotlight"
           ]
+        },
+        "caption": {
+          "default": "caption-pop",
+          "alternates": [
+            "caption-word-rise"
+          ]
+        },
+        "cold_open": {
+          "default": "cold-open-claim",
+          "alternates": []
         }
       },
       "transition_guidance": "cut / crossfade / dip — match the destination platform's energy."
@@ -950,6 +984,87 @@
       "lint": "clean",
       "bytes": 5744,
       "note": "Soft warm-neutral two-tone studio gradient + smooth vignette + gentle light breathe. Calm talking-head."
+    },
+    "caption-pop": {
+      "kind": "caption",
+      "file": "caption-pop/caption-pop.html",
+      "files": [
+        "caption-pop/caption-pop.html"
+      ],
+      "suited_for": [
+        "social-short",
+        "general",
+        "long-form",
+        "tutorial",
+        "podcast"
+      ],
+      "dims": "1080x1920",
+      "fonts": [
+        "Montserrat"
+      ],
+      "tokens_used": [
+        "vob-accent",
+        "vob-bg",
+        "vob-safe-bottom",
+        "vob-text"
+      ],
+      "pure_css": true,
+      "has_keyframes": true,
+      "lint": "clean",
+      "bytes": 5409,
+      "note": "Everyday burned-in caption: a 3–5-word chunk pops in (scale+fade), holds, swaps; ONE emphasis word in --vob-accent. Realizes animation:\"pop\". Bottom-third, vertical."
+    },
+    "caption-word-rise": {
+      "kind": "caption",
+      "file": "caption-word-rise/caption-word-rise.html",
+      "files": [
+        "caption-word-rise/caption-word-rise.html"
+      ],
+      "suited_for": [
+        "social-short",
+        "general"
+      ],
+      "dims": "1080x1920",
+      "fonts": [
+        "Montserrat"
+      ],
+      "tokens_used": [
+        "vob-accent",
+        "vob-bg",
+        "vob-safe-bottom",
+        "vob-text"
+      ],
+      "pure_css": true,
+      "has_keyframes": true,
+      "lint": "clean",
+      "bytes": 5824,
+      "note": "Pure-CSS word-by-word: each word rises+fades in on its own data-start and holds (no GSAP); emphasis word in accent. Realizes animation:\"word-by-word\" AND the unaligned-transcript downgrade."
+    },
+    "cold-open-claim": {
+      "kind": "cold_open",
+      "file": "cold-open-claim/cold-open-claim.html",
+      "files": [
+        "cold-open-claim/cold-open-claim.html"
+      ],
+      "suited_for": [
+        "social-short",
+        "general"
+      ],
+      "dims": "1080x1920",
+      "fonts": [
+        "Archivo Black"
+      ],
+      "tokens_used": [
+        "vob-accent",
+        "vob-bg",
+        "vob-safe-top",
+        "vob-text"
+      ],
+      "pure_css": true,
+      "has_keyframes": true,
+      "lint": "clean",
+      "bytes": 6456,
+      "note": "The scene-0 HOOK claim: 1–2 big heavy-caps lines slam in line-by-line (data-start stagger) with one accent emphasis word + an accent bar; pairs with a punch-in on the scene video."
     }
   }
 }

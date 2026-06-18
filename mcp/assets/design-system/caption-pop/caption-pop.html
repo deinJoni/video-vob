@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=1080, height=1920" />
+    <title>caption-pop</title>
+
+    <!-- ========================================================================
+         video-vob design-system REFERENCE component — caption-pop  (kind: caption)
+         The everyday short-form burned-in caption. Realizes caption_segment
+         animation:"pop" — a 3–5-word chunk pops in (scale + fade), holds, pops out;
+         the next chunk swaps in. ONE emphasis word is rendered in the brand accent
+         (--vob-accent) at heavier weight + a slight scale bump — map each
+         caption_segment.emphasis_words[] word onto <span class="emph"
+         data-vob-emphasis>. Bottom-third, above --vob-safe-bottom.
+
+         Render contract (shared by every design-system component):
+         1. PURE CSS @keyframes — never GSAP. window.__timelines is a no-op stub.
+         2. STAGGER WITH data-start, NEVER animation-delay (the runtime hijacks
+            animation-delay to scrub a paused animation to each frame). Each chunk
+            is its OWN class="clip" element at its own data-start.
+         3. COLORS via --vob-* tokens with a literal fallback.
+         4. FONTS = a concrete auto-resolved kit family, NO var() in font-family,
+            NO font <link>/@import. The composer swaps it for
+            target.design.typography.caption.
+         5. Every timed element: class="clip" + id + data-start + data-duration +
+            data-track-index (>=1, distinct per overlapping element);
+            animation-duration == data-duration; fill-mode both; play-state paused.
+         ===================================================================== -->
+
+    <style>
+      :root {
+        --vob-bg: #0c0d10;
+        --vob-text: #ffffff;
+        --vob-accent: #ff3b30;
+        --vob-safe-bottom: 280px;
+      }
+      *,
+      *::before,
+      *::after {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        width: 1080px;
+        height: 1920px;
+        margin: 0;
+        overflow: hidden;
+        background: transparent;
+      }
+      #stage {
+        position: relative;
+        width: 1080px;
+        height: 1920px;
+        overflow: hidden;
+        background: var(--vob-bg, #0c0d10);
+      }
+      /* Demo backdrop — stands in for the video spine; dropped in the real comp. */
+      .ds-demo-bg {
+        position: absolute;
+        inset: 0;
+        z-index: 0;
+        background: radial-gradient(120% 90% at 50% 38%, #23252e 0%, #131419 58%, #08090c 100%);
+      }
+      /* All caption chunks share the same bottom-third box; only one shows at a time. */
+      .cap-chunk {
+        position: absolute;
+        left: 80px;
+        right: 80px;
+        bottom: var(--vob-safe-bottom, 280px);
+        z-index: 5;
+        margin: 0;
+        text-align: center;
+        font-family: "Montserrat", "Helvetica Neue", sans-serif;
+        font-weight: 800;
+        font-size: 78px;
+        line-height: 1.08;
+        letter-spacing: -0.01em;
+        color: var(--vob-text, #ffffff);
+        text-shadow: 0 6px 28px rgba(0, 0, 0, 0.55);
+        transform-origin: 50% 100%;
+        animation-timing-function: linear;
+        animation-fill-mode: both;
+        animation-play-state: paused;
+        will-change: transform, opacity;
+      }
+      /* The emphasis treatment: the load-bearing word in the brand accent. */
+      .cap-chunk .emph {
+        color: var(--vob-accent, #ff3b30);
+        font-weight: 900;
+        display: inline-block;
+        transform: scale(1.06);
+        transform-origin: 50% 100%;
+      }
+      .cap-a {
+        animation-name: vob-cap-pop;
+        animation-duration: 2s;
+      }
+      .cap-b {
+        animation-name: vob-cap-pop;
+        animation-duration: 2s;
+      }
+      /* in (scale + fade, fast settle) → hold → out (fade + slight shrink). */
+      @keyframes vob-cap-pop {
+        0% {
+          opacity: 0;
+          transform: scale(0.9) translateY(14px);
+          animation-timing-function: cubic-bezier(0.2, 0.9, 0.2, 1);
+        }
+        11% {
+          opacity: 1;
+          transform: scale(1) translateY(0);
+        }
+        90% {
+          opacity: 1;
+          transform: scale(1) translateY(0);
+          animation-timing-function: cubic-bezier(0.4, 0, 0.7, 0.2);
+        }
+        100% {
+          opacity: 0;
+          transform: scale(0.98) translateY(0);
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div
+      id="stage"
+      data-composition-id="ds-caption-pop"
+      data-timeline-locked
+      data-start="0"
+      data-duration="4"
+      data-fps="30"
+      data-width="1080"
+      data-height="1920"
+    >
+      <div class="ds-demo-bg"></div>
+      <p id="cap-a" class="clip cap-chunk cap-a" data-start="0" data-duration="2" data-track-index="1">this is the</p>
+      <p id="cap-b" class="clip cap-chunk cap-b" data-start="2" data-duration="2" data-track-index="2">whole <span class="emph">secret</span></p>
+    </div>
+
+    <script>
+      /* Inert timeline stub — the render driver calls duration()/pause()
+         unconditionally; a pure-CSS component loads no GSAP. */
+      window.__timelines = window.__timelines || {};
+      window.__timelines["ds-caption-pop"] = {
+        duration: function () {
+          return 4;
+        },
+        pause: function () {},
+      };
+    </script>
+  </body>
+</html>
