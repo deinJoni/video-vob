@@ -146,5 +146,7 @@ _(record non-obvious choices here as they're made)_
 
 ## Loop bookkeeping
 
-- Audit agents launched (5): INGEST+INSPECT, INTENT+PLAN, COMPOSE+PREVIEW, RENDER+PACKAGE+ITERATE, FSM-core. Awaiting completion notifications.
-- Next action on wake: collect audit findings → write `docs/v3.8/PRD.md` → fill findings backlog above → begin stage 1.
+- ✅ All 5 audits collected; PRD + findings ledger written + committed (57a22e7).
+- ✅ Stage 1 INSPECT committed (06d879b). ✅ Stage 2/3 PLAN P1 committed (bd47d88).
+- **NEXT ACTION ON WAKE:** Stage 2/3 **P2** in `storyboard-schema.js` — (a) `PLAN_TARGET_PLATFORM_DRIFT`/`PLAN_TARGET_FPS_DRIFT` (target vs intent canonical; needs `canonicalizePlatform` from platform-profiles + profile.fps); (b) floor lints `PLAN_SCENE_TOO_SHORT` (via `sceneOutputSeconds`, line 178) / `PLAN_SCENE_EMPTY`; (c) safe-area generalize to `safe_top_px` + `caption_segments[].position` (overlay safe-area lint, search `PLAN_OVERLAY_SAFE_AREA`). Then commit Stage 2/3, move to **Stage 4 COMPOSE** (safe-band QC XC-3 is the big one). Remaining stages: COMPOSE, PREVIEW, RENDER, PACKAGE, ITERATE, CORE (+ XC-1 drift, XC-2 black-frame QC shared helpers).
+- Verification pattern that works here: `node -e` targeted lint tests + `node scripts/m5-walker.js spans` (source-free) + boot check. Heavier walker phases need ffmpeg+hyperframes+VOB_WALKER_SOURCE (defer to a broad integration check later).
