@@ -200,6 +200,11 @@ _(record non-obvious choices here as they're made)_
 - _Verified: project-id guard (reject `.intro`, accept normal, still reject `../x`), stale-vs-intent gate (stale→blocked overridable, fresh→allowed), confirm-preview load, boot._
 - _Deferred (LOW / low-value / risky): dependency unknown-state ffmpeg gate (CORE#9), validator null/oneOf messages (CORE#8), transport byte-framing for CJK (CORE#10 — load-bearing, high-risk for low frequency), `summary_delta` on mutating returns (CORE#5 — optimization), brief-validator manifest audio (INTENT#5)._
 
+## FINALIZE status
+- ✅ ALL 9 FSM stages + cross-cutting CORE improved & committed (19 commits, `main..HEAD`).
+- ✅ Version 3.7.0→3.8.0 (package.json + server.js); `docs/v3.8/CHANGELOG.md`; CLAUDE.md invariants refreshed (d313732).
+- ⏳ Two adversarial reviews running (engine-logic + FSM/robustness halves over the full diff). **On wake: triage findings → fix real ones → commit → then STOP the loop** (goal met) with a PushNotification outcome.
+
 ## Loop bookkeeping
 
 - ✅ All 5 audits collected; PRD + findings ledger written + committed (57a22e7).
