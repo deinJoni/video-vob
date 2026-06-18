@@ -1357,6 +1357,11 @@ async function runInspect({ projectId, manifest, options = {} }) {
   const winnerWords = transcriptsByFile.get(transcribedFileIndex) || null;
   const winnerFeatures = segmentation.featuresByFile.get(transcribedFileIndex) || null;
   let hookCandidates = [];
+  // The winner file's segments carry the v3.9 take-quality `strength`; feeding
+  // them lets the hook scorer prefer a well-delivered cold-open candidate.
+  const winnerHookSegments = Array.isArray(segmentation.fileSummaries)
+    ? (segmentation.fileSummaries.find((f) => f && f.file_index === transcribedFileIndex) || {}).segments || null
+    : null;
   try {
     hookCandidates = rankHookCandidates({
       words: winnerWords,
@@ -1364,6 +1369,7 @@ async function runInspect({ projectId, manifest, options = {} }) {
       energyWindows: winnerFeatures ? winnerFeatures.energy_windows : null,
       durationSeconds: fileWithAudio ? Number(fileWithAudio.duration_seconds) : null,
       language: winnerLanguage,
+      segments: winnerHookSegments,
     }) || [];
   } catch { hookCandidates = []; }
   let digestPathOut = null;

@@ -145,3 +145,46 @@ caption-kit mechanism). No new tool / QC code / FSM edge / schema.
 - Verified: 28 lint-clean, 12 render-verified across social / general / cinematic /
   podcast, adversarial review (0 blockers / 0 majors, 5 minor fixed). Full ledger:
   `docs/v3.9/compose-design-system/`.
+
+## Cold-open (semantic hook) + caption realization (the two on-screen retention levers)
+
+Live-tester feedback: the **hook and the captions** decide retention, and both were
+under-crafted — scene 0 was chosen by an energy+lexicon heuristic and realized like
+any other beat (no punch); captions were on screen ~always in short-form but realized
+generically (not on-brand, not emphasis-driven, not matched to the design system).
+This makes both first-class. Additive, advisory, fail-safe — no FSM edge, no new gate,
+no new/renamed required key. Full ledger: `docs/v3.9/hook-and-captions.md`.
+
+### INSPECT — semantic hook scoring
+- **NEW `mcp/lib/hook-scoring.js`** (pure scorer, no I/O) — a faithful SUPERSET of the
+  legacy `rankHookCandidates` lexicon scorer. `VOB_HOOK_SCORING=off` reproduces the old
+  weights byte-for-byte (incl. non-English gating); enriched (default) adds: rhetorical
+  **hook archetypes** (`hook_type` ∈ question / number_stat / curiosity_gap / contrarian
+  / stakes / promise / bold_claim / direct_address / none), curiosity-gap / promise /
+  contrarian / stakes phrase families, a **self-containment** adjustment (a mid-thought
+  open is a weaker cold-open), a **specificity** bonus, and a **take-quality `strength`
+  blend** (a well-delivered candidate out-ranks a flat one). Crosslingual & fail-safe.
+- `inspect-digest.js::rankHookCandidates` delegates per-sentence scoring to it, threads
+  the winner file's segments (`strength`), and stamps `hook_type` on every candidate;
+  the digest's § Hook candidates names the archetype. The full candidates already ride
+  into `summary.json`, so the existing v3.9 hook-grounding lints consume the richer
+  ranking for free; `PLAN_HOOK_NOT_GROUNDED` now names the rank-1 candidate's `hook_type`.
+
+### PLAN — the cold-open is the kinetic claim
+- **NEW advisory lint `PLAN_HOOK_CAPTION_NO_EMPHASIS`** (`storyboard-schema.js`,
+  `warnHookCaptionEmphasis`) — the hook scene plans captions but none carry
+  `emphasis_words`; the kinetic claim wants a load-bearing word. WARNING, fail-safe, and
+  retention-gated WITHOUT a `video-types.js` edit (piggybacks on the hook-grounding gate).
+- `storyboarder.md` + `editorial-patterns.md §3` — plan scene 0 as a kinetic claim: pick
+  the candidate by `hook_type`, put the hook LINE in `caption_segments` with `emphasis_words`.
+
+### COMPOSE — punch-in + on-brand, emphasis-driven captions
+- **NEW design-system caption components** (pure-CSS, token-driven, emphasis-aware,
+  render-reliable): `caption-pop`, `caption-word-rise`, `cold-open-claim`, plus per-video-type
+  `slots.caption` + `slots.cold_open`. Captions become part of the design system (they
+  were divorced from `--vob-*` in the GSAP-only caption kit).
+- `composer.md` — captions reframed as a PRIMARY surface: prefer the design-system caption
+  slot (on-brand + reliably-rendering), emphasis_words REQUIRED via `<span class="emph"
+  data-vob-emphasis>` in `--vob-accent`, and a worked **hook scene** example with the
+  punch-in (duration-exact CSS scale on the video) + kinetic claim. Recipe in `lint-rules.md`.
+- Knob: `VOB_HOOK_SCORING`.

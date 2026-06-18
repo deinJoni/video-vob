@@ -1,24 +1,22 @@
 "use strict";
 
-// INSPECT digest + hook-candidate ranking. PURE module — no I/O, no requires —
-// so both functions are unit-testable without a fixture. inspect.js calls them
-// at the end of runInspect and writes the markdown to inspect/digest.md, the
-// compact handoff the orchestrator reads INSTEAD of N thumbnail singles.
+// INSPECT digest + hook-candidate ranking. PURE-ish module (no file I/O; it does
+// `require("./hook-scoring")` — itself a pure, no-I/O scorer — so both functions
+// stay unit-testable without a fixture). inspect.js calls them at the end of
+// runInspect and writes the markdown to inspect/digest.md, the compact handoff
+// the orchestrator reads INSTEAD of N thumbnail singles.
 
-// --- hook-candidate scoring (weights are normative; see spec D5) -------------
+const { scoreHook } = require("./hook-scoring");
 
-const INTERROGATIVE_RE = /^(who|what|when|where|why|how|did|do|does|is|are|can|could|would|should|have|has|will)$/i;
-const QUESTION_END_RE = /\?["')\]]*\s*$/;
-const NUMBER_WORD_RE = /\b(hundred|thousand|million|billion|percent|half|double|triple|times)\b/i;
-const CLAIM_RE = /\b(never|always|nobody|no one|everyone|every|biggest|worst|best|only|secret|mistake|wrong|stop|truth|insane|crazy|free|hate|love|guarantee|warning|problem|nothing|impossible)\b/gi;
-const SECOND_PERSON_RE = /\byou(r|rs)?\b/i;
-const GREETING_RE = /^(hi|hey|hello|welcome|what's up|good (morning|afternoon|evening)|today (i|we)|in this video|so today|my name is|i('m| am) (going to|gonna))/i;
+// --- sentence assembly for hook ranking --------------------------------------
+// The hook LEXICON + rhetorical-archetype scoring lives in hook-scoring.js (the
+// v3.9 semantic scorer). Here we only assemble sentences and compute the
+// per-sentence CONTEXT signals (energy z-score, paragraph-start, early-in-file,
+// overlapping take strength) that we hand to scoreHook().
+
 // Terminal punctuation INCLUDES CJK fullwidth stops (。？！) so non-English
 // sentences flush on punctuation rather than only on gaps/the 30-word cap.
 const SENTENCE_END_RE = /[.?!。？！]["')\]]*$/;
-// Question punctuation is language-agnostic (incl. fullwidth ？); the
-// interrogative WORD list (INTERROGATIVE_RE) is English-only.
-const QUESTION_PUNCT_RE = /[?？]["')\]]*\s*$/;
 
 const MAX_SENTENCE_WORDS = 30;
 const SENTENCE_GAP_SECONDS = 1.0;
@@ -63,14 +61,6 @@ function assembleSentences(words) {
   return sentences;
 }
 
-function distinctClaimCount(text) {
-  CLAIM_RE.lastIndex = 0;
-  const seen = new Set();
-  let m;
-  while ((m = CLAIM_RE.exec(text)) !== null) seen.add(m[1].toLowerCase());
-  return seen.size;
-}
-
 function containingParagraph(paragraphs, start) {
   for (const p of Array.isArray(paragraphs) ? paragraphs : []) {
     if (p && isNum(p.start) && isNum(p.end) && start >= p.start - 1e-3 && start <= p.end + 1e-3) {
@@ -80,8 +70,27 @@ function containingParagraph(paragraphs, start) {
   return null;
 }
 
+// Max take-quality strength.score over the segments overlapping [start,end), or
+// null when no scored segment overlaps. Lets a well-delivered candidate out-rank
+// a flat one in enriched mode (segments carry the v3.9 take-quality `strength`).
+function maxStrengthOverlap(segments, start, end) {
+  if (!Array.isArray(segments)) return null;
+  let best = null;
+  for (const seg of segments) {
+    if (!seg || !isNum(seg.start_seconds) || !isNum(seg.end_seconds)) continue;
+    if (start < seg.end_seconds && end > seg.start_seconds) {
+      const sc = seg.strength && isNum(seg.strength.score) ? seg.strength.score : null;
+      if (sc != null && (best == null || sc > best)) best = sc;
+    }
+  }
+  return best;
+}
+
 /**
- * Rank cold-open hook candidates from the winner file's transcript.
+ * Rank cold-open hook candidates from the winner file's transcript. The
+ * per-sentence rhetorical scoring + archetype classification lives in
+ * hook-scoring.js (the v3.9 semantic scorer); here we assemble sentences, compute
+ * the per-sentence CONTEXT signals, and shape the ≤5 ranked candidates.
  *
  * @param {object} args
  * @param {Array|null} args.words           canonical [{text,start,end,p?}]
@@ -89,19 +98,19 @@ function containingParagraph(paragraphs, start) {
  * @param {Array|null} args.energyWindows   [{t,rms_db}] 0.5s windows (or null)
  * @param {number|null} args.durationSeconds source duration
  * @param {string|null} args.language        detected language code (e.g. "en", "zh")
- * @returns {Array} ≤5 entries: {rank, score, start_seconds, end_seconds, paragraph, text, signals}
+ * @param {Array|null} args.segments         winner file's segments (carry take `strength`); enriched-mode only
+ * @returns {Array} ≤5 entries: {rank, score, start_seconds, end_seconds, paragraph, hook_type, text, signals}
  */
-function rankHookCandidates({ words, paragraphs, energyWindows, durationSeconds, language } = {}) {
+function rankHookCandidates({ words, paragraphs, energyWindows, durationSeconds, language, segments } = {}) {
   const sentences = assembleSentences(words);
   if (sentences.length === 0) return [];
 
-  // The lexical hook signals (interrogative word, claim words, second person,
-  // greeting, number WORDS) are English regexes — on a non-English source they
-  // all score ~0, leaving the ranking near-random and often below threshold. For
-  // non-English we GATE those signals and lean harder on the language-agnostic
-  // ones (energy, position, digits, question punctuation), so the cold-open hook
-  // — the highest-leverage retention moment — still has a real basis.
+  // The lexical hook signals are English regexes (gated inside scoreHook); on a
+  // non-English source the ranking leans on the language-agnostic ones (energy,
+  // position, digits, question punctuation, take strength). VOB_HOOK_SCORING=off
+  // disables the v3.9 enrichments and reproduces the legacy weights exactly.
   const isEnglish = !language || /^en/i.test(String(language));
+  const enriched = !/^off$/i.test(String(process.env.VOB_HOOK_SCORING || ""));
 
   // File-level energy stats (population σ); skipped entirely without windows.
   const windows = Array.isArray(energyWindows)
@@ -115,54 +124,30 @@ function rankHookCandidates({ words, paragraphs, energyWindows, durationSeconds,
   }
 
   const scored = sentences.map((s) => {
-    const signals = [];
-    let score = 0;
-    const firstWord = (s.text.split(/\s+/)[0] || "").replace(/^[^A-Za-z']+|[^A-Za-z']+$/g, "");
-    if (QUESTION_PUNCT_RE.test(s.text) || (isEnglish && INTERROGATIVE_RE.test(firstWord))) {
-      score += 2.0; signals.push("question");
-    }
-    if (/\d/.test(s.text) || (isEnglish && NUMBER_WORD_RE.test(s.text))) {
-      score += 1.0; signals.push("number");
-    }
-    if (isEnglish) {
-      const claims = distinctClaimCount(s.text);
-      if (claims > 0) {
-        score += Math.min(claims, 2); signals.push("claim");
-      }
-      if (SECOND_PERSON_RE.test(s.text)) {
-        score += 0.5; signals.push("second_person");
-      }
-    }
     const para = containingParagraph(paragraphs, s.start);
-    if (para && s.start <= para.start + 0.75) {
-      score += isEnglish ? 0.75 : 1.0; signals.push("paragraph_start");
-    }
-    if (isNum(durationSeconds) && s.start <= 0.2 * durationSeconds) {
-      score += isEnglish ? 0.5 : 1.0; signals.push("early");
-    }
+    const isParagraphStart = !!(para && s.start <= para.start + 0.75);
+    const isEarly = isNum(durationSeconds) && s.start <= 0.2 * durationSeconds;
+    let energyZ = null;
     if (windows.length > 0) {
       // Window midpoint t+0.25 inside [start,end) attributes it to this sentence.
       const hits = windows.filter((w) => w.t + 0.25 >= s.start && w.t + 0.25 < s.end);
       if (hits.length > 0) {
         const mean = hits.reduce((a, w) => a + w.rms_db, 0) / hits.length;
-        const z = sigma > 0 ? (mean - mu) / sigma : 0;
-        if (z >= 1.0) {
-          score += isEnglish ? 1.0 : 1.5; signals.push("energy_high");
-        } else if (z >= 0) {
-          score += isEnglish ? 0.5 : 0.75; signals.push("energy_above_avg");
-        }
+        energyZ = sigma > 0 ? (mean - mu) / sigma : 0;
       }
     }
-    if (s.word_count < 5) {
-      score -= 1.0; signals.push("short_penalty");
-    }
-    if (s.word_count > 25) {
-      score -= 0.5; signals.push("long_penalty");
-    }
-    if (isEnglish && GREETING_RE.test(s.text)) {
-      score -= 3.0; signals.push("greeting_penalty");
-    }
-    return { sentence: s, score, signals, paragraph: para ? para.n : null };
+    const strengthScore = enriched ? maxStrengthOverlap(segments, s.start, s.end) : null;
+    const r = scoreHook({
+      text: s.text,
+      wordCount: s.word_count,
+      isEnglish,
+      energyZ,
+      isParagraphStart,
+      isEarly,
+      strengthScore,
+      enriched,
+    });
+    return { sentence: s, score: r.score, signals: r.signals, hook_type: r.hook_type, paragraph: para ? para.n : null };
   });
 
   return scored
@@ -175,6 +160,7 @@ function rankHookCandidates({ words, paragraphs, energyWindows, durationSeconds,
       start_seconds: +c.sentence.start.toFixed(3),
       end_seconds: +c.sentence.end.toFixed(3),
       paragraph: c.paragraph,
+      hook_type: c.hook_type,
       text: truncateText(c.sentence.text, 200),
       signals: c.signals,
     }));
@@ -304,9 +290,11 @@ function hookCandidatesSection(hookCandidates, { transcribedFileIndex, manifestF
     lines.push("n/a — none scored ≥ 1.0 (or no transcript)");
     return lines.join("\n");
   }
+  lines.push("Open scene 0 on the strongest — the `hook_type` (question / number_stat / bold_claim / curiosity_gap / contrarian / stakes / promise) names the archetype; realize it as the cold-open kinetic claim. Match the opening clip to a ranked candidate or note why you deviated.");
   for (const h of hooks) {
     const para = h.paragraph != null ? `¶${h.paragraph}, ` : "";
-    lines.push(`${h.rank}. **[${fmtMmSsT(h.start_seconds)}–${fmtMmSsT(h.end_seconds)}]** (${para}score ${h.score.toFixed(2)}; ${h.signals.join(", ")})`);
+    const ht = h.hook_type && h.hook_type !== "none" ? `_${h.hook_type}_ ` : "";
+    lines.push(`${h.rank}. **[${fmtMmSsT(h.start_seconds)}–${fmtMmSsT(h.end_seconds)}]** ${ht}(${para}score ${h.score.toFixed(2)}; ${h.signals.join(", ")})`);
     lines.push(`   "${h.text}"`);
   }
   return lines.join("\n");
