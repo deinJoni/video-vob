@@ -191,8 +191,13 @@ _(record non-obvious choices here as they're made)_
 
 - ✅ All 5 audits collected; PRD + findings ledger written + committed (57a22e7).
 - ✅ Stage 1 INSPECT committed (06d879b). ✅ Stage 2/3 PLAN P1 committed (bd47d88).
-- ✅ Done & committed: planning (57a22e7), INSPECT (06d879b), PLAN (bd47d88, 7577c51), COMPOSE (b01e2d8), PREVIEW+RENDER shared (6c18084), RENDER P2 (15ea6b6), PACKAGE loudnorm (47e2df4).
-- **NEXT ACTION ON WAKE:** finish **PACKAGE P2/P3**, then **ITERATE**, then **CORE** (the high-value robustness stage).
+- ✅ Done & committed: planning, INSPECT, PLAN, COMPOSE, PREVIEW, RENDER, PACKAGE (loudnorm 47e2df4 + word-VTT c3098af), ITERATE (1acc7f1). **8 of 9 stages done.**
+- **NEXT ACTION ON WAKE: Stage X — FSM CORE** (last stage), then final version bump + review:
+  - **CORE#1 (HIGH)**: stamp `short_id`/`segment_id` on the `preview` + `render` slots (render-preview/render-full already read `composition.short_id`); surface in `summarizePreview`/`summarizeRender`; guard `previewToRender` (phase-gates) + `render_full` to refuse when `preview.short_id !== composition.short_id` (overridable:false). Stops confirming/shipping the WRONG short on resume mid-fan-out.
+  - **CORE#2 (MED-HIGH)**: process-level lock release — `storage.js` track held lock tokens in a module Set; register SIGINT/SIGTERM/exit handler in `server.js` (or storage) that removes lock files we own (token-match guard). Stops a killed long render stranding the session 5 min.
+  - **CORE#4 (MED)**: `intentToPlan` (phase-gates) reads the CANONICAL inspect path (`inspectSummaryPath(project_id)`) not `state.inspect.summary_path`, mirroring `inspectToIntent`.
+  - Lower (do if budget): stale-vs-intent gate (INTENT#9), PREVIEW#9 confirm-revision cross-check, brief-validator manifest audio (INTENT#5), dependency unknown-state (CORE#9), validator null/oneOf messages (CORE#8), `assertSafeProjectId` leading-dot (CORE#12), transport byte-framing CJK (CORE#10), `summary_delta` (CORE#5).
+  - **THEN FINALIZE**: bump VERSION/package.json 3.7.0→3.8.0; write `docs/v3.8/CHANGELOG.md`; update CLAUDE.md invariants for the v3.8 changes; run an adversarial review (subagent) over the diff; consider a memory note.
   - **PACKAGE#7 word-level VTT** (`caption-sidecar.js` + `package-output.js`): when `transcript_aligned` + a word-level animation is planned, emit word-level VTT cues + stamp `level:"word"` (currently chunk-only — engine pays for alignment but the sidecar discards per-word times). MED.
   - **PACKAGE#8** (LOW): segmented drift uses plan/assembly total; skip the package loudnorm measure when `state.assembly.loudnorm.applied` to same target. **INSPECT#4a** (LOW): reuse INSPECT-measured LUFS to skip a measure pass.
   - **ITERATE**: `compare-iterations.js` read archived `package/manifest.json` → output-duration/LUFS/dims/chapter/caption deltas (`loadArchivedSide`); `archival.js` also move `segment_renders/`; `finalize-iteration.js` call `missingShortDeliverables`.
