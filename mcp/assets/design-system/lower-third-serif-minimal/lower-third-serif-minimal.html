@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=1920, height=1080" />
+    <title>lower-third-serif-minimal</title>
+
+    <!-- ========================================================================
+         video-vob design-system REFERENCE component — lower-third-serif-minimal
+         An elegant, cinematic 16:9 lower-third: a Playfair Display name, a thin
+         short accent rule, an EB Garamond italic role. FADE in only (no slide),
+         gentle hold, soft fade out. ~5s. Muted-gold demo accent.
+
+         The composer ADAPTS this technique; it does NOT copy it verbatim.
+         1. PURE CSS @keyframes — never GSAP (css adapter scrubs paused anims).
+         2. STAGGER WITH data-start, NEVER animation-delay.
+         3. COLORS via --vob-* tokens (see ../tokens.css), literal fallbacks.
+         4. FONTS use AUTO-RESOLVED families ("Playfair Display" / "EB Garamond")
+            — concrete names, NOT var(), and NO font <link>.
+         5. Every timed element: class="clip" + stable id + data-start +
+            data-duration + data-track-index (>=1; distinct track when overlapping);
+            animation-duration == data-duration; fill-mode both; play-state paused.
+         ===================================================================== -->
+
+    <style>
+      :root {
+        --vob-bg: #000000;
+        --vob-text: #ffffff;
+        --vob-text-muted: #b8b8c0;
+        /* muted-gold demo accent */
+        --vob-accent: #c9a227;
+        --vob-safe-bottom: 160px;
+      }
+      *,
+      *::before,
+      *::after {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        width: 1920px;
+        height: 1080px;
+        margin: 0;
+        overflow: hidden;
+        background: transparent;
+      }
+      #stage {
+        position: relative;
+        width: 1920px;
+        height: 1080px;
+        overflow: hidden;
+        background: var(--vob-bg, #000000);
+      }
+      /* Demo backdrop — stands in for the video spine; dropped in the real comp. */
+      .ds-demo-bg {
+        position: absolute;
+        inset: 0;
+        z-index: 0;
+        background: radial-gradient(150% 130% at 30% 80%, #1c1a16 0%, #100f0c 55%, #060504 100%);
+      }
+      /* Anchored above the bottom safe band, left-aligned, generous breathing room. */
+      .ds-lt {
+        position: absolute;
+        left: 130px;
+        bottom: calc(var(--vob-safe-bottom, 160px) + 36px);
+        z-index: 2;
+      }
+      .ds-name {
+        margin: 0;
+        font-family: "Playfair Display", serif;
+        font-weight: 500;
+        letter-spacing: 0.05em;
+        line-height: 1.0;
+        font-size: 46px;
+        color: var(--vob-text, #ffffff);
+        text-shadow: 0 6px 28px rgba(0, 0, 0, 0.5);
+        animation-name: vob-fade-rise;
+        animation-duration: 5s;
+        animation-timing-function: linear;
+        animation-fill-mode: both;
+        animation-play-state: paused;
+        will-change: opacity, transform;
+      }
+      /* Thin short accent rule between name and role. */
+      .ds-rule {
+        width: 92px;
+        height: 3px;
+        margin: 22px 0 18px;
+        transform-origin: left center;
+        background: var(--vob-accent, #c9a227);
+        animation-name: vob-rule-draw;
+        animation-duration: 4.7s;
+        animation-timing-function: linear;
+        animation-fill-mode: both;
+        animation-play-state: paused;
+        will-change: transform, opacity;
+      }
+      .ds-role {
+        margin: 0;
+        font-family: "EB Garamond", serif;
+        font-weight: 400;
+        font-style: italic;
+        letter-spacing: 0.02em;
+        font-size: 30px;
+        color: var(--vob-text-muted, #b8b8c0);
+        animation-name: vob-fade-rise;
+        animation-duration: 4.5s;
+        animation-timing-function: linear;
+        animation-fill-mode: both;
+        animation-play-state: paused;
+        will-change: opacity, transform;
+      }
+      @keyframes vob-fade-rise {
+        0% {
+          opacity: 0;
+          transform: translateY(10px);
+          animation-timing-function: cubic-bezier(0.33, 0, 0.2, 1);
+        }
+        16% {
+          opacity: 1;
+          transform: translateY(0);
+        }
+        88% {
+          opacity: 1;
+          transform: translateY(0);
+          animation-timing-function: cubic-bezier(0.4, 0, 0.6, 1);
+        }
+        100% {
+          opacity: 0;
+          transform: translateY(0);
+        }
+      }
+      @keyframes vob-rule-draw {
+        0% {
+          opacity: 0;
+          transform: scaleX(0);
+        }
+        12% {
+          opacity: 0;
+          transform: scaleX(0);
+          animation-timing-function: cubic-bezier(0.33, 0, 0.2, 1);
+        }
+        26% {
+          opacity: 1;
+          transform: scaleX(1);
+        }
+        88% {
+          opacity: 1;
+          transform: scaleX(1);
+        }
+        100% {
+          opacity: 0;
+          transform: scaleX(1);
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div
+      id="stage"
+      data-composition-id="ds-lower-third-serif-minimal"
+      data-timeline-locked
+      data-start="0"
+      data-duration="5"
+      data-fps="30"
+      data-width="1920"
+      data-height="1080"
+    >
+      <div class="ds-demo-bg"></div>
+      <div class="ds-lt">
+        <h1 id="ds-name" class="clip ds-name" data-start="0" data-duration="5" data-track-index="1">Eleanor Vance</h1>
+        <div id="ds-rule" class="clip ds-rule" data-start="0.24" data-duration="4.7" data-track-index="2"></div>
+        <p id="ds-role" class="clip ds-role" data-start="0.4" data-duration="4.5" data-track-index="3">Cinematographer</p>
+      </div>
+    </div>
+
+    <script>
+      /* Inert timeline stub. duration() returns the master length; no GSAP. */
+      window.__timelines = window.__timelines || {};
+      window.__timelines["ds-lower-third-serif-minimal"] = {
+        duration: function () {
+          return 5;
+        },
+        pause: function () {},
+      };
+    </script>
+  </body>
+</html>

@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=1920, height=1080" />
+    <title>grade-clean</title>
+
+    <!-- ========================================================================
+         video-vob design-system REFERENCE GRADE — grade-clean
+         The "intentionally crisp" near-noop baseline for video-types whose grade
+         is "none". The point: even un-graded footage should look deliberate and
+         clean, not a flat sRGB dump — a hair more contrast/saturation and a
+         barely-there vignette read as a considered choice.
+
+         HOW THE COMPOSER REALIZES A GRADE (two parts):
+           (a) Apply this CSS filter to the scene clip element (the video):
+                 filter: contrast(1.03) saturate(1.06) brightness(1.0);
+           (b) Add the overlay layer below as a full-frame "clip" div on a track
+                 ABOVE the video:
+                 • OVERLAY 1 — barely-there vignette: a very faint dark radial
+                   gradient (transparent center to ~0.16 black at the corners).
+                   Faded in ~0.4s. Just enough to seat the frame.
+
+         In this STANDALONE reference the filter wraps a rich, photo-like
+         .ds-demo-bg; the faint vignette rides on top exactly as in the real
+         composition.
+
+         Render contract (shared by every design-system component):
+         1. PURE CSS keyframes — never GSAP. window.__timelines is a no-op stub.
+         2. STAGGER WITH the start attribute, NEVER animation-delay.
+         3. A faded-in overlay is a "clip" with id + start + duration + track-index.
+         4. Grades are imagery — no fonts needed.
+         ===================================================================== -->
+
+    <style>
+      *,
+      *::before,
+      *::after {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        width: 1920px;
+        height: 1080px;
+        margin: 0;
+        overflow: hidden;
+        background: transparent;
+      }
+      #stage {
+        position: relative;
+        width: 1920px;
+        height: 1080px;
+        overflow: hidden;
+        background: #000;
+      }
+      /* Graded layer — filter rides the scene video in the real comp. */
+      .ds-grade-wrap {
+        position: absolute;
+        inset: 0;
+        z-index: 0;
+        filter: contrast(1.03) saturate(1.06) brightness(1);
+      }
+      /* Photo-like scene: a naturally-lit, neutral subject — so "clean" looks like
+         honest, well-balanced color, not a stylized push. */
+      .ds-demo-bg {
+        position: absolute;
+        inset: 0;
+        background:
+          radial-gradient(44% 56% at 46% 48%, rgba(244, 238, 226, 0.5) 0%, rgba(150, 138, 120, 0.14) 46%, rgba(0, 0, 0, 0) 72%),
+          radial-gradient(36% 44% at 70% 58%, rgba(150, 200, 220, 0.3) 0%, rgba(80, 130, 160, 0) 64%),
+          linear-gradient(0deg, rgba(20, 20, 22, 0.9) 0%, rgba(44, 44, 48, 0.32) 28%, rgba(0, 0, 0, 0) 52%),
+          linear-gradient(193deg, #cdd6dc 0%, #d7d2c8 22%, #c3b9a8 48%, #8a8270 72%, #2f2c27 100%);
+      }
+      /* OVERLAY 1 — barely-there vignette. */
+      .ds-vignette {
+        position: absolute;
+        inset: 0;
+        z-index: 2;
+        background: radial-gradient(128% 92% at 50% 50%, rgba(0, 0, 0, 0) 60%, rgba(0, 0, 0, 0.16) 100%);
+        animation-name: vob-vignette-in;
+        animation-duration: 0.4s;
+        animation-timing-function: ease-out;
+        animation-fill-mode: both;
+        animation-play-state: paused;
+      }
+      @keyframes vob-vignette-in {
+        0% {
+          opacity: 0;
+        }
+        100% {
+          opacity: 1;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div
+      id="stage"
+      data-composition-id="ds-grade-clean"
+      data-timeline-locked
+      data-start="0"
+      data-duration="4"
+      data-fps="30"
+      data-width="1920"
+      data-height="1080"
+    >
+      <div class="ds-grade-wrap">
+        <div class="ds-demo-bg"></div>
+      </div>
+      <div id="ds-vignette" class="clip ds-vignette" data-start="0" data-duration="4" data-track-index="1"></div>
+    </div>
+
+    <script>
+      /* Inert timeline stub — render driver calls duration()/pause(); no GSAP. */
+      window.__timelines = window.__timelines || {};
+      window.__timelines["ds-grade-clean"] = {
+        duration: function () {
+          return 4;
+        },
+        pause: function () {},
+      };
+    </script>
+  </body>
+</html>

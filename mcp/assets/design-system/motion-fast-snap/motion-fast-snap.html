@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=1920, height=1080" />
+    <title>motion-fast-snap</title>
+
+    <!-- ========================================================================
+         MOTION fast-snap: in = 0.3s cubic-bezier(.2,.9,.2,1) (slight overshoot);
+         out = 0.25s cubic-bezier(.5,0,.75,0); transform = translateY(60px) + scale(.9) -> translateY(0) + scale(1).
+         Use for entrances of titles / lower-thirds / overlays in ENERGETIC social
+         (retention / short-form) video-types — a fast, punchy pop with a touch of
+         overshoot that lands hard, holds, then exits quickly downward.
+
+         The composer ADAPTS this technique into compose/index.html; it does NOT copy
+         it verbatim. To apply the preset to a real overlay element, give the element
+         its own class="clip" + stable id + data-start + data-duration +
+         data-track-index, an `animation` whose @keyframes implements
+         in (0->10%) -> hold -> out (last ~8%) across the element's lifetime, and use
+         the eases above at the 0% and the hold->out edges. STAGGER siblings with
+         different data-start, NEVER animation-delay (the runtime hijacks it to scrub).
+
+         Rules that apply to EVERY design-system component:
+         1. PURE CSS @keyframes — never GSAP. hyperframes' css adapter scrubs a
+            `paused` CSS animation to each frame via animation-delay = -(T - data-start).
+         2. STAGGER WITH data-start, NEVER animation-delay.
+         3. COLORS via --vob-* tokens (see ../tokens.css) with a literal fallback.
+         4. FONTS use hyperframes' AUTO-RESOLVED families (here "Archivo Black") —
+            concrete names, NOT var(), and NO font <link>.
+         5. Every timed element carries class="clip" + a stable id + data-start +
+            data-duration + data-track-index (>=1; a distinct track per
+            time-overlapping element); animation-duration == data-duration;
+            animation-fill-mode: both; animation-play-state: paused.
+         ===================================================================== -->
+
+    <style>
+      :root {
+        --vob-bg: #000000;
+        --vob-surface: #14141a;
+        --vob-text: #ffffff;
+        --vob-text-muted: #b8b8c0;
+        --vob-accent: #ff3b30;
+        --vob-accent-2: #ffd60a;
+        --vob-safe-top: 200px;
+        --vob-safe-bottom: 280px;
+      }
+      *,
+      *::before,
+      *::after {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        width: 1920px;
+        height: 1080px;
+        margin: 0;
+        overflow: hidden;
+        background: transparent;
+      }
+      #stage {
+        position: relative;
+        width: 1920px;
+        height: 1080px;
+        overflow: hidden;
+        background: var(--vob-bg, #000000);
+      }
+      /* Demo backdrop — stands in for the video spine in this standalone
+         reference. Dropped in the real composition. */
+      .ds-demo-bg {
+        position: absolute;
+        inset: 0;
+        z-index: 0;
+        background: radial-gradient(115% 80% at 50% 38%, #2b2b34 0%, #0c0c10 60%, #000 100%);
+      }
+      /* The single sample card demonstrating the preset. One clip element. */
+      .ds-card {
+        position: absolute;
+        left: 50%;
+        top: 50%;
+        z-index: 2;
+        width: 1040px;
+        margin: -150px 0 0 -520px;
+        padding: 64px 72px 70px;
+        text-align: center;
+        background: var(--vob-surface, #14141a);
+        border: 4px solid var(--vob-accent, #ff3b30);
+        border-radius: 26px;
+        box-shadow: 0 36px 90px rgba(0, 0, 0, 0.55);
+        transform-origin: 50% 70%;
+        animation-name: vob-fast-snap;
+        animation-duration: 2.6s;
+        animation-timing-function: linear;
+        animation-fill-mode: both;
+        animation-play-state: paused;
+        will-change: transform, opacity;
+      }
+      .ds-card-kicker {
+        margin: 0 0 18px;
+        font-family: "Archivo Black", "Oswald", sans-serif;
+        font-weight: 400; /* Archivo Black is single-weight */
+        text-transform: uppercase;
+        letter-spacing: 0.22em;
+        font-size: 34px;
+        color: var(--vob-accent, #ff3b30);
+      }
+      .ds-card-title {
+        margin: 0;
+        font-family: "Archivo Black", "Oswald", sans-serif;
+        font-weight: 400;
+        text-transform: uppercase;
+        letter-spacing: 0.01em;
+        line-height: 0.92;
+        font-size: 168px;
+        color: var(--vob-text, #ffffff);
+        text-shadow: 0 12px 44px rgba(0, 0, 0, 0.5);
+      }
+      .ds-card-sub {
+        margin: 26px 0 0;
+        font-family: "Archivo Black", "Oswald", sans-serif;
+        font-weight: 400;
+        text-transform: uppercase;
+        letter-spacing: 0.18em;
+        font-size: 30px;
+        color: var(--vob-text-muted, #b8b8c0);
+      }
+      /* in 0.3s (0 -> 11.5% of 2.6s) with overshoot, hold, out 0.25s (last ~9.6%). */
+      @keyframes vob-fast-snap {
+        0% {
+          opacity: 0;
+          transform: translateY(60px) scale(0.9);
+          animation-timing-function: cubic-bezier(0.2, 0.9, 0.2, 1);
+        }
+        11.5% {
+          opacity: 1;
+          transform: translateY(0) scale(1);
+        }
+        90.4% {
+          opacity: 1;
+          transform: translateY(0) scale(1);
+          animation-timing-function: cubic-bezier(0.5, 0, 0.75, 0);
+        }
+        100% {
+          opacity: 0;
+          transform: translateY(60px) scale(0.9);
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div
+      id="stage"
+      data-composition-id="ds-motion-fast-snap"
+      data-timeline-locked
+      data-start="0"
+      data-duration="2.6"
+      data-fps="30"
+      data-width="1920"
+      data-height="1080"
+    >
+      <div class="ds-demo-bg"></div>
+      <div id="ds-fast-snap-card" class="clip ds-card" data-start="0" data-duration="2.6" data-track-index="1">
+        <p class="ds-card-kicker">Motion preset</p>
+        <h1 class="ds-card-title">FAST SNAP</h1>
+        <p class="ds-card-sub">in 0.3s &middot; out 0.25s &middot; social</p>
+      </div>
+    </div>
+
+    <script>
+      /* Inert timeline stub. The hyperframes render driver calls duration() and
+         pause() unconditionally; a pure-CSS component needs no real timeline and
+         loads no GSAP. duration() returns the master length (data-duration). */
+      window.__timelines = window.__timelines || {};
+      window.__timelines["ds-motion-fast-snap"] = {
+        duration: function () {
+          return 2.6;
+        },
+        pause: function () {},
+      };
+    </script>
+  </body>
+</html>

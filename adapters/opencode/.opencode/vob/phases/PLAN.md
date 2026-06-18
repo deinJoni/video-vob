@@ -123,6 +123,51 @@ moment.
    re-invoke it once with the error list as `revision_notes`. If it fails again, surface the
    blocker and stop — never fabricate a storyboard yourself.
 
+**Editorial critique pass (advisory, fail-safe)**
+
+6b. With a lint-clean storyboard saved, run an INDEPENDENT editorial-quality check BEFORE you
+   present — the lints are a floor; this raises the ceiling. Spawn the `editorial-critic` (DATA-only,
+   it reads `references/editorial-patterns.md` and the signals itself):
+   Invoke the `editorial-critic` subagent with the `task` tool, passing:
+   ```
+   DATA
+   project_id: <project_id>
+   brief_path: <brief.path>
+   storyboard_json_path: <storyboard.artifact_path>
+   storyboard_markdown_path: <storyboard.markdown_path>
+   video_type: <summary.video_type.canonical>   (lint_ruleset=<lint_ruleset>)
+   intent.target_duration_seconds: <seconds>     (range: <min>-<max> | none)
+   intent.tone: <tone>
+   intent.key_moments: <key_moments>
+   intent.pacing_intent: <pacing_intent | none>
+   intent.hook_intent: <hook_intent | none>
+   intent.broll_intent: <broll_intent | none>
+   digest_path: <inspect.digest_path | none>
+   segments_path: <inspect.segments_path | none>
+   clean_speech_path: <inspect.clean_speech_path | none>
+   transcript_aligned: <true|false>
+   audio_summary: <inspect.audio compact | none>
+   aroll_pool_path: <inspect.classification aroll_pool path | none>   (take groups / best_take / visual tags — grounds the critic's Take + B-roll scoring)
+   broll_index_path: <inspect.classification broll_index path | none>
+   Follow your agent instructions.
+   ```
+   The critic returns `VERDICT: SHIP|REVISE` + per-dimension SCORES + FINDINGS + (on REVISE) a TOP
+   FIX. It NEVER writes, NEVER gates, and NEVER transitions — it is advisory input for you and the
+   human.
+
+6c. Act on the verdict — **at most ONE critic-driven revision**, so the gate is never delayed and
+   the loop can't run away:
+   - **SHIP** → proceed to step 7 (keep the one-line summary to show at the gate).
+   - **Critic errored / unparseable / unavailable** (fail-safe) → proceed to step 7 with the plan as
+     saved; note "editorial critic unavailable — presenting as-is." Never block on the critic.
+   - **REVISE**, and you have NOT already auto-revised on the critic this round → record
+     `vob_log_storyboarder_invocation { revision_notes: <the critic's TOP FIX + FINDINGS> }`, then
+     re-invoke the storyboarder (step 5) with those as `revision_notes`. Re-run the lint handling
+     (step 6). Then go to step 7 — do **not** loop the critic a second time; the human is the final
+     judge. Carry any still-open critic notes into the presentation as `⚠ editorial:` lines.
+   - On a purely user-driven revision later (step 8 → step 4), re-run this critic pass only when the
+     storyboard changed substantially; skip it for a narrow tweak ("trim the hook") to avoid churn.
+
 **Present the plan, get one sign-off**
 
 7. Call `vob_vob_read_state_summary` (markdown path + scene count) and read
@@ -149,6 +194,12 @@ moment.
    choice: "upload these N shots and I'll re-derive the plan (the cut gets the coverage it
    wants), or approve as-is and the cut holds on the spine there." Gaps are warnings, never
    blockers — `PLAN_BROLL_GAP_UNFILLED` does not stop the sign-off.
+
+7d. **Surface the editorial critique** (from step 6b): show a one-line `Editorial critic: <SHIP |
+   revised once on its notes> — <the critic's summary>`. If the critic returned a `REVISE` you did
+   not auto-apply (a 2nd-round finding), list those as `⚠ editorial:` lines alongside the plan-lint
+   warnings — they're the hook/take/rhythm/b-roll/ending calls the human should rule on. Advisory:
+   the human can approve as-is regardless of the critic.
 
 8. Handle the response:
    - **Approve** → `vob_vob_confirm_brief { project_id }` AND `vob_vob_confirm_storyboard

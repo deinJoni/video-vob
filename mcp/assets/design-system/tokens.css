@@ -1,0 +1,52 @@
+/* video-vob design-system — the design-token CONTRACT.
+ *
+ * Every design-system reference component renders from these CSS custom
+ * properties instead of hard-coded colors/fonts. To put a component on-brand the
+ * composer sets these vars ONCE on its composition root (e.g. `:root { --vob-accent:
+ * #00E5FF; ... }`) from the storyboard's `target.design` tokens, and the whole kit
+ * re-skins. The reference components ship with the neutral fallbacks below so they
+ * preview/lint standalone; the composer overrides them.
+ *
+ * RULE: a component NEVER hard-codes a brand COLOR — it reads the --vob-* color
+ * tokens with a generic fallback (`color: var(--vob-text, #fff)`). FONTS work
+ * differently: a component names a CONCRETE auto-resolved kit family directly
+ * (a var() inside `font-family` fails the hyperframes font lint), and the composer
+ * SUBSTITUTES that literal family with the brief's typography family (loading
+ * ./fonts.css for house faces). So the --vob-font-* entries below are ADVISORY —
+ * they name the family the composer substitutes TO, not a live CSS var a component
+ * reads. The taste (layout, scale, motion, hierarchy, rhythm) lives in the
+ * component; the brand (palette via tokens, fonts via substitution) is applied per brief.
+ *
+ * Mapping to target.design (mcp/lib/storyboard-schema.js → validateDesign):
+ *   --vob-bg          ← target.design.palette.bg
+ *   --vob-surface     ← a raised surface; derive from bg if the brief is silent
+ *   --vob-text        ← target.design.palette.text
+ *   --vob-text-muted  ← a dimmed text; derive from text if silent
+ *   --vob-accent      ← target.design.palette.accent
+ *   --vob-accent-2    ← an optional 2nd accent; falls back to accent
+ *   --vob-font-headline ← target.design.typography.headline   (a font-kit family)
+ *   --vob-font-body     ← target.design.typography.body
+ *   --vob-font-caption  ← target.design.typography.caption
+ *   --vob-safe-top / --vob-safe-bottom ← the platform profile safe bands (px)
+ */
+:root {
+  /* palette */
+  --vob-bg: #000000;
+  --vob-surface: #14141a;
+  --vob-text: #ffffff;
+  --vob-text-muted: #b8b8c0;
+  --vob-accent: #ff3b30;
+  --vob-accent-2: #ffd60a;
+
+  /* typography — ADVISORY substitution targets (NOT live CSS vars): a component
+     names a concrete auto-resolved kit family directly; the composer swaps it for
+     these per target.design.typography, loading ./fonts.css for house faces. */
+  --vob-font-headline: "Anton";
+  --vob-font-body: "Inter";
+  --vob-font-caption: "Inter";
+
+  /* safe areas (px) — default to a 9:16 vertical profile; the composer overrides
+     from intent.platform_profile.safe_top_px / safe_bottom_px. */
+  --vob-safe-top: 200px;
+  --vob-safe-bottom: 280px;
+}

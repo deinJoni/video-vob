@@ -82,17 +82,17 @@ const SEAM_TRANSITION_SET = new Set(SEAM_TRANSITION_TYPES);
 const LINT_RULESETS = Object.freeze({
   retention: Object.freeze({ disabled_rules: Object.freeze([]), chapter_rules: false }),
   chaptered: Object.freeze({
-    disabled_rules: Object.freeze(["PLAN_HOOK_NOT_FIRST", "PLAN_HOOK_TOO_LONG", "PLAN_HOOK_NO_SPEECH", "PLAN_RHYTHM_ARC_INVERTED"]),
+    disabled_rules: Object.freeze(["PLAN_HOOK_NOT_FIRST", "PLAN_HOOK_TOO_LONG", "PLAN_HOOK_NO_SPEECH", "PLAN_HOOK_NOT_GROUNDED", "PLAN_OPENING_LOW_ENERGY", "PLAN_RHYTHM_ARC_INVERTED"]),
     chapter_rules: true,
   }),
   montage: Object.freeze({
     // PLAN_TRANSITION_INCONSISTENT off: a montage WANTS varied transitions, so
     // ">3 distinct types" is a feature, not a smell (PRD-02 §7.6).
-    disabled_rules: Object.freeze(["PLAN_HOOK_NOT_FIRST", "PLAN_HOOK_TOO_LONG", "PLAN_HOOK_NO_SPEECH", "PLAN_RHYTHM_ARC_INVERTED", "PLAN_TRANSITION_INCONSISTENT"]),
+    disabled_rules: Object.freeze(["PLAN_HOOK_NOT_FIRST", "PLAN_HOOK_TOO_LONG", "PLAN_HOOK_NO_SPEECH", "PLAN_HOOK_NOT_GROUNDED", "PLAN_OPENING_LOW_ENERGY", "PLAN_RHYTHM_ARC_INVERTED", "PLAN_TRANSITION_INCONSISTENT"]),
     chapter_rules: false,
   }),
   general: Object.freeze({
-    disabled_rules: Object.freeze(["PLAN_HOOK_NOT_FIRST", "PLAN_HOOK_TOO_LONG", "PLAN_HOOK_NO_SPEECH", "PLAN_RHYTHM_ARC_INVERTED"]),
+    disabled_rules: Object.freeze(["PLAN_HOOK_NOT_FIRST", "PLAN_HOOK_TOO_LONG", "PLAN_HOOK_NO_SPEECH", "PLAN_HOOK_NOT_GROUNDED", "PLAN_OPENING_LOW_ENERGY", "PLAN_RHYTHM_ARC_INVERTED"]),
     chapter_rules: false,
   }),
 });

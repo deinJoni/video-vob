@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=1080, height=1920" />
+    <title>title-bold-slam</title>
+
+    <!-- ========================================================================
+         video-vob design-system REFERENCE component — title-bold-slam
+         A punchy full-frame title card for retention/social content.
+
+         The composer ADAPTS this technique into compose/index.html; it does NOT
+         copy it verbatim. Rules that apply to EVERY design-system component:
+
+         1. PURE CSS @keyframes — never GSAP. hyperframes' css adapter scrubs a
+            `paused` CSS animation to each rendered frame by setting
+            `animation-delay = -(T - element data-start)`. (window.__timelines is
+            a no-op stub at render; GSAP is not loaded.)
+         2. STAGGER WITH data-start, NEVER animation-delay. Because the runtime
+            hijacks animation-delay to scrub, two title lines that enter 0.13s
+            apart are two class="clip" elements at data-start 0 and 0.13 — each its
+            own animation. (Children of one element cannot be delay-staggered.)
+         3. COLORS via --vob-* tokens (see ../tokens.css), with a literal fallback:
+            `var(--vob-accent, #ff3b30)`. The composer sets the tokens once from
+            target.design and the whole kit re-skins.
+         4. FONTS in references use hyperframes' AUTO-RESOLVED families (here
+            "League Gothic"; also Archivo Black / Oswald / Montserrat /
+            Playfair Display / EB Garamond / Inter / Outfit / JetBrains Mono) —
+            concrete names, NOT var() (the font lint can't resolve a var() to an
+            @font-face), and NO font <link> (the lint reads @font-face only from
+            INSIDE the project dir, and auto-resolved families need none). The
+            composer SUBSTITUTES the family with
+            target.design.typography.{headline|body|caption}, loading ./fonts.css
+            for house faces (Anton / Bebas Neue / Hanken Grotesk) when the brief
+            names them — its existing contract.
+         5. Every timed element carries class="clip" + a stable id + data-start +
+            data-duration + data-track-index (>=1; a distinct track per
+            time-overlapping element); animation-duration == data-duration;
+            animation-fill-mode: both; animation-play-state: paused.
+         ===================================================================== -->
+
+    <style>
+      :root {
+        --vob-bg: #000000;
+        --vob-text: #ffffff;
+        --vob-accent: #ff3b30;
+        --vob-safe-top: 200px;
+      }
+      *,
+      *::before,
+      *::after {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        width: 1080px;
+        height: 1920px;
+        margin: 0;
+        overflow: hidden;
+        background: transparent;
+      }
+      #stage {
+        position: relative;
+        width: 1080px;
+        height: 1920px;
+        overflow: hidden;
+        background: var(--vob-bg, #000000);
+      }
+      /* Demo backdrop — stands in for the video spine in this standalone
+         reference. In the real composition the title rides OVER ./source/<clip>.mp4
+         and this element is dropped. */
+      .ds-demo-bg {
+        position: absolute;
+        inset: 0;
+        z-index: 0;
+        background: radial-gradient(120% 75% at 50% 22%, #2b2b34 0%, #0c0c10 58%, #000 100%);
+      }
+      .ds-title-wrap {
+        position: absolute;
+        left: 0;
+        right: 0;
+        top: var(--vob-safe-top, 200px);
+        z-index: 2;
+        padding: 0 90px;
+        text-align: center;
+      }
+      .ds-title-line {
+        /* auto-resolved kit family — composer swaps for target.design.typography.headline */
+        font-family: "League Gothic", "Oswald", sans-serif;
+        font-weight: 400; /* Anton is single-weight */
+        text-transform: uppercase;
+        color: var(--vob-text, #ffffff);
+        line-height: 0.9;
+        letter-spacing: 0.005em;
+        font-size: 172px;
+        margin: 0;
+        transform-origin: 50% 60%;
+        animation-name: vob-title-slam;
+        animation-timing-function: linear;
+        animation-fill-mode: both;
+        animation-play-state: paused;
+        text-shadow: 0 10px 40px rgba(0, 0, 0, 0.55);
+        will-change: transform, opacity;
+      }
+      .ds-title-1 {
+        animation-duration: 4.2s;
+      }
+      .ds-title-2 {
+        color: var(--vob-accent, #ff3b30);
+        animation-duration: 4.07s;
+      }
+      /* Accent rule that wipes in under the title. */
+      .ds-rule {
+        position: absolute;
+        left: 50%;
+        top: calc(var(--vob-safe-top, 200px) + 410px);
+        z-index: 2;
+        width: 240px;
+        height: 14px;
+        margin-left: -120px;
+        background: var(--vob-accent, #ff3b30);
+        transform-origin: 50% 50%;
+        animation-name: vob-rule-grow;
+        animation-duration: 4s;
+        animation-timing-function: linear;
+        animation-fill-mode: both;
+        animation-play-state: paused;
+      }
+      @keyframes vob-title-slam {
+        0% {
+          opacity: 0;
+          transform: translateY(72px) scale(0.9);
+          animation-timing-function: cubic-bezier(0.18, 0.9, 0.26, 1);
+        }
+        11% {
+          opacity: 1;
+          transform: translateY(0) scale(1);
+        }
+        90% {
+          opacity: 1;
+          transform: translateY(0) scale(1);
+          animation-timing-function: cubic-bezier(0.5, 0, 0.75, 0);
+        }
+        100% {
+          opacity: 0;
+          transform: translateY(-26px) scale(0.98);
+        }
+      }
+      @keyframes vob-rule-grow {
+        0% {
+          transform: scaleX(0);
+          opacity: 0;
+        }
+        12% {
+          transform: scaleX(0);
+          opacity: 0;
+          animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+        }
+        18% {
+          transform: scaleX(1);
+          opacity: 1;
+        }
+        90% {
+          transform: scaleX(1);
+          opacity: 1;
+        }
+        100% {
+          transform: scaleX(1);
+          opacity: 0;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div
+      id="stage"
+      data-composition-id="ds-title-bold-slam"
+      data-timeline-locked
+      data-start="0"
+      data-duration="4.2"
+      data-fps="30"
+      data-width="1080"
+      data-height="1920"
+    >
+      <div class="ds-demo-bg"></div>
+      <div class="ds-title-wrap">
+        <h1 id="ds-title-line-1" class="clip ds-title-line ds-title-1" data-start="0" data-duration="4.2" data-track-index="1">HOW TO</h1>
+        <h1 id="ds-title-line-2" class="clip ds-title-line ds-title-2" data-start="0.13" data-duration="4.07" data-track-index="2">GO VIRAL</h1>
+      </div>
+      <div id="ds-title-rule" class="clip ds-rule" data-start="0.2" data-duration="4" data-track-index="3"></div>
+    </div>
+
+    <script>
+      /* Inert timeline stub. The hyperframes render driver calls duration() and
+         pause() unconditionally; a pure-CSS component needs no real timeline and
+         loads no GSAP. duration() returns the master length (data-duration). */
+      window.__timelines = window.__timelines || {};
+      window.__timelines["ds-title-bold-slam"] = {
+        duration: function () {
+          return 4.2;
+        },
+        pause: function () {},
+      };
+    </script>
+  </body>
+</html>

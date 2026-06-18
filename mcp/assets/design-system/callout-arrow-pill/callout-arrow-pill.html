@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=1920, height=1080" />
+    <title>callout-arrow-pill</title>
+
+    <!-- ========================================================================
+         video-vob design-system REFERENCE component — callout-arrow-pill
+         A small rounded pill label with a CSS-border triangle ARROW pointing
+         down-left toward an implied on-screen target (e.g. a button, a UI element).
+         Pops in (scale .85 -> 1 + fade, fast), holds ~1.5s, fades. Placed off-center
+         (upper-right of the implied target). A tutorial / explainer callout.
+
+         The composer ADAPTS this technique into compose/index.html; it does NOT
+         copy it verbatim. Rules that apply to EVERY design-system component:
+
+         1. PURE CSS @keyframes — never GSAP. hyperframes' css adapter scrubs a
+            `paused` CSS animation to each frame via animation-delay = -(T - data-start).
+         2. STAGGER WITH data-start, NEVER animation-delay.
+         3. COLORS via --vob-* tokens (see ../tokens.css) with a literal fallback.
+         4. FONTS use hyperframes' AUTO-RESOLVED families (here "Inter") — concrete
+            names, NOT var(), and NO font <link>.
+         5. Every timed element carries class="clip" + a stable id + data-start +
+            data-duration + data-track-index (>=1; a distinct track per
+            time-overlapping element); animation-duration == data-duration;
+            animation-fill-mode: both; animation-play-state: paused.
+         ===================================================================== -->
+
+    <style>
+      :root {
+        --vob-bg: #000000;
+        --vob-surface: #14141a;
+        --vob-text: #ffffff;
+        --vob-text-muted: #b8b8c0;
+        --vob-accent: #ff3b30;
+        --vob-accent-2: #ffd60a;
+        --vob-safe-top: 200px;
+        --vob-safe-bottom: 280px;
+      }
+      *,
+      *::before,
+      *::after {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        width: 1920px;
+        height: 1080px;
+        margin: 0;
+        overflow: hidden;
+        background: transparent;
+      }
+      #stage {
+        position: relative;
+        width: 1920px;
+        height: 1080px;
+        overflow: hidden;
+        background: var(--vob-bg, #000000);
+      }
+      /* Demo backdrop — stands in for the video spine in this standalone
+         reference. Dropped in the real composition (the callout rides over the clip). */
+      .ds-demo-bg {
+        position: absolute;
+        inset: 0;
+        z-index: 0;
+        background: linear-gradient(150deg, #1e2128 0%, #121419 52%, #07080b 100%);
+      }
+      /* The callout group, anchored OFF-CENTER (upper-right of an implied target
+         that would sit near lower-left of frame center). */
+      .ds-callout {
+        position: absolute;
+        left: 1120px;
+        top: 360px;
+        z-index: 2;
+        transform-origin: 0% 0%; /* anchored toward the arrow tip */
+        animation-name: vob-callout-pop;
+        animation-duration: 2.4s;
+        animation-timing-function: linear;
+        animation-fill-mode: both;
+        animation-play-state: paused;
+        will-change: transform, opacity;
+      }
+      /* Rounded pill label with an accent outline + leading accent dot. */
+      .ds-pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 18px;
+        padding: 20px 34px;
+        background: var(--vob-surface, #14141a);
+        border: 3px solid var(--vob-accent, #ff3b30);
+        border-radius: 999px;
+        box-shadow: 0 20px 52px rgba(0, 0, 0, 0.5);
+      }
+      .ds-dot {
+        width: 18px;
+        height: 18px;
+        border-radius: 50%;
+        background: var(--vob-accent, #ff3b30);
+        flex: 0 0 auto;
+      }
+      .ds-pill-text {
+        font-family: "Inter", "Helvetica Neue", sans-serif;
+        font-weight: 600;
+        font-size: 38px;
+        letter-spacing: 0.005em;
+        line-height: 1;
+        color: var(--vob-text, #ffffff);
+        white-space: nowrap;
+      }
+      /* Triangle arrow (CSS borders) pointing DOWN-LEFT toward the implied target.
+         A down-left triangle: only the bottom + left border edges are colored. */
+      .ds-arrow {
+        position: absolute;
+        left: 8px;
+        bottom: -34px;
+        width: 0;
+        height: 0;
+        border-style: solid;
+        border-width: 0 0 40px 40px; /* top right bottom left -> bottom-left wedge */
+        border-color: transparent transparent var(--vob-accent, #ff3b30) transparent;
+        filter: drop-shadow(0 8px 14px rgba(0, 0, 0, 0.4));
+      }
+      /* pop-in 0.28s (0 -> ~11.7% of 2.4s), hold ~1.5s, fade out (last ~16.7%). */
+      @keyframes vob-callout-pop {
+        0% {
+          opacity: 0;
+          transform: scale(0.85);
+          animation-timing-function: cubic-bezier(0.2, 0.85, 0.25, 1);
+        }
+        11.7% {
+          opacity: 1;
+          transform: scale(1);
+        }
+        83.3% {
+          opacity: 1;
+          transform: scale(1);
+          animation-timing-function: ease-in;
+        }
+        100% {
+          opacity: 0;
+          transform: scale(0.96);
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div
+      id="stage"
+      data-composition-id="ds-callout-arrow-pill"
+      data-timeline-locked
+      data-start="0"
+      data-duration="2.4"
+      data-fps="30"
+      data-width="1920"
+      data-height="1080"
+    >
+      <div class="ds-demo-bg"></div>
+      <div id="ds-callout-arrow-pill" class="clip ds-callout" data-start="0" data-duration="2.4" data-track-index="1">
+        <div class="ds-pill">
+          <span class="ds-dot"></span>
+          <span class="ds-pill-text">Tap here to start</span>
+        </div>
+        <span class="ds-arrow"></span>
+      </div>
+    </div>
+
+    <script>
+      /* Inert timeline stub. The hyperframes render driver calls duration() and
+         pause() unconditionally; a pure-CSS component needs no real timeline and
+         loads no GSAP. duration() returns the master length (data-duration). */
+      window.__timelines = window.__timelines || {};
+      window.__timelines["ds-callout-arrow-pill"] = {
+        duration: function () {
+          return 2.4;
+        },
+        pause: function () {},
+      };
+    </script>
+  </body>
+</html>

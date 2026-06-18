@@ -20,6 +20,7 @@ const SOURCE_SUBDIR = "source";
 const FONT_ASSETS_DIR = path.resolve(__dirname, "..", "assets", "fonts");
 const FONT_CSS_SRC = path.resolve(__dirname, "..", "assets", "fonts.css");
 const CAPTION_ASSETS_DIR = path.resolve(__dirname, "..", "assets", "captions");
+const DESIGN_ASSETS_DIR = path.resolve(__dirname, "..", "assets", "design-system");
 
 function readManifestSafe(projectId) {
   try {
@@ -410,10 +411,47 @@ function injectCaptionKit(composeRoot, { skip = false } = {}) {
   return { linked: true, warnings };
 }
 
+// Inject the vendored design-system kit into compose/: symlink
+// compose/design-system -> mcp/assets/design-system (same mechanism as ./fonts/
+// and ./captions/). The composer READS ./design-system/manifest.json + the
+// per-component reference HTML (./design-system/<name>/<name>.html) and ADAPTS the
+// vetted, pure-CSS technique (titles/lower-thirds/grades/motion/backdrops per
+// video-type) — nothing here is rendered directly (hyperframes renders index.html;
+// an unreferenced symlinked dir is inert). No CSS copy is needed (references carry
+// no font <link>; the manifest is read, not url()-resolved). Graceful: warn +
+// linked:false if assets are absent or the composer wrote its own design-system/.
+function injectDesignKit(composeRoot, { skip = false } = {}) {
+  if (skip) return { linked: false, warnings: [] };
+  const warnings = [];
+  const linkAbs = path.join(composeRoot, "design-system");
+  if (!fs.existsSync(DESIGN_ASSETS_DIR)) {
+    return { linked: false, warnings: [`design-system kit not found at ${DESIGN_ASSETS_DIR}; the composer authors design unaided`] };
+  }
+  try {
+    let st = null;
+    try { st = fs.lstatSync(linkAbs); } catch {}
+    if (st && st.isSymbolicLink()) fs.unlinkSync(linkAbs);
+    else if (st) {
+      // composer wrote real files under design-system/ — respect them, skip the kit dir
+      warnings.push("compose/design-system exists as a real directory (composer-supplied); design kit dir not linked");
+      return { linked: false, warnings };
+    }
+    fs.symlinkSync(DESIGN_ASSETS_DIR, linkAbs);
+  } catch (err) {
+    if (err && (err.code === "EPERM" || err.code === "EACCES")) {
+      warnings.push(`could not link design-system kit: ${err.code}`);
+      return { linked: false, warnings };
+    }
+    throw err;
+  }
+  return { linked: true, warnings };
+}
+
 module.exports = {
   SOURCE_SUBDIR,
   injectFontKit,
   injectCaptionKit,
+  injectDesignKit,
   recreateSourceSymlinks,
   resolveLayoutLinks,
   resolveMatteLinks,

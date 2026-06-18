@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=1920, height=1080" />
+    <title>backdrop-grid</title>
+
+    <!-- ========================================================================
+         video-vob design-system REFERENCE BACKDROP — backdrop-grid
+         Landscape (1920×1080). A subtle dark TECH grid (thin low-opacity lines
+         via repeating linear-gradients) over the bg, a faint accent glow in one
+         quadrant, and a slow grid parallax drift. Clean technical feel
+         (tutorial/tech).
+
+         HOW THE COMPOSER USES A BACKDROP:
+           Full-frame background on the LOWEST track, behind a title card, a code
+           panel, a `design_token` subject composite, or a framed talking head.
+           Drop the ghost box and put the real foreground above.
+
+         Render contract (shared by every design-system component):
+         1. PURE CSS @keyframes — never GSAP. window.__timelines is a no-op stub.
+         2. STAGGER WITH data-start, NEVER animation-delay. The drifting grid is
+            one class="clip" element; animation-duration == data-duration;
+            data-start=0; distinct data-track-index per overlapping timed clip.
+         3. COLORS via --vob-* tokens with a literal fallback; the composer
+            re-skins from target.design.
+         4. Static layers (glow, edge fade) need no data-start. Any label uses a
+            concrete auto-resolved family (Inter) + generic fallback — no var() in
+            font-family, no font <link>.
+         ===================================================================== -->
+
+    <style>
+      :root {
+        --vob-bg: #000000;
+        --vob-surface: #14141a;
+        --vob-accent: #ff3b30;
+        --vob-accent-2: #ffd60a;
+        --vob-text: #ffffff;
+      }
+      *,
+      *::before,
+      *::after {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        width: 1920px;
+        height: 1080px;
+        margin: 0;
+        overflow: hidden;
+        background: transparent;
+      }
+      #stage {
+        position: relative;
+        width: 1920px;
+        height: 1080px;
+        overflow: hidden;
+        background: var(--vob-bg, #000000);
+      }
+      /* Deep base with a soft top-down lift so the grid sits in atmosphere, not
+         on a flat black fill. */
+      .ds-base {
+        position: absolute;
+        inset: 0;
+        z-index: 0;
+        background:
+          radial-gradient(80% 70% at 50% 0%, rgba(28, 30, 42, 0.6) 0%, rgba(12, 13, 20, 0.2) 48%, rgba(0, 0, 0, 0) 72%),
+          linear-gradient(180deg, #0a0b11 0%, #07080d 60%, #050609 100%);
+      }
+      /* Accent glow in one quadrant (upper-right). Token-tinted. Static. */
+      .ds-glow {
+        position: absolute;
+        inset: 0;
+        z-index: 1;
+        background:
+          radial-gradient(46% 56% at 84% 16%, rgba(255, 59, 48, 0.18) 0%, rgba(255, 59, 48, 0) 58%),
+          radial-gradient(30% 36% at 86% 14%, rgba(255, 214, 10, 0.06) 0%, rgba(255, 214, 10, 0) 60%);
+      }
+      /* TECH GRID — thin low-opacity lines, fine + coarse, drifting slowly for a
+         subtle parallax. Oversized + translated so the loop hides its seam. The
+         grid step is 60px (fine) atop 240px (coarse); a full drift of 60px keeps
+         the lines aligned at the loop point. */
+      .ds-grid {
+        position: absolute;
+        top: -120px;
+        left: -120px;
+        width: calc(100% + 240px);
+        height: calc(100% + 240px);
+        z-index: 2;
+        background-image:
+          repeating-linear-gradient(0deg, rgba(140, 170, 210, 0.08) 0px, rgba(140, 170, 210, 0.08) 1px, rgba(0, 0, 0, 0) 1px, rgba(0, 0, 0, 0) 240px),
+          repeating-linear-gradient(90deg, rgba(140, 170, 210, 0.08) 0px, rgba(140, 170, 210, 0.08) 1px, rgba(0, 0, 0, 0) 1px, rgba(0, 0, 0, 0) 240px),
+          repeating-linear-gradient(0deg, rgba(120, 150, 190, 0.04) 0px, rgba(120, 150, 190, 0.04) 1px, rgba(0, 0, 0, 0) 1px, rgba(0, 0, 0, 0) 60px),
+          repeating-linear-gradient(90deg, rgba(120, 150, 190, 0.04) 0px, rgba(120, 150, 190, 0.04) 1px, rgba(0, 0, 0, 0) 1px, rgba(0, 0, 0, 0) 60px);
+        will-change: transform;
+        animation-name: vob-grid-drift;
+        animation-duration: 5s;
+        animation-timing-function: linear;
+        animation-fill-mode: both;
+        animation-play-state: paused;
+      }
+      /* Edge fade — softens the grid toward the frame border so lines don't hit a
+         hard cut at the edges. Static. */
+      .ds-edge {
+        position: absolute;
+        inset: 0;
+        z-index: 3;
+        background: radial-gradient(120% 90% at 50% 50%, rgba(0, 0, 0, 0) 52%, rgba(5, 6, 9, 0.7) 100%);
+      }
+      .ds-ghost {
+        position: absolute;
+        inset: 0;
+        z-index: 4;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .ds-ghost-box {
+        width: 760px;
+        height: 320px;
+        border: 1px solid rgba(140, 170, 210, 0.22);
+        border-radius: 14px;
+        background: rgba(12, 14, 22, 0.35);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-family: "Inter", sans-serif;
+        font-weight: 600;
+        font-size: 32px;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: rgba(180, 200, 230, 0.3);
+      }
+      @keyframes vob-grid-drift {
+        0% {
+          transform: translate(0, 0);
+        }
+        100% {
+          transform: translate(60px, 60px);
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div
+      id="stage"
+      data-composition-id="ds-backdrop-grid"
+      data-timeline-locked
+      data-start="0"
+      data-duration="5"
+      data-fps="30"
+      data-width="1920"
+      data-height="1080"
+    >
+      <div class="ds-base"></div>
+      <div class="ds-glow"></div>
+      <div id="ds-grid" class="clip ds-grid" data-start="0" data-duration="5" data-track-index="1"></div>
+      <div class="ds-edge"></div>
+      <div class="ds-ghost"><div class="ds-ghost-box">code / content sits here</div></div>
+    </div>
+
+    <script>
+      /* Inert timeline stub — the render driver calls duration()/pause()
+         unconditionally; a pure-CSS component loads no GSAP. */
+      window.__timelines = window.__timelines || {};
+      window.__timelines["ds-backdrop-grid"] = {
+        duration: function () {
+          return 5;
+        },
+        pause: function () {},
+      };
+    </script>
+  </body>
+</html>

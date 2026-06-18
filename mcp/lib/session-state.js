@@ -301,9 +301,26 @@ function summarizeInspect(slot) {
     strip_count: intOr(i.strip_count, 0),
     transcripts: arrOr(i.transcripts),
     hook_candidate_count: intOr(i.hook_candidate_count, 0),
+    // v3.9 — per-segment take-quality aggregate (full per-segment `strength` lives
+    // in segments.json; here it's counts + the strongest takes, trimmed lean).
+    take_quality: summarizeTakeQuality(i.take_quality),
     classification: summarizeClassification(i.classification),
     user_acknowledged: i.user_acknowledged === true,
     skipped_reason: strOrNull(i.skipped_reason),
+  };
+}
+
+function summarizeTakeQuality(slot) {
+  const t = asSlot(slot);
+  if (!t) return null;
+  return {
+    scored_segments: intOr(t.scored_segments, 0),
+    strong: intOr(t.strong, 0),
+    usable: intOr(t.usable, 0),
+    weak: intOr(t.weak, 0),
+    median_score: numOr(t.median_score, null),
+    visual_backend: strOrNull(t.visual_backend),
+    strongest: arrOr(t.strongest).slice(0, 5),
   };
 }
 

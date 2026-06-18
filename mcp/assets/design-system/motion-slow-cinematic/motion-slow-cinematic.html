@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=1920, height=1080" />
+    <title>motion-slow-cinematic</title>
+
+    <!-- ========================================================================
+         MOTION slow-cinematic: in = 0.9s cubic-bezier(.4,0,.2,1); out = 0.8s
+         cubic-bezier(.4,0,.2,1); transform = fade + subtle scale(1.04) -> scale(1)
+         (a slow settle inward), with LONG holds.
+         Use for entrances of titles / lower-thirds / overlays in SERENE video-types
+         (cinematic, 24fps) — an unhurried, premium fade with a barely-perceptible
+         scale settle; let it breathe with a long dwell before an equally slow exit.
+
+         The composer ADAPTS this technique into compose/index.html; it does NOT copy
+         it verbatim. To apply the preset to a real overlay element, give the element
+         its own class="clip" + stable id + data-start + data-duration +
+         data-track-index, an `animation` whose @keyframes implements
+         in (0 -> ~the first 0.9s) -> a long hold -> out (last ~0.8s) across the
+         element's lifetime with the eases above. STAGGER siblings with different
+         data-start, NEVER animation-delay (the runtime hijacks it to scrub).
+
+         Rules that apply to EVERY design-system component:
+         1. PURE CSS @keyframes — never GSAP. hyperframes' css adapter scrubs a
+            `paused` CSS animation to each frame via animation-delay = -(T - data-start).
+         2. STAGGER WITH data-start, NEVER animation-delay.
+         3. COLORS via --vob-* tokens (see ../tokens.css) with a literal fallback.
+         4. FONTS use hyperframes' AUTO-RESOLVED families (here "Playfair Display") —
+            concrete names, NOT var(), and NO font <link>.
+         5. Every timed element carries class="clip" + a stable id + data-start +
+            data-duration + data-track-index (>=1; a distinct track per
+            time-overlapping element); animation-duration == data-duration;
+            animation-fill-mode: both; animation-play-state: paused.
+         ===================================================================== -->
+
+    <style>
+      :root {
+        --vob-bg: #000000;
+        --vob-surface: #14141a;
+        --vob-text: #ffffff;
+        --vob-text-muted: #b8b8c0;
+        --vob-accent: #ff3b30;
+        --vob-accent-2: #ffd60a;
+        --vob-safe-top: 200px;
+        --vob-safe-bottom: 280px;
+      }
+      *,
+      *::before,
+      *::after {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        width: 1920px;
+        height: 1080px;
+        margin: 0;
+        overflow: hidden;
+        background: transparent;
+      }
+      #stage {
+        position: relative;
+        width: 1920px;
+        height: 1080px;
+        overflow: hidden;
+        background: var(--vob-bg, #000000);
+      }
+      /* Demo backdrop — stands in for the video spine in this standalone
+         reference. Dropped in the real composition. */
+      .ds-demo-bg {
+        position: absolute;
+        inset: 0;
+        z-index: 0;
+        background: radial-gradient(130% 90% at 50% 46%, #1c1d22 0%, #0a0a0d 62%, #000 100%);
+      }
+      /* The single sample card demonstrating the preset. One clip element.
+         transform-origin centered so the scale settle reads as a gentle push-in. */
+      .ds-card {
+        position: absolute;
+        left: 50%;
+        top: 50%;
+        z-index: 2;
+        width: 1280px;
+        margin: -150px 0 0 -640px;
+        padding: 60px 80px;
+        text-align: center;
+        transform-origin: 50% 50%;
+        animation-name: vob-slow-cinematic;
+        animation-duration: 5.5s;
+        animation-timing-function: linear;
+        animation-fill-mode: both;
+        animation-play-state: paused;
+        will-change: transform, opacity;
+      }
+      .ds-card-kicker {
+        margin: 0 0 30px;
+        font-family: "Playfair Display", "EB Garamond", serif;
+        font-weight: 400;
+        font-style: italic;
+        letter-spacing: 0.2em;
+        font-size: 34px;
+        color: var(--vob-text-muted, #b8b8c0);
+      }
+      .ds-card-title {
+        margin: 0;
+        font-family: "Playfair Display", "EB Garamond", serif;
+        font-weight: 700;
+        letter-spacing: 0.005em;
+        line-height: 1.02;
+        font-size: 152px;
+        color: var(--vob-text, #ffffff);
+        text-shadow: 0 14px 50px rgba(0, 0, 0, 0.5);
+      }
+      /* Thin accent hairline beneath the title for an editorial finish. */
+      .ds-rule {
+        width: 220px;
+        height: 3px;
+        margin: 40px auto 0;
+        background: var(--vob-accent, #ff3b30);
+      }
+      /* in 0.9s (0 -> ~16.4% of 5.5s), long hold, out 0.8s (last ~14.5%). */
+      @keyframes vob-slow-cinematic {
+        0% {
+          opacity: 0;
+          transform: scale(1.04);
+          animation-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+        }
+        16.4% {
+          opacity: 1;
+          transform: scale(1);
+        }
+        85.5% {
+          opacity: 1;
+          transform: scale(1);
+          animation-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+        }
+        100% {
+          opacity: 0;
+          transform: scale(1.04);
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div
+      id="stage"
+      data-composition-id="ds-motion-slow-cinematic"
+      data-timeline-locked
+      data-start="0"
+      data-duration="5.5"
+      data-fps="30"
+      data-width="1920"
+      data-height="1080"
+    >
+      <div class="ds-demo-bg"></div>
+      <div id="ds-slow-cinematic-card" class="clip ds-card" data-start="0" data-duration="5.5" data-track-index="1">
+        <p class="ds-card-kicker">Motion preset</p>
+        <h1 class="ds-card-title">Slow Cinematic</h1>
+        <div class="ds-rule"></div>
+      </div>
+    </div>
+
+    <script>
+      /* Inert timeline stub. The hyperframes render driver calls duration() and
+         pause() unconditionally; a pure-CSS component needs no real timeline and
+         loads no GSAP. duration() returns the master length (data-duration). */
+      window.__timelines = window.__timelines || {};
+      window.__timelines["ds-motion-slow-cinematic"] = {
+        duration: function () {
+          return 5.5;
+        },
+        pause: function () {},
+      };
+    </script>
+  </body>
+</html>

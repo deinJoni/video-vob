@@ -1,0 +1,212 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=1920, height=1080" />
+    <title>title-editorial-serif</title>
+
+    <!-- ========================================================================
+         video-vob design-system REFERENCE component — title-editorial-serif
+         A cinematic, centered serif title with maximal negative space.
+
+         Playfair Display headline CENTERED, a thin centered accent rule above it,
+         and a small tracked EB Garamond subtitle below. A slow elegant fade with a
+         very subtle scale (1.03 -> 1) over ~0.9s, a long hold, and a slow fade out.
+         Muted-gold accent.
+
+         Render contract (shared by every design-system component):
+         1. PURE CSS @keyframes — never GSAP. window.__timelines is a no-op stub.
+         2. STAGGER WITH data-start, NEVER animation-delay.
+         3. COLORS via --vob-* tokens with a literal fallback.
+         4. FONTS = a concrete auto-resolved kit family, NO var() in font-family,
+            NO font <link>/@import. The composer swaps the family for
+            target.design.typography.{headline|body|caption}.
+         5. Every timed element: class="clip" + id + data-start + data-duration +
+            data-track-index; animation-duration == data-duration; both; paused.
+         ===================================================================== -->
+
+    <style>
+      :root {
+        --vob-bg: #0a0a0c;
+        --vob-surface: #14141a;
+        --vob-text: #f3efe7;
+        --vob-text-muted: #a59b86;
+        --vob-accent: #c9a227;
+        --vob-accent-2: #ffd60a;
+        --vob-safe-top: 96px;
+        --vob-safe-bottom: 96px;
+      }
+      *,
+      *::before,
+      *::after {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        width: 1920px;
+        height: 1080px;
+        margin: 0;
+        overflow: hidden;
+        background: transparent;
+      }
+      #stage {
+        position: relative;
+        width: 1920px;
+        height: 1080px;
+        overflow: hidden;
+        background: var(--vob-bg, #0a0a0c);
+      }
+      /* Demo backdrop — stands in for the video spine; dropped in the real comp. */
+      .ds-demo-bg {
+        position: absolute;
+        inset: 0;
+        z-index: 0;
+        background:
+          linear-gradient(180deg, rgba(0, 0, 0, 0.45) 0%, rgba(0, 0, 0, 0) 38%, rgba(0, 0, 0, 0.55) 100%),
+          radial-gradient(110% 90% at 50% 44%, #1d1c1a 0%, #121111 60%, #060606 100%);
+      }
+      .ds-center {
+        position: absolute;
+        left: 50%;
+        top: 50%;
+        z-index: 2;
+        width: 1360px;
+        transform: translate(-50%, -50%);
+        text-align: center;
+      }
+      .ds-rule {
+        width: 132px;
+        height: 2px;
+        margin: 0 auto 48px;
+        background: var(--vob-accent, #c9a227);
+        transform-origin: 50% 50%;
+        animation-name: vob-rule-in;
+        animation-duration: 5s;
+        animation-timing-function: linear;
+        animation-fill-mode: both;
+        animation-play-state: paused;
+      }
+      .ds-headline {
+        font-family: "Playfair Display", "EB Garamond", serif;
+        font-weight: 700;
+        font-size: 128px;
+        line-height: 1.02;
+        letter-spacing: 0.004em;
+        color: var(--vob-text, #f3efe7);
+        margin: 0;
+        transform-origin: 50% 50%;
+        text-shadow: 0 12px 56px rgba(0, 0, 0, 0.5);
+        animation-name: vob-headline-in;
+        animation-duration: 5s;
+        animation-timing-function: linear;
+        animation-fill-mode: both;
+        animation-play-state: paused;
+        will-change: transform, opacity;
+      }
+      .ds-subtitle {
+        font-family: "EB Garamond", "Playfair Display", serif;
+        font-weight: 400;
+        font-style: italic;
+        font-size: 36px;
+        line-height: 1.3;
+        letter-spacing: 0.18em;
+        text-transform: uppercase;
+        color: var(--vob-text-muted, #a59b86);
+        margin: 44px 0 0;
+        animation-name: vob-subtitle-in;
+        animation-duration: 4.8s;
+        animation-timing-function: linear;
+        animation-fill-mode: both;
+        animation-play-state: paused;
+        will-change: opacity;
+      }
+      @keyframes vob-rule-in {
+        0% {
+          transform: scaleX(0);
+          opacity: 0;
+          animation-timing-function: cubic-bezier(0.25, 0.6, 0.3, 1);
+        }
+        16% {
+          transform: scaleX(1);
+          opacity: 1;
+        }
+        88% {
+          transform: scaleX(1);
+          opacity: 1;
+          animation-timing-function: ease-in;
+        }
+        100% {
+          transform: scaleX(1);
+          opacity: 0;
+        }
+      }
+      @keyframes vob-headline-in {
+        0% {
+          opacity: 0;
+          transform: scale(1.03);
+          animation-timing-function: cubic-bezier(0.2, 0.55, 0.25, 1);
+        }
+        18% {
+          opacity: 1;
+          transform: scale(1);
+        }
+        88% {
+          opacity: 1;
+          transform: scale(1);
+          animation-timing-function: ease-in;
+        }
+        100% {
+          opacity: 0;
+          transform: scale(1.012);
+        }
+      }
+      @keyframes vob-subtitle-in {
+        0% {
+          opacity: 0;
+          animation-timing-function: ease-out;
+        }
+        22% {
+          opacity: 1;
+        }
+        88% {
+          opacity: 1;
+          animation-timing-function: ease-in;
+        }
+        100% {
+          opacity: 0;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div
+      id="stage"
+      data-composition-id="ds-title-editorial-serif"
+      data-timeline-locked
+      data-start="0"
+      data-duration="5"
+      data-fps="30"
+      data-width="1920"
+      data-height="1080"
+    >
+      <div class="ds-demo-bg"></div>
+      <div class="ds-center">
+        <div id="ds-rule" class="clip ds-rule" data-start="0" data-duration="5" data-track-index="1"></div>
+        <h1 id="ds-headline" class="clip ds-headline" data-start="0.18" data-duration="5" data-track-index="2">The Quiet Hours</h1>
+        <p id="ds-subtitle" class="clip ds-subtitle" data-start="0.5" data-duration="4.8" data-track-index="3">A film in three movements</p>
+      </div>
+    </div>
+
+    <script>
+      /* Inert timeline stub — the render driver calls duration()/pause()
+         unconditionally; a pure-CSS component loads no GSAP. */
+      window.__timelines = window.__timelines || {};
+      window.__timelines["ds-title-editorial-serif"] = {
+        duration: function () {
+          return 5;
+        },
+        pause: function () {},
+      };
+    </script>
+  </body>
+</html>

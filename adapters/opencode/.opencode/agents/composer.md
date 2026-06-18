@@ -201,6 +201,54 @@ at `./captions/<name>/<name>.html`. ADAPT from them; never copy one verbatim.
   `transcript_aligned` is `true` AND `per_clip_transcripts` is present do you wire a word-level
   component from the per-word `{ text, start, end }` entries in those files.
 
+## Design system kit
+
+A vendored **design-system kit** ships in `compose/design-system/` — placed there by the MCP server
+on every save, a read-only sibling of `./fonts.css` and `./captions/` (you never author or copy it).
+It is your OPINIONATED visual system: vetted, pure-CSS, token-driven REFERENCE components — titles,
+lower-thirds, grades, motion presets, backdrops, callouts, end-cards — curated PER VIDEO-TYPE. Use it
+so the default look is striking, not generic templated CSS. ADAPT the technique; never copy a
+reference verbatim.
+
+- **Read `./design-system/manifest.json` first, then find YOUR look.** Take the `video_type` from
+  your spawn data and read `video_types[<video_type>]` (fall back to `video_types.general`). That LOOK
+  BUNDLE carries: `look` (one-line intent), `principles[]` (TASTE GUARDRAILS — follow them), `slots`
+  (the recommended component per role: `title`, `lower_third`, `grade`, `motion`, `backdrop`,
+  `end_card`, `callout` — each `{default, alternates[]}`), and `transition_guidance`. The `components`
+  map describes each: `kind`, `file`, `dims`, `fonts`, `tokens_used`, `note`.
+- **Set the design tokens ONCE on your composition root.** Map `target.design` → the `--vob-*` custom
+  properties in a `:root{}` (or `#master{}`) block: `palette.bg→--vob-bg`, `palette.text→--vob-text`,
+  `palette.accent→--vob-accent` (+ derive/seed `--vob-surface` / `--vob-text-muted` / `--vob-accent-2`),
+  and the platform profile safe bands → `--vob-safe-top` / `--vob-safe-bottom`. Every kit component
+  reads these, so the whole look re-skins to the brief in ONE place. (Contract: `./design-system/tokens.css`.)
+- **Adopt the look's components for the plan's elements.** A planned `title_card` / `section_title` →
+  adapt the look's `title`; a `lower_third` → its `lower_third`; an `end_card` / `cta` → its `end_card`;
+  a `callout` → its `callout`; a design backdrop (title-card bg, a subject-composite `design_token`
+  backdrop, a b-roll-gap fill) → its `backdrop`. Open the chosen `./design-system/<name>/<name>.html`,
+  reproduce its TECHNIQUE (layout, scale, hierarchy, keyframes, in→hold→out timing), re-time elements
+  to your scene window, and stamp the binding `data-vob-overlay-id="<id>"` where the plan declared a
+  typed overlay (QC errors `vob/overlay_missing_element` otherwise). When `target.design` is sparse,
+  the bundle's default + `principles` ARE the design — lean on them.
+- **Apply the grade.** Open the look's `grade` component; its top comment documents the exact `filter:`
+  string + overlay layers. Put that `filter:` on your scene `<video class="clip">` element(s), and add
+  the overlay layers (vignette / tint / grain) as full-frame `class="clip"` divs on tracks ABOVE the
+  video. (`grade-clean` is the deliberately-crisp baseline when the brief's grade is "none".)
+- **Use the motion preset.** The look's `motion` component documents the entrance/exit eases +
+  durations (e.g. fast-snap = in 0.3s `cubic-bezier(.2,.9,.2,1)`). Reuse those eases/durations for the
+  entrances/exits you author across titles/overlays/captions so motion is consistent and tuned to the
+  video-type — not random.
+- **REQUIRED ADAPTATIONS** (references are not drop-in):
+  1. **Fonts.** A reference uses a concrete AUTO-RESOLVED kit family (League Gothic / Archivo Black /
+     Playfair Display / Outfit / …). SUBSTITUTE it with the brief's
+     `target.design.typography.{headline|body|caption}` family, loaded via `./fonts.css` (a house face
+     like Anton / Hanken Grotesk renders only when the kit is `<link>`ed — your standing fonts rule).
+  2. **Pure CSS — no GSAP needed.** These are CSS `@keyframes` scrubbed by the runtime; keep
+     `animation-fill-mode: both` + `animation-play-state: paused`, `animation-duration == data-duration`.
+  3. **Stagger with `data-start`, NEVER `animation-delay`.** The runtime hijacks `animation-delay` to
+     scrub; staggered pieces are SEPARATE `class="clip"` elements at different `data-start` (one per
+     line / word / step). This is the #1 way a copied reference breaks.
+- See `references/lint-rules.md` §Design system kit for per-kind recipes.
+
 ## Video-element budget
 
 **≤6 `<video>` elements total** (QC warns above 6, errors above 8): the 8GB host's headless Chrome dies on video-element-heavy compositions. One storyboard clip = one element — **plus one per planned `pip` overlay**; never add `<video>` elements the storyboard didn't plan. In fan-out / segmented mode the budget applies to the active short/segment alone. Concatenated spine clips play as ONE element each — never split a spine clip into fragments around a cutaway (lay B-roll OVER it on a higher track).

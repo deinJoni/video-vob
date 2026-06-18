@@ -1,0 +1,232 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=1920, height=1080" />
+    <title>title-quote-card</title>
+
+    <!-- ========================================================================
+         video-vob design-system REFERENCE component — title-quote-card
+         A podcast pull-quote card.
+
+         A large accent quotation-mark glyph sits top-left, the quote runs in a
+         medium-large serif below it (max ~14 words across 2-3 lines), and an
+         attribution line (name · role, muted) sits beneath. Soft fade + rise,
+         gentle and warm.
+
+         Render contract (shared by every design-system component):
+         1. PURE CSS @keyframes — never GSAP. window.__timelines is a no-op stub.
+         2. STAGGER WITH data-start, NEVER animation-delay.
+         3. COLORS via --vob-* tokens with a literal fallback.
+         4. FONTS = a concrete auto-resolved kit family, NO var() in font-family,
+            NO font <link>/@import.
+         5. Every timed element: class="clip" + id + data-start + data-duration +
+            data-track-index; animation-duration == data-duration; both; paused.
+         ===================================================================== -->
+
+    <style>
+      :root {
+        --vob-bg: #101216;
+        --vob-surface: #181b22;
+        --vob-text: #f1f2f5;
+        --vob-text-muted: #9aa0ad;
+        --vob-accent: #ffb000;
+        --vob-accent-2: #ffd60a;
+        --vob-safe-top: 96px;
+        --vob-safe-bottom: 96px;
+      }
+      *,
+      *::before,
+      *::after {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        width: 1920px;
+        height: 1080px;
+        margin: 0;
+        overflow: hidden;
+        background: transparent;
+      }
+      #stage {
+        position: relative;
+        width: 1920px;
+        height: 1080px;
+        overflow: hidden;
+        background: var(--vob-bg, #101216);
+      }
+      /* Demo backdrop — stands in for the video spine; dropped in the real comp. */
+      .ds-demo-bg {
+        position: absolute;
+        inset: 0;
+        z-index: 0;
+        background:
+          linear-gradient(100deg, rgba(0, 0, 0, 0.5) 0%, rgba(0, 0, 0, 0.08) 60%, rgba(0, 0, 0, 0) 100%),
+          radial-gradient(130% 110% at 22% 26%, #20242e 0%, #14171d 58%, #0a0c0f 100%);
+      }
+      .ds-block {
+        position: absolute;
+        left: 168px;
+        top: 50%;
+        z-index: 2;
+        transform: translateY(-50%);
+        max-width: 1300px;
+      }
+      .ds-mark {
+        font-family: "Playfair Display", "EB Garamond", serif;
+        font-weight: 700;
+        font-size: 220px;
+        line-height: 0.7;
+        color: var(--vob-accent, #ffb000);
+        margin: 0 0 8px -10px;
+        height: 120px;
+        animation-name: vob-mark-in;
+        animation-duration: 5s;
+        animation-timing-function: linear;
+        animation-fill-mode: both;
+        animation-play-state: paused;
+        will-change: transform, opacity;
+      }
+      .ds-quote {
+        font-family: "Playfair Display", "EB Garamond", serif;
+        font-weight: 600;
+        font-size: 76px;
+        line-height: 1.16;
+        letter-spacing: -0.004em;
+        color: var(--vob-text, #f1f2f5);
+        margin: 0;
+        text-shadow: 0 10px 44px rgba(0, 0, 0, 0.42);
+        animation-name: vob-quote-in;
+        animation-duration: 4.86s;
+        animation-timing-function: linear;
+        animation-fill-mode: both;
+        animation-play-state: paused;
+        will-change: transform, opacity;
+      }
+      .ds-attribution {
+        display: flex;
+        align-items: center;
+        gap: 22px;
+        margin-top: 56px;
+        font-family: "Inter", "Helvetica Neue", sans-serif;
+        font-size: 32px;
+        line-height: 1;
+        letter-spacing: 0.02em;
+        color: var(--vob-text-muted, #9aa0ad);
+        animation-name: vob-attr-in;
+        animation-duration: 4.7s;
+        animation-timing-function: linear;
+        animation-fill-mode: both;
+        animation-play-state: paused;
+        will-change: transform, opacity;
+      }
+      .ds-attr-tick {
+        width: 40px;
+        height: 3px;
+        background: var(--vob-accent, #ffb000);
+        flex: none;
+      }
+      .ds-attr-name {
+        font-weight: 600;
+        color: var(--vob-text, #f1f2f5);
+      }
+      .ds-attr-sep {
+        opacity: 0.5;
+      }
+      @keyframes vob-mark-in {
+        0% {
+          opacity: 0;
+          transform: translateY(18px) scale(0.92);
+          animation-timing-function: cubic-bezier(0.2, 0.7, 0.3, 1);
+        }
+        12% {
+          opacity: 1;
+          transform: translateY(0) scale(1);
+        }
+        90% {
+          opacity: 1;
+          transform: translateY(0) scale(1);
+          animation-timing-function: ease-in;
+        }
+        100% {
+          opacity: 0;
+          transform: translateY(-10px) scale(1);
+        }
+      }
+      @keyframes vob-quote-in {
+        0% {
+          opacity: 0;
+          transform: translateY(34px);
+          animation-timing-function: cubic-bezier(0.18, 0.72, 0.28, 1);
+        }
+        15% {
+          opacity: 1;
+          transform: translateY(0);
+        }
+        90% {
+          opacity: 1;
+          transform: translateY(0);
+          animation-timing-function: ease-in;
+        }
+        100% {
+          opacity: 0;
+          transform: translateY(-14px);
+        }
+      }
+      @keyframes vob-attr-in {
+        0% {
+          opacity: 0;
+          transform: translateY(22px);
+          animation-timing-function: cubic-bezier(0.2, 0.7, 0.3, 1);
+        }
+        20% {
+          opacity: 1;
+          transform: translateY(0);
+        }
+        90% {
+          opacity: 1;
+          transform: translateY(0);
+          animation-timing-function: ease-in;
+        }
+        100% {
+          opacity: 0;
+          transform: translateY(-8px);
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div
+      id="stage"
+      data-composition-id="ds-title-quote-card"
+      data-timeline-locked
+      data-start="0"
+      data-duration="5"
+      data-fps="30"
+      data-width="1920"
+      data-height="1080"
+    >
+      <div class="ds-demo-bg"></div>
+      <div class="ds-block">
+        <div id="ds-mark" class="clip ds-mark" data-start="0" data-duration="5" data-track-index="1">&ldquo;</div>
+        <p id="ds-quote" class="clip ds-quote" data-start="0.12" data-duration="4.86" data-track-index="2">The work that matters is the work nobody asked you to do.</p>
+        <div id="ds-attribution" class="clip ds-attribution" data-start="0.3" data-duration="4.7" data-track-index="3">
+          <span class="ds-attr-tick"></span>
+          <span><span class="ds-attr-name">Maya Okonkwo</span><span class="ds-attr-sep"> &middot; </span>Founder, Northlight</span>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      /* Inert timeline stub — the render driver calls duration()/pause()
+         unconditionally; a pure-CSS component loads no GSAP. */
+      window.__timelines = window.__timelines || {};
+      window.__timelines["ds-title-quote-card"] = {
+        duration: function () {
+          return 5;
+        },
+        pause: function () {},
+      };
+    </script>
+  </body>
+</html>

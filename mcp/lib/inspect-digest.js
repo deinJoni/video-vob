@@ -312,6 +312,43 @@ function hookCandidatesSection(hookCandidates, { transcribedFileIndex, manifestF
   return lines.join("\n");
 }
 
+// v3.9 — the take-quality leaderboard: the strongest scored takes across all
+// files, ranked, so the storyboarder opens hooks / key beats on the BEST take of
+// a moment (not just a spoken one). Full per-segment `strength` lives in
+// segments.json; this is the digest-facing summary. Best-effort: "n/a" when
+// take-quality is off or nothing scored.
+function strongestTakesSection(takeQuality) {
+  const lines = ["## Strongest takes"];
+  const tq = takeQuality && typeof takeQuality === "object" ? takeQuality : null;
+  if (!tq || !Array.isArray(tq.strongest) || tq.strongest.length === 0) {
+    lines.push("n/a — no takes scored (take-quality off, or no scorable segments).");
+    return lines.join("\n");
+  }
+  const med = isNum(tq.median_score) ? tq.median_score.toFixed(2) : "—";
+  const visual = tq.visual_backend
+    ? `visuals via ${tq.visual_backend}`
+    : "audio-only (no visual heuristics this run)";
+  lines.push(`${tq.scored_segments} scored — **${tq.strong} strong · ${tq.usable} usable · ${tq.weak} weak** (median ${med}; ${visual}).`);
+  lines.push("Open hooks & key beats on the strongest; ranked across all files. The `take` column in the segment table (and `strength.flags` in segments.json) say why a weak take is weak.");
+  lines.push("");
+  lines.push("| rank | file | seg | span | score | tier |");
+  lines.push("|------|------|-----|------|-------|------|");
+  tq.strongest.slice(0, 8).forEach((t, k) => {
+    const span = `${fmtMmSsT(t.start_seconds)}–${fmtMmSsT(t.end_seconds)}`;
+    lines.push(`| ${k + 1} | ${t.file_index} | ${t.segment_index} | ${span} | ${isNum(t.score) ? t.score.toFixed(2) : "—"} | ${t.tier || "—"} |`);
+  });
+  return lines.join("\n");
+}
+
+// Compact per-segment take-quality cell: tier + score + the top couple of flags
+// (the actionable "why" — low_energy / soft_focus / filler_heavy / …).
+function takeCell(seg) {
+  const st = seg && seg.strength;
+  if (!st || !isNum(st.score)) return "—";
+  const flags = Array.isArray(st.flags) && st.flags.length ? ` ${st.flags.slice(0, 2).join(",")}` : "";
+  return `${st.tier || "?"} ${st.score.toFixed(2)}${flags}`;
+}
+
 function segmentTableSection(fileSummaries) {
   const lines = ["## Segment table"];
   const files = (Array.isArray(fileSummaries) ? fileSummaries : [])
@@ -322,8 +359,8 @@ function segmentTableSection(fileSummaries) {
   }
   for (const f of files) {
     lines.push(`### file ${f.file_index} — ${baseName(f.path)}`);
-    lines.push("| seg | span | dur | type | energy | wpm | words |");
-    lines.push("|-----|------|-----|------|--------|-----|-------|");
+    lines.push("| seg | span | dur | type | energy | wpm | take | words |");
+    lines.push("|-----|------|-----|------|--------|-----|------|-------|");
     const segs = f.segments;
     let nonSilence = 0;
     let omitted = 0;
@@ -336,7 +373,7 @@ function segmentTableSection(fileSummaries) {
         while (j + 1 < segs.length && segs[j + 1].is_silence) j += 1;
         const last = segs[j];
         const label = j > i ? `${seg.index}–${last.index}` : String(seg.index);
-        lines.push(`| ${label} | ${fmtMmSsT(seg.start_seconds)}–${fmtMmSsT(last.end_seconds)} | ${(last.end_seconds - seg.start_seconds).toFixed(1)} | silence | ${isNum(seg.energy_rms_db) ? seg.energy_rms_db : "—"} | — | |`);
+        lines.push(`| ${label} | ${fmtMmSsT(seg.start_seconds)}–${fmtMmSsT(last.end_seconds)} | ${(last.end_seconds - seg.start_seconds).toFixed(1)} | silence | ${isNum(seg.energy_rms_db) ? seg.energy_rms_db : "—"} | — | — | |`);
         i = j + 1;
         continue;
       }
@@ -349,7 +386,7 @@ function segmentTableSection(fileSummaries) {
       const words = seg.transcript_text
         ? `"${truncateText(seg.transcript_text, 60)}" (${seg.word_count}w)`
         : "";
-      lines.push(`| ${seg.index} | ${fmtMmSsT(seg.start_seconds)}–${fmtMmSsT(seg.end_seconds)} | ${seg.duration_seconds.toFixed(1)} | ${type} | ${isNum(seg.energy_rms_db) ? seg.energy_rms_db : "—"} | ${isNum(seg.speech_rate_wpm) ? seg.speech_rate_wpm : "—"} | ${words} |`);
+      lines.push(`| ${seg.index} | ${fmtMmSsT(seg.start_seconds)}–${fmtMmSsT(seg.end_seconds)} | ${seg.duration_seconds.toFixed(1)} | ${type} | ${isNum(seg.energy_rms_db) ? seg.energy_rms_db : "—"} | ${isNum(seg.speech_rate_wpm) ? seg.speech_rate_wpm : "—"} | ${takeCell(seg)} | ${words} |`);
       nonSilence += 1;
       i += 1;
     }
@@ -456,6 +493,7 @@ function buildInspectDigest({
   audio,
   sceneDetectionSkipped,
   transcribedFileIndex,
+  takeQuality,
 } = {}) {
   const header = [
     `# INSPECT digest — ${projectId}`,
@@ -470,6 +508,7 @@ function buildInspectDigest({
     transcriptMapSection({ paragraphs, asr }),
     cleanSpeechSection(cleanSpeechStats),
     hookCandidatesSection(hookCandidates, { transcribedFileIndex, manifestFiles }),
+    strongestTakesSection(takeQuality),
     segmentTableSection(fileSummaries),
     audioSection(audio),
     visualIndexSection(strips, thumbs),

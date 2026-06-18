@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=1920, height=1080" />
+    <title>grade-film-desat</title>
+
+    <!-- ========================================================================
+         video-vob design-system REFERENCE GRADE — grade-film-desat
+         Muted, understated filmic look (cinematic): desaturated, gently warmed,
+         with fine film grain and a soft vignette.
+
+         HOW THE COMPOSER REALIZES A GRADE (two parts):
+           (a) Apply this CSS filter to the scene clip element (the video):
+                 filter: saturate(0.78) contrast(1.06) sepia(0.06);
+           (b) Add the overlay layers below as full-frame "clip"/static divs on
+                 tracks ABOVE the video (each its own track):
+                 • OVERLAY 1 — film grain: a tiled SVG fractal-noise data-URI
+                   background, mix-blend-mode: overlay, very low opacity (~0.07).
+                   Adds organic texture. (Static is fine; here faded in ~0.4s.)
+                 • OVERLAY 2 — soft vignette: a gentle dark radial gradient
+                   (transparent center to ~0.3 black at corners). Faded in ~0.4s.
+
+         In this STANDALONE reference the filter wraps a rich, photo-like
+         .ds-demo-bg; the grain + vignette overlays ride on top exactly as in the
+         real composition.
+
+         Render contract (shared by every design-system component):
+         1. PURE CSS keyframes — never GSAP. window.__timelines is a no-op stub.
+            The grain is a static SVG data-URI background — NO Math.random, NO
+            network; the noise seed is baked into the data-URI.
+         2. STAGGER WITH the start attribute, NEVER animation-delay.
+         3. Each timed overlay is a "clip" with id + start + duration + a DISTINCT
+            track-index per time-overlapping layer.
+         4. Grades are imagery — no fonts needed.
+         ===================================================================== -->
+
+    <style>
+      *,
+      *::before,
+      *::after {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        width: 1920px;
+        height: 1080px;
+        margin: 0;
+        overflow: hidden;
+        background: transparent;
+      }
+      #stage {
+        position: relative;
+        width: 1920px;
+        height: 1080px;
+        overflow: hidden;
+        background: #000;
+      }
+      /* Graded layer — filter rides the scene video in the real comp. */
+      .ds-grade-wrap {
+        position: absolute;
+        inset: 0;
+        z-index: 0;
+        filter: saturate(0.78) contrast(1.06) sepia(0.06);
+      }
+      /* Photo-like scene: an overcast, muted landscape so the desat look reads as
+         deliberate restraint rather than a dull fill. */
+      .ds-demo-bg {
+        position: absolute;
+        inset: 0;
+        background:
+          radial-gradient(44% 50% at 50% 46%, rgba(214, 200, 176, 0.42) 0%, rgba(120, 108, 92, 0.12) 48%, rgba(0, 0, 0, 0) 72%),
+          linear-gradient(0deg, rgba(18, 18, 20, 0.92) 0%, rgba(40, 40, 44, 0.34) 28%, rgba(0, 0, 0, 0) 50%),
+          linear-gradient(193deg, #9aa6ad 0%, #b6bdbf 20%, #cdc6b6 48%, #8f8472 72%, #2e2b27 100%);
+      }
+      /* OVERLAY 1 — film grain (static SVG fractal noise, overlay blend). */
+      .ds-grain {
+        position: absolute;
+        inset: 0;
+        z-index: 2;
+        mix-blend-mode: overlay;
+        background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+        background-size: 160px 160px;
+        animation-name: vob-grain-in;
+        animation-duration: 0.4s;
+        animation-timing-function: ease-out;
+        animation-fill-mode: both;
+        animation-play-state: paused;
+      }
+      /* OVERLAY 2 — soft vignette. */
+      .ds-vignette {
+        position: absolute;
+        inset: 0;
+        z-index: 3;
+        background: radial-gradient(122% 86% at 50% 48%, rgba(0, 0, 0, 0) 54%, rgba(0, 0, 0, 0.3) 100%);
+        animation-name: vob-vignette-in;
+        animation-duration: 0.4s;
+        animation-timing-function: ease-out;
+        animation-fill-mode: both;
+        animation-play-state: paused;
+      }
+      @keyframes vob-grain-in {
+        0% {
+          opacity: 0;
+        }
+        100% {
+          opacity: 0.07;
+        }
+      }
+      @keyframes vob-vignette-in {
+        0% {
+          opacity: 0;
+        }
+        100% {
+          opacity: 1;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div
+      id="stage"
+      data-composition-id="ds-grade-film-desat"
+      data-timeline-locked
+      data-start="0"
+      data-duration="4"
+      data-fps="30"
+      data-width="1920"
+      data-height="1080"
+    >
+      <div class="ds-grade-wrap">
+        <div class="ds-demo-bg"></div>
+      </div>
+      <div id="ds-grain" class="clip ds-grain" data-start="0" data-duration="4" data-track-index="1"></div>
+      <div id="ds-vignette" class="clip ds-vignette" data-start="0" data-duration="4" data-track-index="2"></div>
+    </div>
+
+    <script>
+      /* Inert timeline stub — render driver calls duration()/pause(); no GSAP. */
+      window.__timelines = window.__timelines || {};
+      window.__timelines["ds-grade-film-desat"] = {
+        duration: function () {
+          return 4;
+        },
+        pause: function () {},
+      };
+    </script>
+  </body>
+</html>

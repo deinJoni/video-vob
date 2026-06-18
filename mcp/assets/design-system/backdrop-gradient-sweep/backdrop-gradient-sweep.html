@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=1920, height=1080" />
+    <title>backdrop-gradient-sweep</title>
+
+    <!-- ========================================================================
+         video-vob design-system REFERENCE BACKDROP — backdrop-gradient-sweep
+         Landscape (1920×1080). A smooth multi-stop diagonal gradient
+         (bg → surface → faint accent tint) with a slow DRIFT — a large
+         accent-tinted sheen pans across the frame on its own track. Modern,
+         clean, premium.
+
+         HOW THE COMPOSER USES A BACKDROP:
+           Full-frame background on the LOWEST track, behind a title card, a
+           `design_token` subject-composite matte, a b-roll gap card, or a framed
+           talking head. Drop the ghost box and put the real foreground above.
+
+         Render contract (shared by every design-system component):
+         1. PURE CSS @keyframes — never GSAP. window.__timelines is a no-op stub.
+         2. STAGGER WITH data-start, NEVER animation-delay. The drifting sheen is
+            one class="clip" element; animation-duration == data-duration;
+            data-start=0; distinct data-track-index per overlapping timed clip.
+         3. COLORS via --vob-* tokens with a literal fallback; the composer
+            re-skins from target.design.
+         4. Static base layer needs no data-start. Any label uses a concrete
+            auto-resolved family (Inter) + generic fallback — no var() in
+            font-family, no font <link>.
+         ===================================================================== -->
+
+    <style>
+      :root {
+        --vob-bg: #000000;
+        --vob-surface: #14141a;
+        --vob-accent: #ff3b30;
+        --vob-accent-2: #ffd60a;
+        --vob-text: #ffffff;
+      }
+      *,
+      *::before,
+      *::after {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        width: 1920px;
+        height: 1080px;
+        margin: 0;
+        overflow: hidden;
+        background: transparent;
+      }
+      #stage {
+        position: relative;
+        width: 1920px;
+        height: 1080px;
+        overflow: hidden;
+        background: var(--vob-bg, #000000);
+      }
+      /* Static premium base — a diagonal bg → surface field with a faint accent
+         pool in one corner and a soft accent-2 bloom in the other, so the frame
+         reads as layered depth, never a flat single fill. */
+      .ds-base {
+        position: absolute;
+        inset: 0;
+        z-index: 0;
+        background:
+          radial-gradient(70% 90% at 88% 8%, rgba(255, 59, 48, 0.16) 0%, rgba(255, 59, 48, 0) 55%),
+          radial-gradient(60% 80% at 6% 96%, rgba(255, 214, 10, 0.08) 0%, rgba(255, 214, 10, 0) 52%),
+          linear-gradient(122deg, #07070b 0%, #101019 34%, #16161f 56%, #0c0c13 80%, #060609 100%);
+      }
+      /* DRIFTING SHEEN — a wide, soft diagonal band of light that pans slowly
+         across the frame, giving the static gradient subtle premium movement.
+         Oversized and translated so the soft edges never reveal a seam. */
+      .ds-sheen {
+        position: absolute;
+        top: -20%;
+        left: -60%;
+        width: 80%;
+        height: 140%;
+        z-index: 1;
+        transform: rotate(14deg);
+        transform-origin: 50% 50%;
+        background: linear-gradient(
+          90deg,
+          rgba(255, 255, 255, 0) 0%,
+          rgba(255, 255, 255, 0.05) 40%,
+          rgba(255, 59, 48, 0.07) 50%,
+          rgba(255, 255, 255, 0.05) 60%,
+          rgba(255, 255, 255, 0) 100%
+        );
+        will-change: transform;
+        animation-name: vob-sheen-drift;
+        animation-duration: 5s;
+        animation-timing-function: ease-in-out;
+        animation-fill-mode: both;
+        animation-play-state: paused;
+      }
+      /* Subtle top-edge highlight + bottom shade for finish. Static. */
+      .ds-finish {
+        position: absolute;
+        inset: 0;
+        z-index: 2;
+        background:
+          linear-gradient(180deg, rgba(255, 255, 255, 0.05) 0%, rgba(255, 255, 255, 0) 12%),
+          linear-gradient(0deg, rgba(0, 0, 0, 0.32) 0%, rgba(0, 0, 0, 0) 22%);
+      }
+      .ds-ghost {
+        position: absolute;
+        inset: 0;
+        z-index: 3;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .ds-ghost-box {
+        width: 720px;
+        height: 300px;
+        border: 2px solid rgba(255, 255, 255, 0.12);
+        border-radius: 18px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-family: "Inter", sans-serif;
+        font-weight: 600;
+        font-size: 34px;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: rgba(255, 255, 255, 0.2);
+      }
+      @keyframes vob-sheen-drift {
+        0% {
+          transform: translateX(0) rotate(14deg);
+        }
+        100% {
+          transform: translateX(2600px) rotate(14deg);
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div
+      id="stage"
+      data-composition-id="ds-backdrop-gradient-sweep"
+      data-timeline-locked
+      data-start="0"
+      data-duration="5"
+      data-fps="30"
+      data-width="1920"
+      data-height="1080"
+    >
+      <div class="ds-base"></div>
+      <div id="ds-sheen" class="clip ds-sheen" data-start="0" data-duration="5" data-track-index="1"></div>
+      <div class="ds-finish"></div>
+      <div class="ds-ghost"><div class="ds-ghost-box">title / content sits here</div></div>
+    </div>
+
+    <script>
+      /* Inert timeline stub — the render driver calls duration()/pause()
+         unconditionally; a pure-CSS component loads no GSAP. */
+      window.__timelines = window.__timelines || {};
+      window.__timelines["ds-backdrop-gradient-sweep"] = {
+        duration: function () {
+          return 5;
+        },
+        pause: function () {},
+      };
+    </script>
+  </body>
+</html>

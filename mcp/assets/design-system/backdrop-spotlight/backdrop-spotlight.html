@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=1080, height=1920" />
+    <title>backdrop-spotlight</title>
+
+    <!-- ========================================================================
+         video-vob design-system REFERENCE BACKDROP — backdrop-spotlight
+         Vertical (1080×1920). Near-black frame with a soft accent-tinted radial
+         SPOTLIGHT toward top-center where a subject/title sits, an edge vignette,
+         and a VERY slow breathe of the glow. Makes foreground text pop.
+
+         HOW THE COMPOSER USES A BACKDROP:
+           A backdrop is a FULL-FRAME background. It rides on the LOWEST track,
+           behind a title card, a `design_token` subject-composite matte, a
+           b-roll gap card, or a framed talking head. Drop the ghost label below
+           and put the real foreground on tracks above.
+
+         Render contract (shared by every design-system component):
+         1. PURE CSS @keyframes — never GSAP. window.__timelines is a no-op stub;
+            GSAP is not loaded at render.
+         2. STAGGER WITH data-start, NEVER animation-delay (the runtime hijacks
+            animation-delay to scrub a paused animation to each frame). A motion
+            backdrop is one class="clip" full-frame element; animation-duration ==
+            data-duration; data-start=0; distinct data-track-index per overlapping
+            timed clip.
+         3. COLORS via --vob-* tokens with a literal fallback
+            (`var(--vob-accent, #ff3b30)`); the composer re-skins from target.design.
+         4. A static (non-timed) layer needs no data-start. Any label uses a
+            concrete auto-resolved family (Inter) + generic fallback — no var() in
+            font-family, no font <link>.
+         ===================================================================== -->
+
+    <style>
+      :root {
+        --vob-bg: #000000;
+        --vob-surface: #14141a;
+        --vob-accent: #ff3b30;
+        --vob-accent-2: #ffd60a;
+        --vob-text: #ffffff;
+      }
+      *,
+      *::before,
+      *::after {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        width: 1080px;
+        height: 1920px;
+        margin: 0;
+        overflow: hidden;
+        background: transparent;
+      }
+      #stage {
+        position: relative;
+        width: 1080px;
+        height: 1920px;
+        overflow: hidden;
+        background: var(--vob-bg, #000000);
+      }
+      /* Static base wash — a faint cool-to-black field so the frame is never a
+         flat single fill even before the glow. */
+      .ds-base {
+        position: absolute;
+        inset: 0;
+        z-index: 0;
+        background:
+          radial-gradient(95% 60% at 50% 30%, rgba(40, 42, 54, 0.55) 0%, rgba(14, 14, 20, 0.2) 46%, rgba(0, 0, 0, 0) 70%),
+          linear-gradient(180deg, #0c0c12 0%, #08080c 56%, #050507 100%);
+      }
+      /* The SPOTLIGHT — accent-tinted soft glow toward top-center. Animated as a
+         very slow breathe (opacity + a hair of scale) so it feels alive but never
+         pulls focus. */
+      .ds-spot {
+        position: absolute;
+        inset: 0;
+        z-index: 1;
+        transform-origin: 50% 28%;
+        background:
+          radial-gradient(58% 42% at 50% 28%, rgba(255, 59, 48, 0.26) 0%, rgba(255, 59, 48, 0.1) 34%, rgba(255, 59, 48, 0) 64%),
+          radial-gradient(40% 30% at 50% 26%, rgba(255, 255, 255, 0.16) 0%, rgba(255, 255, 255, 0) 60%);
+        background-color: transparent;
+        will-change: opacity, transform;
+        animation-name: vob-spot-breathe;
+        animation-duration: 5s;
+        animation-timing-function: ease-in-out;
+        animation-fill-mode: both;
+        animation-play-state: paused;
+      }
+      /* Accent-2 token wired for re-skin via the gradient's second stop. */
+      .ds-spot-accent2 {
+        position: absolute;
+        inset: 0;
+        z-index: 1;
+        background: radial-gradient(34% 24% at 50% 30%, rgba(255, 214, 10, 0.08) 0%, rgba(255, 214, 10, 0) 62%);
+      }
+      /* Edge vignette — darkens corners, keeps the eye on the lit zone. Static. */
+      .ds-vignette {
+        position: absolute;
+        inset: 0;
+        z-index: 2;
+        background: radial-gradient(120% 78% at 50% 44%, rgba(0, 0, 0, 0) 50%, rgba(0, 0, 0, 0.55) 100%);
+      }
+      /* Faint ghost label — stands in for the real foreground (title/subject). */
+      .ds-ghost {
+        position: absolute;
+        left: 0;
+        right: 0;
+        top: 360px;
+        z-index: 3;
+        text-align: center;
+        font-family: "Inter", sans-serif;
+        font-weight: 600;
+        font-size: 40px;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        color: rgba(255, 255, 255, 0.22);
+      }
+      @keyframes vob-spot-breathe {
+        0% {
+          opacity: 0.82;
+          transform: scale(0.98);
+        }
+        50% {
+          opacity: 1;
+          transform: scale(1.03);
+        }
+        100% {
+          opacity: 0.82;
+          transform: scale(0.98);
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div
+      id="stage"
+      data-composition-id="ds-backdrop-spotlight"
+      data-timeline-locked
+      data-start="0"
+      data-duration="5"
+      data-fps="30"
+      data-width="1080"
+      data-height="1920"
+    >
+      <div class="ds-base"></div>
+      <div id="ds-spot" class="clip ds-spot" data-start="0" data-duration="5" data-track-index="1"></div>
+      <div class="ds-spot-accent2"></div>
+      <div class="ds-vignette"></div>
+      <div class="ds-ghost">subject / title sits here</div>
+    </div>
+
+    <script>
+      /* Inert timeline stub — the render driver calls duration()/pause()
+         unconditionally; a pure-CSS component loads no GSAP. */
+      window.__timelines = window.__timelines || {};
+      window.__timelines["ds-backdrop-spotlight"] = {
+        duration: function () {
+          return 5;
+        },
+        pause: function () {},
+      };
+    </script>
+  </body>
+</html>

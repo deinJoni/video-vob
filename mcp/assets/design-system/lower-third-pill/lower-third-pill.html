@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=1920, height=1080" />
+    <title>lower-third-pill</title>
+
+    <!-- ========================================================================
+         video-vob design-system REFERENCE component — lower-third-pill
+         A friendly, functional 16:9 lower-third (tutorial / general): a rounded
+         full pill with a small leading accent dot + a single label. Pop-in
+         (scale .9->1 + fade), hold, pop-out. ~5s.
+
+         The composer ADAPTS this technique; it does NOT copy it verbatim.
+         1. PURE CSS @keyframes — never GSAP (css adapter scrubs paused anims).
+         2. STAGGER WITH data-start, NEVER animation-delay.
+         3. COLORS via --vob-* tokens (see ../tokens.css), literal fallbacks.
+         4. FONTS use AUTO-RESOLVED families (here "Inter") — concrete names, NOT
+            var(), and NO font <link>.
+         5. Every timed element: class="clip" + stable id + data-start +
+            data-duration + data-track-index (>=1; distinct track when overlapping);
+            animation-duration == data-duration; fill-mode both; play-state paused.
+         ===================================================================== -->
+
+    <style>
+      :root {
+        --vob-bg: #000000;
+        --vob-surface: #14141a;
+        --vob-text: #ffffff;
+        --vob-accent: #ff3b30;
+        --vob-safe-bottom: 160px;
+      }
+      *,
+      *::before,
+      *::after {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        width: 1920px;
+        height: 1080px;
+        margin: 0;
+        overflow: hidden;
+        background: transparent;
+      }
+      #stage {
+        position: relative;
+        width: 1920px;
+        height: 1080px;
+        overflow: hidden;
+        background: var(--vob-bg, #000000);
+      }
+      /* Demo backdrop — stands in for the video spine; dropped in the real comp. */
+      .ds-demo-bg {
+        position: absolute;
+        inset: 0;
+        z-index: 0;
+        background: radial-gradient(130% 120% at 20% 22%, #23262e 0%, #14161c 54%, #07080b 100%);
+      }
+      /* The pill, anchored above the bottom safe band, left. */
+      .ds-pill {
+        position: absolute;
+        left: 120px;
+        bottom: calc(var(--vob-safe-bottom, 160px) + 44px);
+        z-index: 2;
+        display: inline-flex;
+        align-items: center;
+        gap: 22px;
+        padding: 22px 44px 22px 32px;
+        border-radius: 999px;
+        background: var(--vob-surface, #14141a);
+        box-shadow: 0 22px 56px rgba(0, 0, 0, 0.5);
+        transform-origin: left center;
+        animation-name: vob-pop-in;
+        animation-duration: 5s;
+        animation-timing-function: linear;
+        animation-fill-mode: both;
+        animation-play-state: paused;
+        will-change: transform, opacity;
+      }
+      /* Leading accent dot / icon slot. */
+      .ds-dot {
+        flex: none;
+        width: 26px;
+        height: 26px;
+        border-radius: 50%;
+        background: var(--vob-accent, #ff3b30);
+        box-shadow: 0 0 0 7px rgba(255, 59, 48, 0.18);
+      }
+      .ds-label {
+        margin: 0;
+        font-family: "Inter", sans-serif;
+        font-weight: 600;
+        letter-spacing: 0.01em;
+        font-size: 38px;
+        line-height: 1;
+        color: var(--vob-text, #ffffff);
+        white-space: nowrap;
+      }
+      @keyframes vob-pop-in {
+        0% {
+          opacity: 0;
+          transform: scale(0.9);
+          animation-timing-function: cubic-bezier(0.34, 1.56, 0.64, 1);
+        }
+        12% {
+          opacity: 1;
+          transform: scale(1);
+        }
+        90% {
+          opacity: 1;
+          transform: scale(1);
+          animation-timing-function: cubic-bezier(0.5, 0, 0.75, 0);
+        }
+        100% {
+          opacity: 0;
+          transform: scale(0.94);
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div
+      id="stage"
+      data-composition-id="ds-lower-third-pill"
+      data-timeline-locked
+      data-start="0"
+      data-duration="5"
+      data-fps="30"
+      data-width="1920"
+      data-height="1080"
+    >
+      <div class="ds-demo-bg"></div>
+      <div id="ds-pill" class="clip ds-pill" data-start="0" data-duration="5" data-track-index="1">
+        <span class="ds-dot"></span>
+        <p class="ds-label">Step 1 — Install the CLI</p>
+      </div>
+    </div>
+
+    <script>
+      /* Inert timeline stub. duration() returns the master length; no GSAP. */
+      window.__timelines = window.__timelines || {};
+      window.__timelines["ds-lower-third-pill"] = {
+        duration: function () {
+          return 5;
+        },
+        pause: function () {},
+      };
+    </script>
+  </body>
+</html>

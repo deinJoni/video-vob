@@ -15,6 +15,7 @@ const os = require("os");
 const { checkFfmpegAvailable } = require("./ffmpeg-runner.js");
 const { checkHyperframesAvailable, describeHyperframesInvocation, resolveBrowserGpuMode, renderWorkerArgs, checkRemoveBackgroundAvailable, resolveRemoveBgDevice } = require("./hyperframes-runner.js");
 const { checkAsrAvailable } = require("./asr-backend.js");
+const { checkFaceAvailable } = require("./face-backend.js");
 const { recommendedHeavyEncodeConcurrency } = require("./concurrency.js");
 const hostProfile = require("./host-profile.js");
 const { describeVideoTypes, resolveActiveVideoType } = require("./video-types.js");
@@ -84,6 +85,7 @@ function runDoctor({ projectId = null } = {}) {
   const hfInvocation = (() => { try { return describeHyperframesInvocation(); } catch { return null; } })();
   const asr = checkAsrAvailable();
   const removeBg = checkRemoveBackgroundAvailable();
+  const face = checkFaceAvailable();
 
   const workerArgs = renderWorkerArgs();
   const renderWorkers = workerArgs.length === 2 ? workerArgs[1] : "auto (hyperframes calibrates)";
@@ -146,6 +148,24 @@ function runDoctor({ projectId = null } = {}) {
     alignment_available: asr.alignment_available === true,
     alignment_backend: asr.alignment_backend || null,
     python: asr.python || null,
+  });
+
+  // face-detection (take-quality v3.9): an OPTIONAL backend that adds a face
+  // term to the per-segment strength score. Absent is the common case and NEVER
+  // a problem — the score just omits face — so ok:false is warn-only and never
+  // flips the doctor.
+  checks.push({
+    name: "face-detection",
+    level: level(face.ok, true),
+    detail: face.ok
+      ? `available: ${face.available_backends.join(", ")}; selected=${face.selected || "?"} — take-quality scores include a face term`
+      : (face.error || "no face-detection backend"),
+    recommendation: face.ok
+      ? null
+      : "OPTIONAL. INSPECT take-quality scores takes without it (delivery + exposure + sharpness). To add a face-presence term, `pip install opencv-python-headless` (bundled Haar cascade, no model download). Disable entirely with VOB_FACE_BACKEND=none.",
+    blocker: false,
+    backends: face.all_backends || [],
+    python: face.python || null,
   });
 
   // remove-background (subject compositing v3.3): the local matte model. A

@@ -21,7 +21,7 @@ A raw footage drop is internally mixed: a talking-head take pans away to the sub
 
 The orchestrator's spawn prompt is DATA-ONLY: a field list of paths and values, no instructions. A field whose value is the literal string `none` is absent. Read paths with `Read`:
 
-- **`segments_path`** → `inspect/segments.json`. `files[]`: `{ file_index, path, prior, has_video, has_audio, segments[] }`; each segment: `{ index, start_seconds, end_seconds, duration_seconds, is_silence, sources, transcript_text, word_count, has_speech, speech_rate_wpm, energy_rms_db, energy_peak_db, keyframe_path }`. **`index` is the `segment_index` you reference in your output; `file_index` is the file's index.**
+- **`segments_path`** → `inspect/segments.json`. `files[]`: `{ file_index, path, prior, has_video, has_audio, segments[] }`; each segment: `{ index, start_seconds, end_seconds, duration_seconds, is_silence, sources, transcript_text, word_count, has_speech, speech_rate_wpm, energy_rms_db, energy_peak_db, keyframe_path }` plus the v3.9 **take-quality** read: `luma_mean` (exposure), `sharpness`, `clean_fraction`, `face`, and `strength.{score (0–1), tier (strong|usable|weak), flags[]}` (a composite of all of those). **`index` is the `segment_index` you reference in your output; `file_index` is the file's index.**
 - **`manifest_path`** → per-file `{ prior, has_video, has_audio, container, resolution, fps, duration_seconds }`. `prior` is a stream-layout hint: `"narration"` (audio-only → voiceover spine), `"broll"` (silent video → coverage), `null` (decide from content).
 - **`transcript_path`** (when present) → word-level `{ text, start, end }`; each segment's `transcript_text` is already its window's words.
 - **`per_file_transcripts_dir`** (multi-file drops) → `inspect/transcripts/file_<i>.json`, one word-level transcript per speech-bearing file — read it when you need file *i*'s words specifically.
@@ -68,7 +68,7 @@ Tag hook candidates: set `hook_candidate: true` plus a one-line `hook_reason` on
 
 People re-record the same line. Cluster A-roll segments whose `transcript_span` covers the **same content** (the same sentence/phrase, re-delivered) into a take group:
 - Give every member of a cluster the same `take_group` string (e.g. `"take-1"`, `"take-2"`, ... — unique per cluster).
-- Pick the **best take** automatically: prefer a complete sentence over a cut-off one, the fewest filler words ("um", "uh", "like", false starts), and the cleanest delivery you can infer from the transcript. Set `is_best_take: true` on the keeper and `is_best_take: false` on the alternates.
+- Pick the **best take** automatically: prefer a complete sentence over a cut-off one, the fewest filler words ("um", "uh", "like", false starts), and the cleanest delivery you can infer from the transcript. Lean on the per-segment **`strength.score`** (segments.json) as a quantitative prior — it already weighs delivery energy, pace, filler-freedom, focus and exposure — and let the keeper's higher score (and the alternates' `flags`: `low_energy`/`soft_focus`/`filler_heavy`/…) confirm the call. Your frame read still wins on a tie. Set `is_best_take: true` on the keeper and `is_best_take: false` on the alternates.
 - **Keep the alternates** in the pool (don't discard them) — the user can override the take choice at the plan gate.
 - A segment with no duplicate is its own trivial group: `take_group: null` (or a singleton group), `is_best_take: true`.
 

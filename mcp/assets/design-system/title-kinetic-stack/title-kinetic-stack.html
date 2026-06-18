@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=1080, height=1920" />
+    <title>title-kinetic-stack</title>
+
+    <!-- ========================================================================
+         video-vob design-system REFERENCE component — title-kinetic-stack
+         An energetic vertical (9:16) social title.
+
+         Three short stacked lines in heavy condensed caps, each SLAMMING in fast
+         one after another (staggered via data-start ~0 / 0.12 / 0.24), the MIDDLE
+         line in the accent color. Fast-snap easing, upper-third placement.
+
+         Render contract (shared by every design-system component):
+         1. PURE CSS @keyframes — never GSAP. window.__timelines is a no-op stub.
+         2. STAGGER WITH data-start, NEVER animation-delay. The three lines are
+            three class="clip" elements at increasing data-start — that IS the
+            stagger; their @keyframes are identical.
+         3. COLORS via --vob-* tokens with a literal fallback.
+         4. FONTS = a concrete auto-resolved kit family, NO var() in font-family,
+            NO font <link>/@import.
+         5. Every timed element: class="clip" + id + data-start + data-duration +
+            data-track-index; animation-duration == data-duration; both; paused.
+         ===================================================================== -->
+
+    <style>
+      :root {
+        --vob-bg: #08080b;
+        --vob-surface: #14141a;
+        --vob-text: #ffffff;
+        --vob-text-muted: #b8b8c0;
+        --vob-accent: #ff2d55;
+        --vob-accent-2: #ffd60a;
+        --vob-safe-top: 200px;
+        --vob-safe-bottom: 280px;
+      }
+      *,
+      *::before,
+      *::after {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        width: 1080px;
+        height: 1920px;
+        margin: 0;
+        overflow: hidden;
+        background: transparent;
+      }
+      #stage {
+        position: relative;
+        width: 1080px;
+        height: 1920px;
+        overflow: hidden;
+        background: var(--vob-bg, #08080b);
+      }
+      /* Demo backdrop — stands in for the video spine; dropped in the real comp. */
+      .ds-demo-bg {
+        position: absolute;
+        inset: 0;
+        z-index: 0;
+        background:
+          linear-gradient(180deg, rgba(0, 0, 0, 0.6) 0%, rgba(0, 0, 0, 0.05) 40%, rgba(0, 0, 0, 0.55) 100%),
+          radial-gradient(120% 70% at 50% 26%, #2a2230 0%, #15121a 56%, #08070b 100%);
+      }
+      .ds-stack {
+        position: absolute;
+        left: 72px;
+        right: 72px;
+        top: var(--vob-safe-top, 200px);
+        z-index: 2;
+      }
+      .ds-line {
+        font-family: "League Gothic", "Oswald", sans-serif;
+        font-weight: 400;
+        text-transform: uppercase;
+        font-size: 150px;
+        line-height: 0.86;
+        letter-spacing: 0.004em;
+        color: var(--vob-text, #ffffff);
+        margin: 0;
+        transform-origin: 0% 100%;
+        text-shadow: 0 8px 30px rgba(0, 0, 0, 0.5);
+        animation-name: vob-line-slam;
+        animation-timing-function: linear;
+        animation-fill-mode: both;
+        animation-play-state: paused;
+        will-change: transform, opacity;
+      }
+      .ds-line-1 {
+        animation-duration: 4s;
+      }
+      .ds-line-2 {
+        color: var(--vob-accent, #ff2d55);
+        animation-duration: 3.88s;
+      }
+      .ds-line-3 {
+        animation-duration: 3.76s;
+      }
+      @keyframes vob-line-slam {
+        0% {
+          opacity: 0;
+          transform: translateY(40px) scaleY(1.14) scaleX(0.97);
+          animation-timing-function: cubic-bezier(0.2, 0.9, 0.2, 1);
+        }
+        8% {
+          opacity: 1;
+          transform: translateY(0) scaleY(1) scaleX(1);
+        }
+        91% {
+          opacity: 1;
+          transform: translateY(0) scaleY(1) scaleX(1);
+          animation-timing-function: cubic-bezier(0.5, 0, 0.75, 0);
+        }
+        100% {
+          opacity: 0;
+          transform: translateY(-22px) scaleY(0.98);
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div
+      id="stage"
+      data-composition-id="ds-title-kinetic-stack"
+      data-timeline-locked
+      data-start="0"
+      data-duration="4"
+      data-fps="30"
+      data-width="1080"
+      data-height="1920"
+    >
+      <div class="ds-demo-bg"></div>
+      <div class="ds-stack">
+        <h1 id="ds-line-1" class="clip ds-line ds-line-1" data-start="0" data-duration="4" data-track-index="1">Stop</h1>
+        <h1 id="ds-line-2" class="clip ds-line ds-line-2" data-start="0.12" data-duration="3.88" data-track-index="2">Scrolling</h1>
+        <h1 id="ds-line-3" class="clip ds-line ds-line-3" data-start="0.24" data-duration="3.76" data-track-index="3">Right now</h1>
+      </div>
+    </div>
+
+    <script>
+      /* Inert timeline stub — the render driver calls duration()/pause()
+         unconditionally; a pure-CSS component loads no GSAP. */
+      window.__timelines = window.__timelines || {};
+      window.__timelines["ds-title-kinetic-stack"] = {
+        duration: function () {
+          return 4;
+        },
+        pause: function () {},
+      };
+    </script>
+  </body>
+</html>

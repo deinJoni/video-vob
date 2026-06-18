@@ -41,9 +41,9 @@ const PROJECT_ID = process.env.VOB_WALKER_PROJECT || "dji-aerial";
 // video file ≥15s via VOB_WALKER_SOURCE:
 //   VOB_WALKER_SOURCE=/path/to/clip.mp4 node scripts/m5-walker.js [phase]
 const SOURCE = process.env.VOB_WALKER_SOURCE || "";
-// `stillsqc` (synthetic test stills) and `spans` (a source-free lint harness)
-// need no source video — every other phase lays out a fixture against a real clip.
-if (!SOURCE && process.argv[2] !== "stillsqc" && process.argv[2] !== "spans") {
+// `stillsqc` (synthetic test stills), `spans`, `editorial`, and `takequality`
+// (source-free unit harnesses) need no source video — every other phase lays out a fixture against a real clip.
+if (!SOURCE && !["stillsqc", "spans", "editorial", "takequality"].includes(process.argv[2])) {
   console.error(
     "m5-walker: set VOB_WALKER_SOURCE to a video file or directory, e.g.\n" +
     "  VOB_WALKER_SOURCE=/path/to/clip.mp4 node scripts/m5-walker.js [phase]",
@@ -3111,6 +3111,210 @@ async function runSpans() {
   console.log("\n=== spans/feasibility: all lint negative paths verified");
 }
 
+// v3.9 `takequality` walker phase — the per-segment take-quality / strength
+// scoring engine (turn delivery energy + speech-rate + cleanliness + the cheap
+// visual heuristics into a 0–1 strength so the storyboarder picks the BEST take,
+// not just a spoken one). A source-free unit harness (pure scorer + the visual
+// metadata parser + the digest section); deterministic, model-free, no ffmpeg /
+// python / opencv needed (the real visual + face extraction degrade-tested live).
+async function runTakeQuality() {
+  console.log("=== v3.9 takequality walker (per-segment strength scoring) — source-free unit harness");
+  const tq = require("../mcp/lib/take-quality.js");
+  const { parseVisualMeta } = require("../mcp/lib/visual-quality.js");
+  const { buildInspectDigest } = require("../mcp/lib/inspect-digest.js");
+
+  await step("strong > weak ordering + tiers + flags", () => {
+    let segs = [
+      { index: 0, is_silence: false, has_speech: true, duration_seconds: 3, start_seconds: 0, end_seconds: 3, energy_rms_db: -14, speech_rate_wpm: 155, sharpness: 0.45, luma_mean: 120 },
+      { index: 1, is_silence: false, has_speech: true, duration_seconds: 3, start_seconds: 3, end_seconds: 6, energy_rms_db: -16, speech_rate_wpm: 150, sharpness: 0.40, luma_mean: 110 },
+      { index: 2, is_silence: false, has_speech: true, duration_seconds: 3, start_seconds: 6, end_seconds: 9, energy_rms_db: -18, speech_rate_wpm: 140, sharpness: 0.35, luma_mean: 100 },
+      { index: 3, is_silence: false, has_speech: true, duration_seconds: 3, start_seconds: 9, end_seconds: 12, energy_rms_db: -30, speech_rate_wpm: 38, sharpness: 0.08, luma_mean: 14, clean_fraction: 0.2 },
+      { index: 4, is_silence: true, has_speech: false, duration_seconds: 1, start_seconds: 12, end_seconds: 13 },
+    ];
+    segs = tq.attachTakeStrength(segs);
+    assert(segs[0].strength.score > segs[3].strength.score, "strong must outscore weak");
+    assert(segs[0].strength.tier === "strong", `seg0 tier ${segs[0].strength.tier}`);
+    assert(segs[3].strength.tier === "weak", `seg3 tier ${segs[3].strength.tier}`);
+    assert(segs[4].strength === null, "silence → strength null");
+    for (const f of ["low_energy", "halting", "underexposed", "soft_focus", "filler_heavy"]) {
+      assert(segs[3].strength.flags.includes(f), `weak take missing flag ${f}`);
+    }
+  });
+
+  await step("fail-safe: no audio + no visual → delivery-only / null, never throws", () => {
+    let bare = [{ index: 0, is_silence: false, has_speech: true, duration_seconds: 3, start_seconds: 0, end_seconds: 3, energy_rms_db: null, speech_rate_wpm: 150, sharpness: null, luma_mean: null }];
+    bare = tq.attachTakeStrength(bare);
+    assert(bare[0].strength && typeof bare[0].strength.score === "number", "delivery-only score from pace alone");
+    assert(bare[0].strength.visual === null, "no visual → visual null");
+    let nothing = [{ index: 0, is_silence: false, has_speech: false, duration_seconds: 2, start_seconds: 0, end_seconds: 2, energy_rms_db: null, speech_rate_wpm: null, sharpness: null, luma_mean: null }];
+    nothing = tq.attachTakeStrength(nothing);
+    assert(nothing[0].strength === null, "nothing measurable → strength null (no throw)");
+  });
+
+  await step("cleanliness from removed spans (winner-file speech only)", () => {
+    const removed = [{ start: 9.2, end: 11.6, reason: "dead_air" }];
+    const segs = tq.attachCleanliness([
+      { index: 0, is_silence: false, has_speech: true, duration_seconds: 3, start_seconds: 0, end_seconds: 3 },
+      { index: 1, is_silence: false, has_speech: true, duration_seconds: 3, start_seconds: 9, end_seconds: 12 },
+      { index: 2, is_silence: false, has_speech: false, duration_seconds: 3, start_seconds: 6, end_seconds: 9 },
+    ], removed);
+    assert(segs[0].clean_fraction === 1, "untouched speech → 1.0");
+    assert(segs[1].clean_fraction < 0.3, `dead-air-heavy → low, got ${segs[1].clean_fraction}`);
+    assert(segs[2].clean_fraction === null, "non-speech → null cleanliness");
+    const none = tq.attachCleanliness([{ index: 0, is_silence: false, has_speech: true, duration_seconds: 3, start_seconds: 0, end_seconds: 3 }], null);
+    assert(none[0].clean_fraction === null, "no clean_speech → null");
+  });
+
+  await step("optional face term: present vs absent (no_face flag)", () => {
+    let segs = [
+      { index: 0, is_silence: false, has_speech: true, duration_seconds: 3, start_seconds: 0, end_seconds: 3, energy_rms_db: -15, speech_rate_wpm: 150, sharpness: 0.4, luma_mean: 120, face: { present: true, count: 1, area_frac: 0.2, centered: true } },
+      { index: 1, is_silence: false, has_speech: true, duration_seconds: 3, start_seconds: 3, end_seconds: 6, energy_rms_db: -16, speech_rate_wpm: 145, sharpness: 0.38, luma_mean: 118, face: { present: false, count: 0, area_frac: null, centered: null } },
+    ];
+    segs = tq.attachTakeStrength(segs);
+    assert(segs[0].strength.components.face === 1, `present+sized+centered → 1.0, got ${segs[0].strength.components.face}`);
+    assert(!segs[0].strength.flags.includes("no_face"), "face present → no no_face flag");
+    assert(segs[1].strength.flags.includes("no_face"), "face absent on speech → no_face flag");
+    assert(segs[1].strength.components.face < segs[0].strength.components.face, "absent face scores lower");
+    // null face backend → component omitted, no flag
+    let nullface = tq.attachTakeStrength([{ index: 0, is_silence: false, has_speech: true, duration_seconds: 3, start_seconds: 0, end_seconds: 3, energy_rms_db: -15, speech_rate_wpm: 150, sharpness: 0.4, luma_mean: 120, face: null }]);
+    assert(nullface[0].strength.components.face === null, "null face → component null");
+    assert(!nullface[0].strength.flags.includes("no_face"), "null face → no no_face flag (advisory)");
+  });
+
+  await step("disabled knob → strength null (field stays present)", () => {
+    process.env.VOB_TAKE_QUALITY = "off";
+    const off = tq.attachTakeStrength([{ index: 0, is_silence: false, has_speech: true, duration_seconds: 3, start_seconds: 0, end_seconds: 3, energy_rms_db: -14, speech_rate_wpm: 150 }]);
+    assert(off[0].strength === null, "VOB_TAKE_QUALITY=off → strength null");
+    delete process.env.VOB_TAKE_QUALITY;
+  });
+
+  await step("visual metadata parse (blurdetect + signalstats)", () => {
+    const sample = "frame:0 pts:0 pts_time:0\nlavfi.blur=4.298638\nlavfi.signalstats.YMIN=0\nlavfi.signalstats.YAVG=126.1\nlavfi.signalstats.YMAX=236\n";
+    const m = parseVisualMeta(sample);
+    assert(m.yavg === 126.1 && m.ymax === 236 && m.ymin === 0, `signalstats parse: ${JSON.stringify(m)}`);
+    assert(Math.abs(m.blur - 4.298638) < 1e-6, `blur parse: ${m.blur}`);
+    const exposureOnly = parseVisualMeta("lavfi.signalstats.YAVG=80\nlavfi.signalstats.YMIN=10\nlavfi.signalstats.YMAX=200\n");
+    assert(exposureOnly.blur === null && exposureOnly.yavg === 80, "missing blur → null, exposure still parses");
+  });
+
+  await step("summary + digest § Strongest takes", () => {
+    let segs = tq.attachTakeStrength([
+      { index: 0, file_index: 0, is_silence: false, has_speech: true, duration_seconds: 3, start_seconds: 0, end_seconds: 3, energy_rms_db: -14, speech_rate_wpm: 155, sharpness: 0.45, luma_mean: 120 },
+      { index: 1, file_index: 0, is_silence: false, has_speech: true, duration_seconds: 3, start_seconds: 3, end_seconds: 6, energy_rms_db: -30, speech_rate_wpm: 40, sharpness: 0.08, luma_mean: 14, clean_fraction: 0.2 },
+    ]);
+    const fileSummaries = [{ file_index: 0, path: "/x.mp4", segments: segs }];
+    const summary = { ...tq.summarizeTakeQuality(fileSummaries), visual_backend: "blurdetect", face_backend: "opencv" };
+    assert(summary.scored_segments === 2, `scored ${summary.scored_segments}`);
+    assert(summary.strongest[0].score >= summary.strongest[summary.strongest.length - 1].score, "strongest sorted desc");
+    const md = buildInspectDigest({ projectId: "tq", generatedAt: "x", manifestFiles: [{ path: "/x.mp4" }], fileSummaries, strips: {}, thumbs: {}, takeQuality: summary });
+    assert(md.includes("## Strongest takes"), "digest missing Strongest takes section");
+    assert(/\| seg \| span \| dur \| type \| energy \| wpm \| take \| words \|/.test(md), "segment table missing take column");
+    // null take-quality → n/a, no throw
+    const md2 = buildInspectDigest({ projectId: "tq2", generatedAt: "x", manifestFiles: [], fileSummaries: [], strips: {}, thumbs: {}, takeQuality: null });
+    assert(md2.includes("## Strongest takes") && md2.includes("n/a"), "null takeQuality → n/a section");
+  });
+
+  console.log("\n=== takequality: all strength-scoring paths verified");
+}
+
+// ---------------------------------------------------------------------------
+// v3.9 `editorial` walker phase — the hook-GROUNDING lints that make the INSPECT
+// signals load-bearing: PLAN_HOOK_NOT_GROUNDED (opening window overlaps no
+// top-ranked hook candidate) and PLAN_OPENING_LOW_ENERGY (opening drawn from a
+// quiet span while louder material exists). A source-free unit harness — calls
+// lintStoryboardPlan directly with a synthetic summary.json (hook_candidates +
+// transcribed_file_index) and segments.json (per-segment energy_rms_db) ctx — so
+// the negative paths are deterministic, model-free, and a permanent regression
+// test. Isolates each code, the retention gate, and the cross-file / missing-
+// signal fail-safes.
+async function runEditorial() {
+  console.log("=== v3.9 editorial walker (hook-grounding lint negative paths) — source-free unit harness");
+  const { lintStoryboardPlan, validateStoryboardContent } = require("../mcp/lib/storyboard-schema.js");
+  const codesOf = (r) => r.errors.concat(r.warnings).map((f) => f.code);
+  const clip = (i, o, fi = 0) => ({ manifest_file_index: fi, source_path: "/x.mp4", in_seconds: i, out_seconds: o, role: "a_roll" });
+  // A hook scene drawing [inS,outS] from file `fi`, plus two distinct later beats
+  // (kept off the hook's source seconds so no PLAN_CLIP_SPAN_OVERLAP noise).
+  const hookSb = (inS, outS, fi = 0) => ({
+    schema_version: "1.2",
+    scenes: [
+      { scene_id: "s1", sequence: 1, purpose: "hook", target_duration_seconds: 2, summary: "s", source_clips: [clip(inS, outS, fi)], overlays: [], captions: null, pacing: "fast" },
+      { scene_id: "s2", sequence: 2, purpose: "beat", target_duration_seconds: 3, summary: "s", source_clips: [clip(20, 23)], overlays: [], captions: null, pacing: "medium" },
+      { scene_id: "s3", sequence: 3, purpose: "payoff", target_duration_seconds: 3, summary: "s", source_clips: [clip(30, 33)], overlays: [], captions: null, pacing: "medium" },
+    ],
+  });
+  // Synthetic INSPECT signals: 3 ranked candidates on the winner file (0). Energy
+  // is laid out so the rank-1 candidate sits in a QUIET span and rank-2 in a
+  // normal one — letting us isolate grounding from energy. sorted energies
+  // [-30,-13,-13,-12] => median -13, fileMax -12.
+  const summary = { transcribed_file_index: 0, hook_candidates: [
+    { rank: 1, score: 5, start_seconds: 0.5, end_seconds: 2.5, text: "the one mistake that cost me forty grand", signals: ["claim"] },
+    { rank: 2, score: 3, start_seconds: 3.2, end_seconds: 5.0, text: "and then it got worse" },
+    { rank: 3, score: 2, start_seconds: 9.0, end_seconds: 11.0, text: "here is the fix" },
+  ] };
+  const segments = { files: [{ file_index: 0, segments: [
+    { index: 0, start_seconds: 0, end_seconds: 3, is_silence: false, energy_rms_db: -30, speech_rate_wpm: 150 },
+    { index: 1, start_seconds: 3, end_seconds: 6, is_silence: false, energy_rms_db: -13, speech_rate_wpm: 160 },
+    { index: 2, start_seconds: 6, end_seconds: 9, is_silence: false, energy_rms_db: -12, speech_rate_wpm: 170 },
+    { index: 3, start_seconds: 9, end_seconds: 12, is_silence: false, energy_rms_db: -13, speech_rate_wpm: 160 },
+  ] }] };
+  const ctx = { summary, segments };
+  const G = "PLAN_HOOK_NOT_GROUNDED", E = "PLAN_OPENING_LOW_ENERGY";
+
+  await step("clean — hook on a candidate in a normal-energy span fires neither", () => {
+    const codes = codesOf(lintStoryboardPlan(hookSb(3.3, 4.8), ctx));
+    assert(!codes.includes(G) && !codes.includes(E), `clean hook flagged: ${codes.filter((c) => c === G || c === E)}`);
+  });
+
+  await step("PLAN_OPENING_LOW_ENERGY — grounded but on a quiet span (isolated)", () => {
+    const codes = codesOf(lintStoryboardPlan(hookSb(0.6, 2.4), ctx)); // overlaps cand-1; seg energy -30
+    assert(codes.includes(E), "low-energy open not flagged");
+    assert(!codes.includes(G), "grounded hook wrongly flagged not-grounded");
+  });
+
+  await step("PLAN_HOOK_NOT_GROUNDED — off every top candidate, normal energy (isolated)", () => {
+    const codes = codesOf(lintStoryboardPlan(hookSb(5.1, 5.9), ctx)); // overlaps no candidate; seg energy -13
+    assert(codes.includes(G), "off-candidate hook not flagged");
+    assert(!codes.includes(E), "normal-energy open wrongly flagged low-energy");
+  });
+
+  await step("retention-gate — both suppressed under a non-retention ruleset", () => {
+    const gated = { lintRules: { disabled: new Set([G, E]) }, summary, segments };
+    assert(!codesOf(lintStoryboardPlan(hookSb(0.6, 2.4), gated)).includes(E), "low-energy fired while gated off");
+    assert(!codesOf(lintStoryboardPlan(hookSb(5.1, 5.9), gated)).includes(G), "not-grounded fired while gated off");
+  });
+
+  await step("cross-file fail-safe — opening clip from a non-winner file is skipped", () => {
+    const codes = codesOf(lintStoryboardPlan(hookSb(5.1, 5.9, 1), ctx)); // file 1 != transcribed_file_index 0
+    assert(!codes.includes(G) && !codes.includes(E), `cross-file opening flagged: ${codes.filter((c) => c === G || c === E)}`);
+  });
+
+  await step("missing-signal fail-safe — no summary/segments => no warning, no crash", () => {
+    const codes = codesOf(lintStoryboardPlan(hookSb(5.1, 5.9), {}));
+    assert(!codes.includes(G) && !codes.includes(E), "fired with no INSPECT signals present");
+  });
+
+  // Loader path — exercise the REAL disk read (loadInspectSummary / loadSegments)
+  // via validateStoryboardContent, not just direct ctx injection, so the loader +
+  // ctx-assembly stay covered (default state => social-short => retention => active).
+  await step("loader path — validateStoryboardContent reads summary.json + segments.json from disk", () => {
+    const os = require("os"), pth = require("path");
+    const dir = fs.mkdtempSync(pth.join(os.tmpdir(), "vob39ed-"));
+    try {
+      fs.writeFileSync(pth.join(dir, "summary.json"), JSON.stringify(summary));
+      fs.writeFileSync(pth.join(dir, "segments.json"), JSON.stringify(segments));
+      const state = { project_id: "ed", inspect: { summary_path: pth.join(dir, "summary.json"), segments_path: pth.join(dir, "segments.json") }, intent: { answers: {} } };
+      assert(codesOf(validateStoryboardContent(hookSb(0.6, 2.4), state)).includes(E), "loader path: low-energy open not flagged via disk");
+      assert(codesOf(validateStoryboardContent(hookSb(5.1, 5.9), state)).includes(G), "loader path: not-grounded open not flagged via disk");
+      const clean = codesOf(validateStoryboardContent(hookSb(3.3, 4.8), state));
+      assert(!clean.includes(G) && !clean.includes(E), `loader path: clean hook flagged (${clean.filter((c) => c === G || c === E)})`);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  console.log("\n=== editorial: hook-grounding lint negative paths verified");
+}
+
 async function main() {
   const phase = process.argv[2] || "all";
   if (phase === "stillsqc") {
@@ -3155,6 +3359,14 @@ async function main() {
   }
   if (phase === "spans") {
     await runSpans();
+    return;
+  }
+  if (phase === "editorial") {
+    await runEditorial();
+    return;
+  }
+  if (phase === "takequality") {
+    await runTakeQuality();
     return;
   }
   console.log(`=== M5 walker v2 — phase: ${phase} — project: ${PROJECT_ID}`);

@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=1920, height=1080" />
+    <title>grade-teal-orange</title>
+
+    <!-- ========================================================================
+         video-vob design-system REFERENCE GRADE — grade-teal-orange
+         The classic cinematic teal-shadows / orange-highlights "film" look.
+
+         HOW THE COMPOSER REALIZES A GRADE (two parts):
+           (a) Apply this CSS filter to the scene clip element (the video):
+                 filter: contrast(1.08) saturate(1.12);
+           (b) Add the overlay layers below as full-frame "clip" divs on tracks
+                 ABOVE the video (each its own track, distinct track-index):
+                 • OVERLAY 1 — teal shadows: a teal vertical gradient weighted to
+                   the lower/shadow third, mix-blend-mode: multiply, low opacity.
+                   Pushes shadows toward cyan/teal.
+                 • OVERLAY 2 — orange highlights: a warm-amber gradient weighted to
+                   the upper/highlight band, mix-blend-mode: soft-light, low
+                   opacity. Pushes highlights toward orange. The split-tone seam is
+                   what reads as "cinematic".
+                 Both overlays gently fade in over ~0.4s.
+
+         In this STANDALONE reference the filter wraps a rich, photo-like
+         .ds-demo-bg (a lit subject against sky, with a darker foreground) so the
+         split-tone is visible; the two blend overlays ride on top exactly as in
+         the real composition.
+
+         Render contract (shared by every design-system component):
+         1. PURE CSS keyframes — never GSAP. window.__timelines is a no-op stub.
+         2. STAGGER WITH the start attribute, NEVER animation-delay (the runtime
+            hijacks animation-delay to scrub a paused animation to each frame).
+         3. Each timed overlay is a "clip" with id + start + duration + a DISTINCT
+            track-index per time-overlapping layer; anim-duration == duration.
+         4. Grades are imagery — no fonts needed.
+         ===================================================================== -->
+
+    <style>
+      *,
+      *::before,
+      *::after {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        width: 1920px;
+        height: 1080px;
+        margin: 0;
+        overflow: hidden;
+        background: transparent;
+      }
+      #stage {
+        position: relative;
+        width: 1920px;
+        height: 1080px;
+        overflow: hidden;
+        background: #000;
+      }
+      /* Graded layer — filter rides the scene video in the real comp. */
+      .ds-grade-wrap {
+        position: absolute;
+        inset: 0;
+        z-index: 0;
+        filter: contrast(1.08) saturate(1.12);
+      }
+      /* Photo-like scene with real tonal range: bright sky, warm lit subject,
+         dark grounded foreground — so the split-tone has shadows AND highlights
+         to act on. */
+      .ds-demo-bg {
+        position: absolute;
+        inset: 0;
+        background:
+          radial-gradient(40% 52% at 44% 50%, rgba(255, 222, 184, 0.5) 0%, rgba(160, 96, 58, 0.14) 46%, rgba(0, 0, 0, 0) 70%),
+          linear-gradient(0deg, rgba(8, 10, 14, 0.95) 0%, rgba(20, 26, 32, 0.4) 26%, rgba(0, 0, 0, 0) 48%),
+          linear-gradient(192deg, #a9d4ea 0%, #cfe0e6 16%, #e9cda4 44%, #a87a55 68%, #2c2420 100%);
+      }
+      /* OVERLAY 1 — teal shadows (multiply, lower-weighted). The settled opacity
+         lives in the 100% keyframe (fill-mode both holds it after the fade-in). */
+      .ds-teal {
+        position: absolute;
+        inset: 0;
+        z-index: 2;
+        mix-blend-mode: multiply;
+        background: linear-gradient(
+          0deg,
+          rgba(8, 92, 104, 0.95) 0%,
+          rgba(18, 110, 120, 0.7) 28%,
+          rgba(40, 130, 140, 0.22) 56%,
+          rgba(120, 170, 175, 0) 82%
+        );
+        animation-name: vob-teal-in;
+        animation-duration: 0.4s;
+        animation-timing-function: ease-out;
+        animation-fill-mode: both;
+        animation-play-state: paused;
+      }
+      /* OVERLAY 2 — orange highlights (soft-light, upper-weighted). */
+      .ds-orange {
+        position: absolute;
+        inset: 0;
+        z-index: 3;
+        mix-blend-mode: soft-light;
+        background: linear-gradient(
+          188deg,
+          rgba(255, 170, 70, 0.95) 0%,
+          rgba(255, 150, 60, 0.6) 26%,
+          rgba(255, 140, 60, 0.16) 52%,
+          rgba(255, 150, 70, 0) 78%
+        );
+        animation-name: vob-orange-in;
+        animation-duration: 0.4s;
+        animation-timing-function: ease-out;
+        animation-fill-mode: both;
+        animation-play-state: paused;
+      }
+      @keyframes vob-teal-in {
+        0% {
+          opacity: 0;
+        }
+        100% {
+          opacity: 0.42;
+        }
+      }
+      @keyframes vob-orange-in {
+        0% {
+          opacity: 0;
+        }
+        100% {
+          opacity: 0.55;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div
+      id="stage"
+      data-composition-id="ds-grade-teal-orange"
+      data-timeline-locked
+      data-start="0"
+      data-duration="4"
+      data-fps="30"
+      data-width="1920"
+      data-height="1080"
+    >
+      <div class="ds-grade-wrap">
+        <div class="ds-demo-bg"></div>
+      </div>
+      <div id="ds-teal" class="clip ds-teal" data-start="0" data-duration="4" data-track-index="1"></div>
+      <div id="ds-orange" class="clip ds-orange" data-start="0" data-duration="4" data-track-index="2"></div>
+    </div>
+
+    <script>
+      /* Inert timeline stub — render driver calls duration()/pause(); no GSAP. */
+      window.__timelines = window.__timelines || {};
+      window.__timelines["ds-grade-teal-orange"] = {
+        duration: function () {
+          return 4;
+        },
+        pause: function () {},
+      };
+    </script>
+  </body>
+</html>
