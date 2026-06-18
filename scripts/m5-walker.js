@@ -1169,15 +1169,23 @@ async function runGeneral() {
       `unexpected long-form preset digest: ${JSON.stringify(v)}`);
   });
 
-  // 1b. Guided-INTENT optional keys (design_language / pacing_intent / hook_intent):
-  //     recordable as plain free-text, NEVER gate (absent from missing_required_keys),
-  //     and ride through the summary's intent.answers verbatim so PLAN/COMPOSE read them.
+  // 1b. Guided-INTENT optional keys (design_language / pacing_intent / hook_intent / broll_intent
+  //     + v3.7 creative knobs caption_animation_intent / editorial_intent / speed_intent /
+  //     transition_intent / layout_intent): recordable as plain free-text, NEVER gate (absent from
+  //     missing_required_keys), and ride through the summary's intent.answers verbatim so the
+  //     PLAN storyboarder spawn reads them.
   await step("optional guided-intent keys record, never gate, ride through", async () => {
     const guided = {
       design_language: "headline Anton; captions Inter 900; bg #000 / text #FFF / accent #FF3B30; bold-pop ALL-CAPS captions",
       pacing_intent: "fast, tighter on the back half",
       hook_intent: "open on the result at 1:10",
       broll_intent: "illustrative — cut away when it depicts the point",
+      // v3.7 creative knobs — same free-text / never-gate / thread-through contract.
+      caption_animation_intent: "karaoke word-by-word highlight",
+      editorial_intent: "tighten — snap cuts to clean-speech keep-spans, drop the ums",
+      speed_intent: "light ~1.25x on slow stretches",
+      transition_intent: "punchy whip-pans between shots",
+      layout_intent: "split-screen 2-up for the reaction moments",
     };
     for (const [k, v] of Object.entries(guided)) {
       const rec = await call("vob_record_intent_answer", { project_id: GEN, key: k, value: v });

@@ -43,6 +43,39 @@ const AUDIO_TREATMENT_VALUES = Object.freeze([
 //                         or "use only A-roll"); the storyboarder's cutaway-density
 //                         and gap-declaration target. Grounded by INSPECT's P3
 //                         file_roles[] + b_roll_role tags (propose realistic coverage).
+// v3.7 — the clarifying-question framework's creative knobs (the same guided
+// surface: PROPOSE-from-evidence, confirm, override). Consumer STRENGTH varies —
+// "user-steerable" means "the storyboarder/composer MAY honor it"; only speed/
+// layout HARD-materialize. Be honest about advisory vs binding:
+//   - `caption_animation_intent` — how burned captions animate (pop | word-by-word |
+//                         karaoke; "static"/"none" ⇒ the storyboarder OMITS `animation`,
+//                         there is no `static` token). ADVISORY: biases
+//                         `caption_segments[].animation`; the composer MAY honor it. Word-level
+//                         (karaoke/word-by-word) is downgraded to `pop` by the storyboarder/
+//                         composer when transcript_aligned !== true — the engine only WARNS
+//                         (PLAN_CAPTION_KARAOKE_UNALIGNED), it does not rewrite the animation.
+//   - `editorial_intent` — whether to snap A-roll cuts to clean-speech keep-spans
+//                         (tighten / keep natural). ADVISORY, NO storyboard field: it changes only
+//                         the storyboarder's snap CHOICE in prose. It does NOT alter the
+//                         PLAN_CLIP_STRADDLES_REMOVED_SPAN warning (that keys off clean_speech.json
+//                         + the preset editorial.clean_cut, never this key). Under clean_cut=false
+//                         (cinematic) an explicit "tighten" is surfaced as a conflict at the gate,
+//                         not silently applied. (Filler-WORD aggressiveness is NOT steerable — it
+//                         runs in INSPECT before INTENT; out of scope.)
+//   - `speed_intent`     — appetite for speeding up slow/over-long speech (light ~1.25x |
+//                         aggressive | natural | slo-mo). HARD: biases source_clips[].speed, baked
+//                         into the clip at COMPOSE (ffmpeg setpts/atempo); validated by
+//                         PLAN_DURATION_INFEASIBLE. The most reliably-honored of the five.
+//   - `transition_intent`— the scene-transition feel (punchy/whip/zoom | gentle dissolves |
+//                         hard cuts | dip at seams). Biases scene.transition_in from the preset
+//                         transition_vocabulary (fail-safe: an unknown type falls back to a hard
+//                         cut + PLAN_TRANSITION_UNKNOWN_TYPE). STRUCTURAL consumer = render-plan
+//                         glue packing; the visual realization is composer CSS (advisory at QC).
+//   - `layout_intent`    — split-screen / multi-cam appetite (none | split | pip | 2x2 grid),
+//                         gated on >=2 source angles. HARD: enables scene.layout, pre-composited to
+//                         ONE clip at COMPOSE (layout-materialize.js, costs one <video>); degrades
+//                         to CSS-positioned cells. `pip` here = scene.layout pip, NOT an overlay
+//                         pip nor a b_roll render_mode pip.
 // All but video_type stay plain free-text (no server canonicalization) — the
 // storyboarder/composer interpret them, the engine never parses them.
 const OPTIONAL_INTENT_KEYS = Object.freeze([
@@ -51,6 +84,12 @@ const OPTIONAL_INTENT_KEYS = Object.freeze([
   "pacing_intent",
   "hook_intent",
   "broll_intent",
+  // v3.7 clarifying-question creative knobs (free-text, never-gating).
+  "caption_animation_intent",
+  "editorial_intent",
+  "speed_intent",
+  "transition_intent",
+  "layout_intent",
 ]);
 
 const ALL_INTENT_KEYS = Object.freeze([

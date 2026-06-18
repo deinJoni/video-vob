@@ -8,15 +8,28 @@ ask only what you genuinely can't infer — batched.
 
 **This is the ONE human-input round.** Everything a later phase would otherwise ask the human
 (the look, the pacing, the opening) or silently guess, you capture or PROPOSE here so PLAN /
-COMPOSE / RENDER never have to bounce back. Beyond the five required keys you also confirm a
-handful of OPTIONAL keys (`video_type`, `design_language`, `pacing_intent`, `hook_intent`) — each
-PROPOSED from evidence, never blank-asked, and each genuinely overridable. They never gate
-(they never appear in `missing_required_keys`); their value is that they pre-decide what would
-otherwise surface as a revision at PREVIEW.
+COMPOSE / RENDER never have to bounce back. INTENT is driven by a **fixed, mode-aware
+clarifying-question catalog** — `references/clarifying-questions.md`. Read it once at entry: it
+lists every question, the per-mode default, the triage tier, the intent key it maps to, and how to
+auto-resolve it from the prompt. Beyond the five required keys you also confirm a set of OPTIONAL
+keys — `video_type`, `design_language`, `pacing_intent`, `hook_intent`, `broll_intent`, and the
+v3.7 creative knobs `caption_animation_intent`, `editorial_intent`, `speed_intent`,
+`transition_intent`, `layout_intent` — each PROPOSED from evidence, never blank-asked, and each
+genuinely overridable. They never gate (they never appear in `missing_required_keys`); their value
+is that they pre-decide what would otherwise surface as a revision at PREVIEW.
+
+**The framework in one breath:** resolve every catalog question FIRST from the prompt + INSPECT
+signal; for the genuine gaps, ASK with **selectable suggestions** (a `AskUserQuestion` card per
+beat, the mode's default placed first and tagged "(recommended)", so the user just taps); silently
+default anything safely preset-derivable and **recap it at the PLAN sign-off**. A rich rough idea →
+one or two confirm cards; an empty prompt → ~4–5 grouped cards. Never march one question at a time,
+and never ask about something the engine can't honor (every row maps to a real knob).
 
 ## Read sites
 | step | source | fields |
 |---|---|---|
+| catalog | once at entry: `Read` `references/clarifying-questions.md` | the question rows, per-mode default matrix, triage tiers, `maps_to` keys, auto-heuristics |
+| mode | summary `video_type.{canonical, source}` | the active preset — supplies every per-mode default; resolve BEFORE defaulting anything |
 | inherited style | `vob_read_state_summary { project_id: <derived_from> }` | `intent.answers` (verbatim stored answers) |
 | 1 | INSPECT context already in conversation | digest hook candidates, clean-cut stats, pools |
 | structure beat | summary `inspect.classification.{file_roles[],content_tagged_count,on_screen_text_count}`; `Read` pools for per-segment tags | per-file role map (`{file_index, role: primary_aroll\|broll\|narration\|mixed, summary}`); `content_tags`/`on_screen_text`/`b_roll_role`/`camera_movement`/`setting` live in `aroll_pool`/`broll_index` (P3) |
@@ -42,39 +55,72 @@ user pick. Tell the user what you carried over and that it's all overridable. If
 project has been deleted (the read fails), say the styled-after project is no longer available and
 fall back to inferring from this source — the lineage stays stamped in `state.style` regardless.
 
-## The flow
+## The flow — resolve from the prompt, else ask (5 passes)
 
-1. **Propose.** From the rough idea (if any) + the classification + transcript + your visual
-   read, draft a proposed value for each required key AND each optional key you can ground. The
-   invocation idea is the strongest signal — if the user already stated platform/duration/tone/key
-   moments/look there, pre-record those directly and don't re-ask. Use `digest_path`'s
-   `hook_candidates` and clean-cut stats as proposal evidence. `target_platform` and exact
-   `target_duration` are usually genuine unknowns unless the user already said.
+Work the catalog in five passes. The goal is to ASK as little as possible: every question is first
+resolved from evidence, and only genuine gaps surface — as grouped `AskUserQuestion` cards with the
+mode's default pre-selected.
 
-2. **Pre-record the confident ones** with `mcp__vob__vob_record_intent_answer { project_id, key,
-   value }` and tell the user what you inferred so they can correct it ("I'm assuming
-   voiceover-driven, ~45s, energetic — say the word if any of that's wrong").
+**Pass 0 — Resolve the mode FIRST.** Read the summary's `video_type.{canonical, source}`. It
+parameterizes every per-mode default in the catalog, so settle it before defaulting anything else.
+When `source` is `"derived"`, propose it (see the video-type beat) but DON'T record a plain "keep" —
+the derivation stays live and reactive. Record `video_type` only on an explicit re-route, and
+ALWAYS pin **podcast** (it never derives — a youtube + long source silently derives long-form).
 
-3. **Ask only the gaps, batched into a few beats** (below). Record each answer as it comes back.
-   Do NOT march through keys one at a time, and do NOT turn the optional keys into a long
-   questionnaire — fold each into its beat as a PROPOSE-and-confirm one-liner the user can wave
-   through.
+**Pass 1 — Pre-fill from evidence.** From the rough idea + the classification + transcript + your
+visual read (+ the `--like` source's `intent.answers`), draft a value for every catalog row you can
+ground. The invocation idea is the strongest signal. Use `digest_path`'s `hook_candidates` and
+clean-cut stats as evidence. **Silently RECORD only OPTIONAL keys** (`design_language`,
+`pacing_intent`, the creative knobs, …) — they never gate, so a confident inference is safe to
+commit and tell the user ("I'm assuming voiceover-driven, energetic, light speed-up — say the word
+if any of that's wrong"). For REQUIRED/CONDITIONAL keys, pre-*select* the inferred value as the card
+default but DON'T record it yet (a mis-parse of "not for tiktok" must never commit `tiktok` to a
+required key — the engine stays the authority on required via `missing_required_keys`).
 
-## The beats (group the conversation; don't interrogate)
+**Pass 2 — Default the rest.** For each still-unknown row, take the per-mode default from the
+catalog matrix as the recommended option (not yet recorded).
 
-Keep INTENT to a few grouped messages. Each beat PROPOSES from evidence and asks the user to
-confirm or override — only genuine unknowns (platform, exact duration) are open asks.
+**Pass 3 — Triage ASK vs SILENT.** Per each row's `triage` tier: SILENT rows (render fps,
+segmentation, loudness-on, video_type for derivable modes) are never asked — they ride the preset
+and you recap them at the PLAN gate. CONDITIONAL rows fire only when their `when` gate holds
+(`audio_treatment` only if audio present; caption animation only when captions are in play and
+word-level only when `transcript_aligned`; layout only with ≥2 angles; snapping only when INSPECT
+removed clean-spans; etc.). ASK rows always surface.
+
+**Pass 4 — Ask, record, override.** Group the surviving ASK / fired-CONDITIONAL rows into the beats
+below and surface them with `AskUserQuestion` — ≤4 questions per card, the recommended option FIRST
+and tagged "(recommended)", and a free-text "something else" option on every question EXCEPT
+`audio_treatment` (the one closed enum). Record each answer as it returns with
+`mcp__vob__vob_record_intent_answer { project_id, key, value }` (record the user's words; the server
+canonicalizes only platform/duration/video_type). An override later is just one more record call on
+the same key. For a rich prompt that already answered most rows, this collapses to one or two
+confirm cards. (`AskUserQuestion` is the preferred surface; for a free-form back-and-forth or under
+an adapter without it, the same rows present as conversational PROPOSE-and-confirm one-liners.)
+
+## The beats (the AskUserQuestion grouping)
+
+Group the cards by beat — don't interrogate one key at a time. Each beat PROPOSES from evidence; the
+user taps the recommended default or picks an alternate.
 
 - **Beat 0 — Inherited style** (only with `--like`): tell the user what carried over (above).
 - **Beat 1 — Format & platform**: `target_platform`, `target_duration`, and the `video_type`
-  one-liner. (Render dims/fps/quality are a silent default — surface them once at the PLAN gate,
-  never ask here.)
+  one-liner. (Render dims/fps/quality are a silent default — recap them once at the PLAN gate.)
+  *Multi-short fan-out caveat:* all shorts inherit this ONE project aspect/platform — per-short
+  aspects (e.g. one 16:9 master + 9:16 cuts from the same footage) are NOT supported in v3.7; if the
+  user asks, say so rather than promising it.
 - **Beat 2 — Story & moments**: `tone`, `key_moments`, the `hook_intent` / `pacing_intent` /
   `broll_intent` one-liners, the multi-file role-map confirmation (from `file_roles[]`), and —
   when long-form/tutorial/podcast — the chapter-count confirm folded into the video-type line.
-- **Beat 3 — Look & captions**: the `design_language` proposal (confirm or override) and, when
-  applicable, `captions_style`.
-- **Beat 4 — Audio**: `music_vo` and, when applicable, `audio_treatment`.
+- **Beat 3 — Look & captions**: the `design_language` proposal (confirm or override), the caption
+  animation choice when captions are in play (`caption_animation_intent`), and, when applicable,
+  `captions_style`.
+- **Beat 4 — Audio**: `music_vo` and, when applicable, `audio_treatment` (+ the ducking default
+  when music is in the mix).
+- **Beat 5 — Creative knobs** (mostly CONDITIONAL — surface only the ones the prompt raises or the
+  footage warrants): `editorial_intent` (snap/tighten), `speed_intent`, `transition_intent`,
+  `layout_intent`. Most projects accept the preset defaults silently; ask only when a prompt cue or
+  an INSPECT fact (≥2 angles, removed clean-spans, an explicit "speed it up") makes it a real
+  decision. See the creative-knobs beat below.
 
 Per-key guidance (for the gaps you ask, or to sanity-check a proposal):
 
@@ -211,6 +257,36 @@ Every consumption is guarded: a degraded INSPECT (no whisperx → `transcript_al
 `VOB_DISABLE_AUDIO_ANALYSIS` → `audio:null`; no P3 tags → 0 counts) falls back to the
 tone/preset/digest proposals.)*
 
+### The creative-knobs beat — `editorial_intent`, `speed_intent`, `transition_intent`, `layout_intent`
+
+These four are the v3.7 editorial knobs (Beat 5). They are mostly CONDITIONAL: the preset already
+carries a sensible default for each (catalog matrix), so SURFACE one only when a prompt cue or an
+INSPECT fact makes it a real decision — otherwise let the default ride and recap it at PLAN. Each
+records as a free-text OPTIONAL key the storyboarder reads; none gate.
+
+- **`editorial_intent`** — only when INSPECT wrote removed clean-spans
+  (`inspect.clean_speech_path` with `removed[]`). "Tighten the speech — drop dead air and the ums
+  between kept lines, or keep the natural pauses?" Record `tighten`/`snap` or `keep natural`.
+  Default snap on every preset EXCEPT cinematic (preserve). It steers WHERE the storyboarder cuts,
+  not the lint — and under a cinematic `clean_cut=false` an explicit "tighten" is surfaced as a gate
+  conflict, not a silent snap. (Filler-WORD removal aggressiveness is NOT user-steerable — it runs
+  in INSPECT before INTENT.)
+- **`speed_intent`** — when the prompt mentions speed/fit ("make it punchy", "speed me up", "fit it
+  in 60s") OR the duration math is tight. "Speed up slow / over-long talking to fit? light ~1.25× /
+  aggressive / natural / a slo-mo beat." Record their pick. Default light for social-short, "speed
+  slow stretches" for tutorial, natural elsewhere. This HARD-materializes (baked clip speed), so a
+  feasibility conflict ("1.25× + 60–90s" with only ~50s of clean source) gets caught at PLAN.
+- **`transition_intent`** — only when the prompt names a transition feel ("smooth dissolves", "hard
+  cuts only", "punchy whip pans"). "What transition feel between shots? punchy (whip/zoom) / gentle
+  dissolves / hard cuts / dip at seams." Record their words. Default is the preset's vocabulary
+  (punchy for social, gentle dips/focus_pull for cinematic, hard cuts for general). Shaders aren't
+  offered.
+- **`layout_intent`** — only when INSPECT shows ≥2 usable angles (`file_roles[]` with >1 camera) or
+  the prompt mentions split-screen / a 2-up / reaction / PiP. "Want split-screen or PiP moments?
+  none / split (2-up) / pip / 2×2 grid." Record their pick. Default none, EXCEPT tutorial→pip (cam
+  over screen) and podcast→split (two speakers). A single-angle source can't fill cells — skip
+  silently.
+
 ### Content-conditional follow-ups
 
 Inspect `missing_required_keys` from the latest `vob_record_intent_answer` result — do not
@@ -250,13 +326,17 @@ them as missing when applicable:
    chunks, lower third'. Or just a vibe and I'll match it to the look." — free-form string. If
    you already proposed `design_language`, you can say "captions follow the look unless you want
    something different" and only record `captions_style` when the user diverges.
-   **Caption timing (P1, live).** Branch on the summary's `inspect.transcript_aligned` (missing →
-   treat as false): when `true`, the transcript is karaoke-grade — OFFER word-synced captions
-   ("the transcript is frame-accurately aligned, so I can do per-word highlight/pop captions —
-   want that, or plain chunk captions?") and fold the choice into the recorded `captions_style`
-   (e.g. "…, word-synced highlight"). When `false`, note the limit once ("caption timing will be
-   approximate — `pip install whisperx` for frame-accurate per-word timing") and offer chunk
-   captions only; either way captions still render.
+   **Caption animation (P1, live) — `caption_animation_intent`.** Branch on the summary's
+   `inspect.transcript_aligned` (missing → treat as false). When `true`, the transcript is
+   karaoke-grade — OFFER word-level captions ("the transcript is frame-accurately aligned, so I can
+   highlight each word karaoke-style, pop whole chunks, or keep them static — which?") and record
+   the choice as `caption_animation_intent` (`karaoke` / `word-by-word` / `pop` / `static`). When
+   `false`, do NOT offer or auto-select word-level (it would highlight the wrong word) — offer
+   `pop` (chunk) or `static` only, note the limit once ("caption timing is approximate —
+   `pip install whisperx` for frame-accurate per-word timing"), and record `pop`/`static`.
+   `static`/`none` means captions with no motion (the storyboarder omits the `animation` field).
+   This carries the caption MOTION; `captions_style` carries the look (font/size/case). Either way
+   captions still render.
 
 After all applicable keys are recorded, call `mcp__vob__vob_transition_phase { project_id,
 to_phase: "PLAN" }`. If the gate blocks with `intent_answers_missing`, the blocker's

@@ -32,6 +32,7 @@
       "mcp__vob__vob_finalize_iteration",
       "Task",
       "Read",
+      "AskUserQuestion",
       "Glob",
       "Grep",
       "Bash(ls *)",

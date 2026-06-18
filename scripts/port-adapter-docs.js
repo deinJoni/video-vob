@@ -96,6 +96,16 @@ const OC_RENDER_NOTE = `
 > path from that section and ask the user first: it leaves the single-timeline FSM.
 `;
 
+// OpenCode-only block: the clarifying-question framework's AskUserQuestion degradation.
+const OC_INTENT_NOTE = `
+> **OpenCode note on clarifying questions.** OpenCode has no \`AskUserQuestion\` tool. Present the
+> clarifying-question catalog (\`.opencode/vob/references/clarifying-questions.md\`) as grouped
+> multiple-choice prompts in chat instead — same beats, same recommended-default-first, same
+> free-text escape — and record each pick with \`vob_vob_record_intent_answer\`. The 5-pass
+> resolve-from-prompt-else-ask flow is identical; only the asking surface changes (the phase body's
+> \`AskUserQuestion\` references mean "ask these as grouped choices").
+`;
+
 for (const phase of PHASES) {
   let t = baseTransform(read(path.join(CC, "skills", "vob", "phases", `${phase}.md`)));
   if (phase === "RENDER") {
@@ -105,6 +115,9 @@ for (const phase of PHASES) {
       "",
     );
     t = `${t.trimEnd()}\n${OC_RENDER_NOTE}`;
+  }
+  if (phase === "INTENT") {
+    t = `${t.trimEnd()}\n${OC_INTENT_NOTE}`;
   }
   if (phase === "PACKAGE") {
     t = t.replace(
@@ -116,7 +129,7 @@ for (const phase of PHASES) {
   writeOut(path.join(OC, "vob", "phases", `${phase}.md`), t);
 }
 
-for (const ref of ["lint-rules.md", "brief-design.md"]) {
+for (const ref of ["lint-rules.md", "brief-design.md", "clarifying-questions.md"]) {
   writeOut(path.join(OC, "vob", "references", ref), baseTransform(read(path.join(CC, "skills", "vob", "references", ref))));
 }
 
