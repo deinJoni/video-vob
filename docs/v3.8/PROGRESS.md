@@ -30,7 +30,7 @@ Bump VERSION + CHANGELOG + CLAUDE.md invariants as changes land. Commit per cohe
 | 0 | PLAN (this effort) | **done** | 5/5 audits in; PRD.md written + committed |
 | 1 | INGEST | folded into INSPECT (preflight note) | ASR `.en` advisory in checkAsrAvailable |
 | 2 | INSPECT | **done** ✓ | ASR multilingual default + VAD + scene-detect fallback + crosslingual hooks + openai lang + balance penalty; verified |
-| 3 | INTENT→PLAN | implementing | plan-lint intent teeth next |
+| 3 | INTENT→PLAN | P1 done ✓, P2 next | intent teeth + caption-on-silent + key-moment parser shipped; target-drift/floors/safe-area pending |
 | 4 | PLAN (FSM gate) | pending | |
 | 5 | COMPOSE | pending | |
 | 6 | PREVIEW | pending | |
@@ -136,6 +136,13 @@ _(record non-obvious choices here as they're made)_
 - Clean-audio-track picker penalizes one-sided `|balance_db|` beyond center band. (INSPECT#8)
 - _Verified: py_compile, module load, boot clean, targeted EN/ZH hook test, advisory test, balance test._
 - _Deferred to PACKAGE: reuse INSPECT-measured LUFS in loudnorm (INSPECT#4a). Deferred (low): per-segment level surfacing (INSPECT#4b), ASR concurrency (INSPECT#9)._
+
+### Stage 2/3 — INTENT→PLAN (P1, commit) ✓
+- **Intent-enforcement teeth** (`warnIntentUnmet`, reads `intent.answers`, all WARNINGS, permissive+fail-safe, document-global w/ fan-out suppression): `PLAN_PACING_INTENT_IGNORED` / `PLAN_LAYOUT_INTENT_UNMET` / `PLAN_TRANSITION_INTENT_UNMET` / `PLAN_CAPTION_ANIMATION_INTENT_UNMET`. First enforcement of the v3.7 creative keys. (INTENT#1)
+- `PLAN_CAPTION_SEGMENTS_ON_SILENT` (`warnCaptionSegmentsOnSilent`) — captions-on-silent for the first-class caption_segments layer (legacy string already errored); skips legacy-covered scenes; fail-safe when no transcript. (INTENT#2)
+- **Broadened key-moment parser** (`parseKeyMoments`): single points (`42s`, `1:05`), `mm:ss` ranges, "X to Y seconds" — was exact-`N–Ns`-only (silently skipped most phrasings). `parseSingleDuration` now exported from platform-profiles. (INTENT#3)
+- _Verified: 5-case targeted test (all teeth + single-point + mm:ss + no-intent regression + "no transitions" negative guard), classic `N–Ns` range regression, server boot, `spans` walker (existing lint negative paths intact)._
+- _P2 PENDING: `PLAN_TARGET_PLATFORM_DRIFT`/`PLAN_TARGET_FPS_DRIFT` (INTENT#4), safe-area top+caption (INTENT#6, XC-3), floor lints `PLAN_SCENE_TOO_SHORT`/`PLAN_SCENE_EMPTY` (INTENT#7). P3: hook-no-speech, brief-validator audio, stale-vs-intent gate._
 
 ## Loop bookkeeping
 

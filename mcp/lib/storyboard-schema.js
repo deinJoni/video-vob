@@ -5,7 +5,7 @@ const path = require("path");
 const { removedWithin } = require("./clean-cut.js");
 const { intentAnswerRaw } = require("./intent-schema.js");
 const { inspectCleanSpeechPath } = require("./paths.js");
-const { parseDurationSpec, parseDurationToSeconds } = require("./platform-profiles.js");
+const { parseDurationSpec, parseDurationToSeconds, parseSingleDuration } = require("./platform-profiles.js");
 const { readJsonFile } = require("./storage.js");
 const {
   activeLintRules,
@@ -1668,21 +1668,46 @@ function warnBrollRepeats(parsed, sceneById, warnings) {
   }
 }
 
+// Parse a free-text key_moments answer into ranges + single points. Permissive
+// and FAIL-SAFE (an unparseable answer yields nothing — never a false positive):
+// handles "27.9–42.1s", "1:02-1:10", "27.9 to 42.1 seconds" (ranges) and
+// "42s", "1:05", "open on the laugh at 42s" (single points). Ranges are consumed
+// from the residual first so a range's bounds aren't re-counted as points. A bare
+// integer with no unit/colon is only honored INSIDE a range (where the connector
+// disambiguates it as a timestamp), never as a standalone point.
+function parseKeyMoments(raw) {
+  const TS = String.raw`\d{1,2}:\d{2}(?:\.\d+)?|\d+(?:\.\d+)?`;
+  const UNIT = String.raw`(?:\s*(?:s|sec|secs|seconds))?`;
+  const ranges = [];
+  let residual = String(raw);
+  const rangeRE = new RegExp(`(${TS})${UNIT}\\s*(?:[\\u2013\\u2014-]|to)\\s*(${TS})${UNIT}`, "gi");
+  residual = residual.replace(rangeRE, (full, a, b) => {
+    const start = parseSingleDuration(String(a).trim());
+    const end = parseSingleDuration(String(b).trim());
+    if (start !== null && end !== null) {
+      const lo = Math.min(start, end);
+      const hi = Math.max(start, end);
+      if (Number.isFinite(lo) && Number.isFinite(hi) && hi > lo) ranges.push({ start: lo, end: hi });
+    }
+    return " "; // consume so the bounds aren't re-read as points
+  });
+  const points = [];
+  const pointRE = new RegExp(`(\\d{1,2}:\\d{2}(?:\\.\\d+)?|\\d+(?:\\.\\d+)?\\s*(?:s|sec|secs|seconds))`, "gi");
+  let m;
+  while ((m = pointRE.exec(residual)) !== null) {
+    const v = parseSingleDuration(m[1].replace(/\s+/g, ""));
+    if (v !== null && Number.isFinite(v)) points.push(v);
+  }
+  return { ranges, points };
+}
+
 function warnKeyMomentCoverage(scenes, state, warnings) {
   const intent = state && isPlainObject(state.intent) ? state.intent : null;
   const answers = intent && isPlainObject(intent.answers) ? intent.answers : null;
   const rawMoments = answers ? intentAnswerRaw(answers.key_moments) : null;
-  if (typeof rawMoments !== "string" || rawMoments === "") return;
-  // Branch-A resolved format: "27.9–42.1s". 0 parseable ranges -> skip.
-  const ranges = [];
-  const re = /(\d+(?:\.\d+)?)\s*[–—-]\s*(\d+(?:\.\d+)?)\s*s/g;
-  let m;
-  while ((m = re.exec(rawMoments)) !== null) {
-    const start = Number(m[1]);
-    const end = Number(m[2]);
-    if (Number.isFinite(start) && Number.isFinite(end) && end > start) ranges.push({ start, end });
-  }
-  if (ranges.length === 0) return;
+  if (typeof rawMoments !== "string" || rawMoments.trim() === "") return;
+  const { ranges, points } = parseKeyMoments(rawMoments);
+  if (ranges.length === 0 && points.length === 0) return;
   const windows = [];
   eachClip(scenes, (scene, i, clip) => {
     if (clipHasWindow(clip)) windows.push(clip);
@@ -1694,6 +1719,137 @@ function warnKeyMomentCoverage(scenes, state, warnings) {
         code: "PLAN_KEY_MOMENT_UNCOVERED",
         message: `key moment ${round1(range.start)}–${round1(range.end)}s is not covered by any source clip — the user named this moment explicitly`,
         data: { start_seconds: range.start, end_seconds: range.end },
+      });
+    }
+  }
+  // A single named point is covered when some clip window contains it (±0.5s).
+  const POINT_TOL_S = 0.5;
+  for (const p of points) {
+    const covered = windows.some((c) => c.in_seconds - POINT_TOL_S <= p && c.out_seconds + POINT_TOL_S >= p);
+    if (!covered) {
+      warnings.push({
+        code: "PLAN_KEY_MOMENT_UNCOVERED",
+        message: `key moment at ${round1(p)}s is not covered by any source clip — the user named this moment explicitly`,
+        data: { start_seconds: p, end_seconds: p },
+      });
+    }
+  }
+}
+
+// (v3.8) Captions-on-silent for the FIRST-CLASS caption_segments[] layer. The
+// legacy `scene.captions` string is covered by STORYBOARD_CAPTIONS_ON_SILENT_SEGMENT
+// (an error); the v3.2 caption_segments layer — now the primary burned-caption
+// plan — had no such check, so a storyboarder could author captions over a
+// fully-silent scene and nothing flagged it. WARNING (caption_segments are
+// advisory at COMPOSE-QC, so plan-lint stays warning-only for them). Only runs
+// when a transcript exists at all (fail-safe: no speech anywhere -> skip) and
+// skips scenes already covered by the legacy-string error.
+function warnCaptionSegmentsOnSilent(scenes, ctx, warnings) {
+  if (!Array.isArray(ctx.transcript) || ctx.transcript.length === 0) return;
+  const resolveTranscript = typeof ctx.transcriptForFileIndex === "function"
+    ? ctx.transcriptForFileIndex
+    : () => ctx.transcript;
+  scenes.forEach((scene, ix) => {
+    if (!isPlainObject(scene)) return;
+    if (sceneHasCaptions(scene)) return; // the legacy-string error path handles this scene
+    const segs = captionSegmentsOf(scene);
+    if (segs.length === 0 || !segs.some((s) => isNonEmptyString(s.text))) return;
+    if (!Array.isArray(scene.source_clips) || scene.source_clips.length === 0) return;
+    if (!clipHasSpokenWords(scene, resolveTranscript)) {
+      warnings.push({
+        code: "PLAN_CAPTION_SEGMENTS_ON_SILENT",
+        message: `scenes[${ix}] has caption_segments but none of its source_clips overlap any transcript word — burned captions would be unsupported by source speech (pull from a spoken clip, or drop the captions here)`,
+        scene_index: ix,
+        scene_id: sceneIdOf(scene),
+      });
+    }
+  });
+}
+
+// (v3.8) Intent-enforcement teeth. The v3.7 optional creative keys (pacing /
+// speed / layout / transition / caption-animation intent) are threaded into the
+// storyboarder SPAWN, but until now nothing verified the storyboarder honored
+// them — a user who explicitly asked for "fast / split-screen / whip-pans /
+// karaoke" could get a slow, single-cell, all-cut, no-animation plan with a
+// clean gate. These read the recorded intent answer and WARN (never block;
+// permissive keyword matching; fail-safe when the key is absent/unparseable)
+// when a clearly-expressed creative intent isn't reflected in the plan. Like
+// key-moment coverage they run ONCE document-globally (a layout/transition in
+// ANY short satisfies the intent) — the fan-out path suppresses the per-short
+// call and re-runs over all scenes.
+const INTENT_PACING_FAST_RE = /\b(fast|faster|fast-?paced|quick|quick-?cuts?|snappy|punchy|energetic|high-?energy|rapid|frenetic|upbeat)\b/i;
+const INTENT_PACING_SLOW_RE = /\b(slow|slower|slow-?paced|calm|relaxed|measured|gentle|meditative|contemplative|laid-?back)\b/i;
+const INTENT_LAYOUT_MULTI_RE = /\b(split-?screen|split|side-?by-?side|grid|2-?up|two-?up|multi-?cam|multicam|picture-?in-?picture|pip|reaction|comparison|before-?and-?after)\b/i;
+const INTENT_TRANSITION_RE = /\b(transitions?|whip-?pan|whip|dissolve|cross-?fade|fade|dip-?to-?black|dip|slide|wipe|zoom|spin|glitch|swipe)\b/i;
+const INTENT_TRANSITION_NONE_RE = /\b(no transitions?|hard cuts?|cuts? only|straight cuts?|jump cuts?|just cuts?)\b/i;
+const INTENT_CAPTION_ANIM_RE = /\b(kinetic|animated|word-?by-?word|karaoke|pop(?:-?up)?|bouncy|typewriter)\b/i;
+
+function warnIntentUnmet(parsed, scenes, ctx, warnings) {
+  const state = isPlainObject(ctx) ? ctx.state : null;
+  const answers = state && isPlainObject(state.intent) && isPlainObject(state.intent.answers)
+    ? state.intent.answers : null;
+  if (!answers) return;
+  const txt = (key) => (intentAnswerRaw(answers[key]) || "").toLowerCase();
+
+  // 1) Pacing intent vs the scene pacing track.
+  const pacingText = `${txt("pacing_intent")} ${txt("speed_intent")}`.trim();
+  const paced = scenes.filter((s) => isPlainObject(s) && typeof s.pacing === "string" && s.pacing in PACING_RANK);
+  if (paced.length >= 2 && pacingText) {
+    const wantsFast = INTENT_PACING_FAST_RE.test(pacingText);
+    const wantsSlow = INTENT_PACING_SLOW_RE.test(pacingText);
+    const fastCount = paced.filter((s) => s.pacing === "fast").length;
+    const fastRatio = fastCount / paced.length;
+    if (wantsFast && !wantsSlow && fastRatio < 0.5) {
+      warnings.push({
+        code: "PLAN_PACING_INTENT_IGNORED",
+        message: `you asked for fast/snappy pacing but only ${fastCount}/${paced.length} scenes are paced "fast" — tighten the cut (shorter scenes, more "fast" pacing)`,
+        data: { intent: pacingText, fast_scenes: fastCount, paced_scenes: paced.length },
+      });
+    } else if (wantsSlow && !wantsFast && fastRatio > 0.5) {
+      warnings.push({
+        code: "PLAN_PACING_INTENT_IGNORED",
+        message: `you asked for slow/calm pacing but ${fastCount}/${paced.length} scenes are paced "fast" — ease the rhythm (longer holds, fewer "fast" scenes)`,
+        data: { intent: pacingText, fast_scenes: fastCount, paced_scenes: paced.length },
+      });
+    }
+  }
+
+  // 2) Layout intent vs actual multi-cell layouts (document-global).
+  if (INTENT_LAYOUT_MULTI_RE.test(txt("layout_intent"))) {
+    const layouts = collectSceneLayouts(parsed);
+    if (!Array.isArray(layouts) || layouts.length === 0) {
+      warnings.push({
+        code: "PLAN_LAYOUT_INTENT_UNMET",
+        message: `you asked for a split-screen / multi-cell layout but no scene declares a layout{} — add scene.layout (split_vertical / split_horizontal / grid_2x2 / pip) where the comparison belongs`,
+        data: { intent: txt("layout_intent") },
+      });
+    }
+  }
+
+  // 3) Transition intent vs actual transitions (every transition_in is a cut).
+  const transitionText = txt("transition_intent");
+  if (INTENT_TRANSITION_RE.test(transitionText) && !INTENT_TRANSITION_NONE_RE.test(transitionText)) {
+    const anyNonCut = scenes.some((s) => isPlainObject(s) && s.transition_in != null
+      && transitionTypeOf(s.transition_in) !== "cut");
+    if (!anyNonCut) {
+      warnings.push({
+        code: "PLAN_TRANSITION_INTENT_UNMET",
+        message: `you asked for transitions but every scene uses a hard cut (no scene.transition_in) — add transition_in (e.g. fade / dip / slide / zoom) on the scenes that should flow`,
+        data: { intent: transitionText },
+      });
+    }
+  }
+
+  // 4) Caption-animation intent vs any planned caption animation.
+  const capIntent = txt("caption_animation_intent");
+  if (INTENT_CAPTION_ANIM_RE.test(capIntent) || CAPTION_ANIMATIONS.some((a) => capIntent.includes(a))) {
+    const anyAnimated = scenes.some((s) => captionSegmentsOf(s)
+      .some((seg) => isPlainObject(seg) && isNonEmptyString(seg.animation)));
+    if (!anyAnimated) {
+      warnings.push({
+        code: "PLAN_CAPTION_ANIMATION_INTENT_UNMET",
+        message: `you asked for animated/kinetic captions but no caption_segments[].animation is set — add animation:"pop" (or word-by-word / karaoke if the transcript is forced-aligned) to the captioned scenes`,
+        data: { intent: capIntent },
       });
     }
   }
@@ -2437,6 +2593,7 @@ function lintStoryboardPlan(parsed, context) {
   lintBrollPlacements(parsed, scenes, sceneById, errors);
   lintOverlays(scenes, ctx, errors, warnings);
   lintCaptionSegments(scenes, warnings, transcriptAligned);
+  warnCaptionSegmentsOnSilent(scenes, ctx, warnings);
   lintTransitions(parsed, scenes, ctx, disabled, warnings);
   lintSubjectPlacements(parsed, sceneById, warnings);
   // (v3.4) Span / caption content vs the transcript + multi-cell layout — all
@@ -2479,6 +2636,12 @@ function lintStoryboardPlan(parsed, context) {
   // by ANY short counts), not per short — see validateStoryboardContent.
   if (ctx.suppress_key_moment_check !== true) {
     warnKeyMomentCoverage(scenes, ctx.state, warnings);
+  }
+  // Intent-enforcement teeth run document-globally (a layout/transition/caption
+  // animation in ANY short satisfies the intent) — the fan-out path suppresses
+  // the per-short call and re-runs once over all scenes.
+  if (ctx.suppress_intent_check !== true) {
+    warnIntentUnmet(parsed, scenes, ctx, warnings);
   }
   if (cleanCutOn) {
     warnCleanSpeechStraddles(scenes, ctx.cleanSpeech, warnings);
@@ -2736,12 +2899,14 @@ function validateStoryboardContent(parsed, state) {
       // applies to each short's realized cut).
       durationSpec: spec,
       suppress_key_moment_check: true,
+      suppress_intent_check: true,
     });
     errors.push(...tagFindingsWithShortId(result.errors, timeline.short_id));
     warnings.push(...tagFindingsWithShortId(result.warnings, timeline.short_id));
     if (spec.range) warnShortDurationRange(timeline, spec.range, warnings);
   }
   warnKeyMomentCoverage(allStoryboardScenes(parsed), state, warnings);
+  warnIntentUnmet(parsed, allStoryboardScenes(parsed), baseContext, warnings);
 
   return { ok: errors.length === 0, errors, warnings };
 }
