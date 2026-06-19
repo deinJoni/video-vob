@@ -1,6 +1,6 @@
 {
   "name": "video-vob",
-  "version": "3.9.1",
+  "version": "0.3.9",
   "description": "Open-source agent-driven video pipeline: drop raw footage in, answer five questions, walk out with a packaged short-form video. End-to-end FSM (INGEST → INSPECT → INTENT → PLAN → COMPOSE → PREVIEW → RENDER → PACKAGE → ITERATE) powered by hyperframes and ffmpeg.",
   "license": "Apache-2.0",
   "type": "commonjs",
