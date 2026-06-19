@@ -3,11 +3,13 @@ Read once while drafting the brief in PLAN. The Design language section is BINDI
 composer — anything left vague here will be vague on screen.
 
 **Source of the Design language section.** When `intent.answers.design_language` is present, the
-user already confirmed the concrete look at INTENT (it was PROPOSED from the table below) —
-transcribe it into the Design language section verbatim; the tone→design table is then just the
-lineage of that proposal, not a re-derivation. Only when `design_language` is absent do you fill
-the section from the table directly. Either way the platform safe bands + 56px caption floor are
-hard constraints the look cannot override.
+user already confirmed the concrete look at INTENT (it was PROPOSED from the table below, or from
+the active **design profile**'s `look`) — transcribe it into the Design language section verbatim;
+the tone→design table is then just the lineage of that proposal, not a re-derivation. When
+`design_language` is absent but a design profile is active (`summary.design_profile.name` set), seed
+the section from the profile's `look` (palette / typography / caption_style / motion / grade) — the
+brand baseline. Only when neither is present do you fill the section from the table directly. Either
+way the platform safe bands + 56px caption floor are hard constraints the look cannot override.
 
 ## Brief skeleton
 
@@ -18,7 +20,7 @@ hard constraints the look cannot override.
 - Platform: <canonical platform> (<profile.width>x<profile.height> @ <profile.fps>fps)
 - Duration: <target_duration.seconds>s (platform ideal: <profile.ideal_duration_s.min>–<profile.ideal_duration_s.max>s)
 - Source: <file_count> file(s), <total source duration>s
-- Styled after: <derived_from>            ← include ONLY when state.style is set
+- Design profile: <name>                  ← include ONLY when summary.design_profile.name is set
 
 ## Hook
 - Verbal hook: "<the chosen line>" — digest hook_candidate #<n>, at <t>s in file <i>
@@ -63,25 +65,26 @@ genuinely spans them; the `captions_style` answer always overrides the caption c
 | comedic / playful / fun | Nunito 800 | Nunito 800 | bright + friendly; pastel accents; cream title cards | bold-pop with rounded pill; occasional single-word color emphasis | fast-medium: 0.2–0.3s springy ease-out; small rotations (±2°) on overlays only; punch-ins yes |
 | raw / vlog / authentic | Inter 900 | Inter 700 | white on footage, one accent, zero decoration | bold word-chunk captions 60px, heavy shadow, no pill | medium-fast cuts; minimal overlays; punch-ins no |
 
-Fill the Design language section from this table, then adjust ONLY where the user's
-`captions_style` / rough idea / `--like` source brief say otherwise. The composer implements the
-Design language section verbatim — it does not re-derive look from tone, so anything you leave
-vague here will be vague on screen.
+Fill the Design language section from this table (or, when a design profile is active, from its
+`look` — see the source note above), then adjust ONLY where the user's `captions_style` / rough idea
+say otherwise. The composer implements the Design language section verbatim — it does not re-derive
+look from tone, so anything you leave vague here will be vague on screen.
 
 **Seed from the preset, then make it concrete.** The summary's `video_type.design_default`
 (palette / typography / caption_style / motion / grade for the active format) is the format-level
-starting point — use it as the baseline and override per the tone row + the user's answers. The
+starting point — use it as the baseline and override per the tone row + the user's answers (a design
+profile's `look`, when active, sits ABOVE the preset default as the brand baseline). The
 **storyboarder mirrors your final Design language into structured `target.design` tokens** in the
-storyboard, so the composer reads the look as data and a `--like` project copies it verbatim rather
-than re-interpreting prose. Keep the brief's Design language and `target.design` consistent — the
-brief is what the human signs off; `target.design` is its machine-readable twin.
+storyboard, so the composer reads the look as data and a design profile's `look` applies verbatim
+rather than re-interpreting prose. Keep the brief's Design language and `target.design` consistent —
+the brief is what the human signs off; `target.design` is its machine-readable twin.
 
 **The kit is wider than this table — these are just tone defaults.** The composer ships 23
 families (its kit table is the full list): also available are Hanken Grotesk, Montserrat, Poppins,
 Outfit, Open Sans, Lato, Roboto, Oswald, Archivo Black, League Gothic, EB Garamond, the monos
 (JetBrains Mono / IBM Plex Mono / Source Code Pro / Space Mono), and CJK — **Noto Serif SC** /
 **Noto Sans SC** (Simplified Chinese 中文) and **Noto Sans JP** (Japanese). Name any of them in the
-Design language section when the user's idea or `--like` source calls for it. Bilingual/CJK is fully
+Design language section when the user's idea or the active design profile calls for it. Bilingual/CJK is fully
 renderable now: when the look needs a non-Latin line, name the matching Noto SC/JP family explicitly
 and pair it with a Latin face — only families that exist in the kit will render, so name from this
 list, not from a font you wish were installed.

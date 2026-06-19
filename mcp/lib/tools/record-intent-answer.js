@@ -12,6 +12,7 @@ const {
 } = require("../intent-schema.js");
 const { parseDurationSpec, resolvePlatform } = require("../platform-profiles.js");
 const { canonicalizeVideoType, getVideoTypePreset } = require("../video-types.js");
+const { canonicalizeDesignProfile } = require("../design-profiles.js");
 
 const MAX_ANSWER_LENGTH = 4096;
 
@@ -76,6 +77,11 @@ function canonicalizeAnswer(key, trimmed) {
       canonical,
       ...(canonical ? { preset: getVideoTypePreset(canonical) } : {}),
     };
+  }
+  if (key === "design_profile") {
+    // Named reusable design profile. Unrecognized name stores name:null so the
+    // resolver falls through (init stamp / none) instead of pinning a wrong profile.
+    return canonicalizeDesignProfile(trimmed);
   }
   return trimmed; // all other keys stay plain strings
 }

@@ -129,7 +129,7 @@ for (const phase of PHASES) {
   writeOut(path.join(OC, "vob", "phases", `${phase}.md`), t);
 }
 
-for (const ref of ["lint-rules.md", "brief-design.md", "clarifying-questions.md", "editorial-patterns.md", "visual-quality.md"]) {
+for (const ref of ["lint-rules.md", "brief-design.md", "clarifying-questions.md", "editorial-patterns.md", "visual-quality.md", "design-profiles.md"]) {
   writeOut(path.join(OC, "vob", "references", ref), baseTransform(read(path.join(CC, "skills", "vob", "references", ref))));
 }
 

@@ -12,13 +12,22 @@ map to an existing intent key; the five v3.7 creative knobs (`caption_animation_
 free-text, never-gating, advisory to the storyboarder (only `speed_intent`/`layout_intent`
 HARD-materialize; the rest the storyboarder/composer *may* honor).
 
+**Design profiles pre-answer the stylistic rows.** When a **design profile** is active (the optional
+`design_profile` intent key — see `references/design-profiles.md`), the engine surfaces its resolved
+`editorial_defaults` as a ready-made pre-answer map (`summary.design_profile.intent_prefill`) covering
+the stylistic keys — `tone`, `target_platform`, `music_vo`, `video_type`, `pacing_intent`,
+`caption_animation_intent`, `speed_intent`, `transition_intent`, `layout_intent` — plus a `look` that
+seeds U6. Treat it as a Pass-1 pre-fill SOURCE (precedence: explicit human answer > profile default >
+matrix default / ask). A profile NEVER pre-fills `key_moments` or `target_duration` (the carve-out).
+
 ## How the orchestrator uses this (summary — full loop in INTENT.md)
 
 1. **Resolve the mode FIRST** (`summary.video_type.{canonical,source}` + the prompt). It supplies
    every default below, so settle it before computing any default. Podcast must be pinned (it never
    derives); other types stay reactive (don't record a plain "keep").
-2. **Pre-fill from evidence** (rough idea + INSPECT signal + `--like` source answers). Silently
-   record OPTIONAL keys only; pre-*select* required/conditional answers for one-tap confirm.
+2. **Pre-fill from evidence** (rough idea + INSPECT signal + the active **design profile**'s
+   `intent_prefill`). Silently record OPTIONAL keys only; pre-*select* required/conditional answers
+   for one-tap confirm.
 3. **Default** each still-unknown row from the matrix below (recommended, not yet recorded).
 4. **Triage** by `triage` tier: SILENT rows are never asked (recap at PLAN); CONDITIONAL rows fire
    only when their `when` gate holds; ASK rows are surfaced.
@@ -96,7 +105,7 @@ record; vertical+short already derives social-short → don't ask.
 **U16 · Key moments** (`ASK`; multi-select) — required, no preset default.
 *"Which moments must make the cut?"* — live from INSPECT segments + `hook_candidates[]` (timestamps +
 on-screen text) + free-text add · **→** `key_moments` (required) · **auto** explicit "make sure to
-include X" / timestamps → pre-select; else present segments and ask. NOT inherited via `--like`.
+include X" / timestamps → pre-select; else present segments and ask. NOT pre-filled by a design profile (the carve-out).
 
 **U7 · Pacing / energy** (`ASK`) — the spine for energy; U8/U9 derive from it.
 *"How fast and energetic should it feel?"* — fast / medium / slow holds · **→** `pacing_intent` ·
@@ -105,7 +114,7 @@ include X" / timestamps → pre-select; else present segments and ask. NOT inher
 **M3 · Hook / opening** (`ASK` under retention; `SILENT` elsewhere)
 *"Which moment opens the video?"* — top hook candidate ★ / alternate / payoff-first cold-open /
 editor picks · **→** `hook_intent` (options live from `hook_candidates[]`) · **auto** `open on X`/
-`cold open`/timestamp → record. Distinct from U16; not inherited via `--like`.
+`cold open`/timestamp → record. Distinct from U16; not pre-filled by a design profile.
 
 ### Beat: Look & captions
 
@@ -127,7 +136,7 @@ otherwise (no re-INSPECT loop in v3.7).
 **U6 · Look (caption style + grade + film-feel)** (`CONDITIONAL` — ASK if the prompt names a look/brand;
 else SILENT to the preset `design_default`)
 *"What's the overall look — caption style, and (cinematic) grade / letterbox?"* — follow preset ★ /
-bold-pop / clean-pill / minimal lower-third / `--like` a project · *cinematic adds* grade
+bold-pop / clean-pill / minimal lower-third / apply a **design profile** `<name>` · *cinematic adds* grade
 (desaturated ★ / teal-orange / warm / natural) + film-feel (letterbox ★ / + grain / neither) ·
 **→** `captions_style` (conditional) + `design_language` (optional) → `target.design` · **auto**
 explicit font/case/color/`brand` → verbatim; `teal & orange`→teal-orange; `golden hour`→warm; else

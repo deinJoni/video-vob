@@ -428,7 +428,7 @@ function validateCaptionSegment(seg, sceneIx, segIx, errors, wherePrefix = "") {
 
 // Optional target.design: a machine-readable mirror of the brief's Design
 // language section — structured look tokens the composer renders from (and
-// --like copies verbatim instead of "mirror the vibe"). Additive and
+// a design profile applies its look verbatim). Additive and
 // non-version-gated like target.fps. Loosely shape-checked on purpose: there is
 // NO engine-side font allowlist (the only font constraint is hyperframes' own
 // lint — see the font-kit invariant), and caption_style/motion/grade are

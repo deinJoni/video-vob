@@ -36,6 +36,7 @@ const { renderPlanOf } = require("../render-segments.js");
 const { stderrTail } = require("../spawn-with-shutdown.js");
 const { thumbnailTimestampPercent, canonicalizePlatform, getPlatformProfile } = require("../platform-profiles.js");
 const { resolveActiveVideoType, resolveLoudnessTarget } = require("../video-types.js");
+const { resolveActiveDesignProfile } = require("../design-profiles.js");
 const { renderPackageReadme } = require("../package-readme.js");
 
 const PROJECT_ROOT = path.resolve(__dirname, "..", "..", "..");
@@ -783,7 +784,7 @@ async function packageOutput(args) {
       composition_revision: composition && Number.isInteger(composition.revision_count) ? composition.revision_count : null,
       preview_revision: preview && Number.isInteger(preview.revision_count) ? preview.revision_count : null,
       render_revision: Number.isInteger(render.revision_count) ? render.revision_count : null,
-      derived_from: state.style && state.style.derived_from ? state.style.derived_from : null,
+      design_profile: resolveActiveDesignProfile(state).name,   // the --like successor; null when none
     },
     render: {
       rendered_at: render.rendered_at || null,

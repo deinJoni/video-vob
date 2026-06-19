@@ -2,6 +2,7 @@
   "permissions": {
     "allow": [
       "mcp__vob__vob_init_project",
+      "mcp__vob__vob_save_design_profile",
       "mcp__vob__vob_doctor",
       "mcp__vob__vob_read_state",
       "mcp__vob__vob_read_state_summary",

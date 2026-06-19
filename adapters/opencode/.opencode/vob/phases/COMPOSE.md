@@ -7,7 +7,7 @@ to the `composer` subagent; linting, snapshots, and transitions stay with you.
 ## Read sites
 | step | source | fields |
 |---|---|---|
-| 2 | `vob_read_state_summary` | `storyboard.artifact_path`, `brief.path`, `manifest.path`, `composition.*`, `inspect.{transcript_path,clean_speech_path,transcript_aligned}`, `platform{...}`, `video_type.{canonical,lint_ruleset}`, `visual_critic_mode`, `intent.answers`, `style.derived_from` |
+| 2 | `vob_read_state_summary` | `storyboard.artifact_path`, `brief.path`, `manifest.path`, `composition.*`, `inspect.{transcript_path,clean_speech_path,transcript_aligned}`, `platform{...}`, `video_type.{canonical,lint_ruleset}`, `visual_critic_mode`, `intent.answers`, `design_profile{name,look,...}` |
 | 5 | composer-relayed save verdict; `vob_read_state_summary` `composition.{lint_status,lint_report_path}`; `vob_lint_composition` (fallback only) | `lint_status, error_count, warning_count, qc_error_count, qc_warning_count, findings_summary[≤10], report_path` |
 | 2/2b/3 | `vob_snapshot_keyframes` result → `vob_qc_stills` → `visual-critic` spawn | `still_paths, contact_sheet_path, snapshots_dir`; qc `findings[]`; critic `VERDICT/SCORES/FINDINGS/TOP FIX` |
 
@@ -79,9 +79,8 @@ to the `composer` subagent; linting, snapshots, and transitions stay with you.
    layout_scenes_fell_back: <summary.scene_layouts.fell_back_scenes, comma-joined | none>     (composite degraded — render the cells as positioned <video> elements)
    fonts: ./fonts.css + ./fonts/ are present in compose/ (kit table in your instructions)
    design_system: ./design-system/manifest.json + per-component references are present in compose/ (set --vob-* tokens from target.design once; adapt the video_type's look — see Design system kit)
-   style_source: <derived_from | none>
-   style_source_compose: ~/video-vob-sessions/<derived_from>/compose/index.html | none
-   style_source_brief: ~/video-vob-sessions/<derived_from>/brief.md | none
+   design_profile: <summary.design_profile.name | none>
+   design_profile.tokens: <from summary.design_profile.look.palette — bg=<--vob-bg> surface=<--vob-surface> text=<--vob-text> text_muted=<--vob-text-muted> accent=<--vob-accent> accent_2=<--vob-accent-2>, and look.typography → headline/caption/body kit families; set the --vob-* custom properties from these (they take precedence over target.design's design_default) | none>
    prior_composition_files: <relative paths | none>
    revision_notes: <user words, lint/QC codes, or self-QC findings | none>
    lint_report_path: <composition.lint_report_path | none>

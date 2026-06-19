@@ -19,6 +19,7 @@ const { checkFaceAvailable } = require("./face-backend.js");
 const { recommendedHeavyEncodeConcurrency } = require("./concurrency.js");
 const hostProfile = require("./host-profile.js");
 const { describeVideoTypes, resolveActiveVideoType } = require("./video-types.js");
+const { describeDesignProfiles, resolveActiveDesignProfile } = require("./design-profiles.js");
 
 const GIB = 1024 * 1024 * 1024;
 
@@ -60,6 +61,24 @@ function resolveProjectVideoType(projectId) {
       segmentation: vt.preset.render.segmentation,
       clean_cut: vt.preset.editorial.clean_cut,
       platform_default: vt.preset.platform_default,
+    };
+  } catch {
+    return null;
+  }
+}
+
+// Best-effort per-project design-profile resolution for the report — a missing
+// or unreadable project must never fail the doctor (mirrors resolveProjectVideoType).
+function resolveProjectDesignProfile(projectId) {
+  if (typeof projectId !== "string" || !projectId.trim()) return null;
+  try {
+    const { readSessionStateStrict } = require("./session-state.js");
+    const state = readSessionStateStrict(projectId.trim());
+    const dp = resolveActiveDesignProfile(state);
+    return {
+      project_id: projectId.trim(),
+      name: dp.name,
+      source: dp.source,
     };
   } catch {
     return null;
@@ -212,6 +231,28 @@ function runDoctor({ projectId = null } = {}) {
     blocker: false,
   });
 
+  // Design profiles (v0.3.x): the resolved profile table + sources, mirroring
+  // the video-types block (the --like successor — named reusable look + editorial
+  // defaults). With a project_id, also that project's resolved active profile.
+  const designProfiles = {
+    ...describeDesignProfiles(),
+    project: resolveProjectDesignProfile(projectId),
+  };
+  checks.push({
+    name: "design-profiles",
+    level: "ok",
+    detail: `profiles: ${designProfiles.built_in.join(", ")}`
+      + (designProfiles.user_defined.length ? ` + user: ${designProfiles.user_defined.join(", ")}` : "")
+      + (designProfiles.env_override ? ` | VOB_DESIGN_PROFILE=${designProfiles.env_override}` : "")
+      + (designProfiles.project && designProfiles.project.name
+        ? ` | ${designProfiles.project.project_id}: ${designProfiles.project.name} [${designProfiles.project.source}]`
+        : ""),
+    recommendation: designProfiles.user_defined.length > 0 || designProfiles.env_override
+      ? null
+      : "To define a reusable brand look, save one with vob_save_design_profile (writes .vob-config/design-profiles/<name>.json) or set VOB_DESIGN_PROFILE in the MCP launch env.",
+    blocker: false,
+  });
+
   // Host capacity + derived ceilings.
   const tuningLine = tuning.settings.map((s) => `${s.setting}=${s.value} [${s.source}]`).join(", ");
   checks.push({
@@ -273,6 +314,7 @@ function runDoctor({ projectId = null } = {}) {
     },
     tuning,
     video_types: videoTypes,
+    design_profiles: designProfiles,
     // The exact pinned hyperframes invocation for bespoke escape-hatch work.
     hyperframes_invocation: hfInvocation,
     checks,

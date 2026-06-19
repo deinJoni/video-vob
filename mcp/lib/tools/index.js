@@ -2,6 +2,7 @@
 
 const TOOL_MODULES = Object.freeze([
   require("./init-project.js"),
+  require("./save-design-profile.js"),
   require("./doctor.js"),
   require("./read-state.js"),
   require("./read-state-summary.js"),

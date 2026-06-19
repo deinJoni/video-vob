@@ -4,6 +4,7 @@ disable-model-invocation: true
 argument-hint: "[project_id] [source_path] [rough idea] — all optional; or just /vob and describe it"
 allowed-tools:
   - mcp__vob__vob_init_project
+  - mcp__vob__vob_save_design_profile
   - mcp__vob__vob_doctor
   - mcp__vob__vob_read_state
   - mcp__vob__vob_read_state_summary
@@ -177,13 +178,13 @@ session does NOT require a re-read.
 
 ## Argument parsing — accept args OR conversation
 
-`/vob` supports two entry styles that land in the same flow: positional args, or conversational (partial/empty/freeform). Parse `$ARGUMENTS` into up to four things — a **project_id**, a **source_path**, an optional **rough idea** (freeform creative direction), and an optional **style source** (a prior project whose design to inherit). `$ARGUMENTS` may be empty, partial, classic-positional, or prose.
+`/vob` supports two entry styles that land in the same flow: positional args, or conversational (partial/empty/freeform). Parse `$ARGUMENTS` into up to four things — a **project_id**, a **source_path**, an optional **rough idea** (freeform creative direction), and an optional **design profile** (a named, reusable style bundle to apply). `$ARGUMENTS` may be empty, partial, classic-positional, or prose.
 
 **Classify the tokens / spans:**
 - **source_path** — the token that looks like a filesystem path: contains `/`, starts with `~`, is quoted, or ends in a supported media extension (`.mp4 .mov .mkv .webm .m4v .avi .m4a .mp3 .wav .aac .flac .ogg .opus .wma`). There is at most one. A directory is valid — INGEST enumerates every media file in it into one timeline.
 - **project_id** — a bare token (no path characters) that appears BEFORE the source_path. This is the classic positional slot. Optional.
 - **rough idea** — any remaining freeform prose, in any position. Optional.
-- **style source** — an optional `--like <project_id>` flag, or a conversational equivalent ("like leon-talk", "same style as bbq-talk", "in the style of <project>", "styled after <project>"). The token after `--like` (or named by the phrase) is an EXISTING prior project whose design you'll inherit. At most one. Optional. Don't confuse it with the **project_id** (the NEW project's name) or the **rough idea** (which describes the new *content*, not where to borrow *style*) — `--like` is unambiguous; for the conversational forms, if it's unclear which project is meant, ask.
+- **design profile** — an optional `--profile <name>` flag, or a conversational equivalent ("use the bold-social profile", "with the cinematic-gold look", "apply the <name> design profile"). Names a STORED design profile — a built-in (`bold-social`, `clean-corporate`, `cinematic-gold`, `warm-podcast`, `mono-editorial`) or a user profile in `.vob-config/design-profiles/`. At most one. Optional. (Design profiles REPLACE the old `--like <project>`: a prior project's look is no longer inherited live. If the user says "same style as <project>" / `--like <project>`, offer to capture that look as a durable named profile via the guided authoring flow in `references/design-profiles.md`, or apply a built-in. Don't confuse a profile name with the **project_id** or the **rough idea**.)
 
 **Resolve them:**
 
@@ -193,22 +194,22 @@ session does NOT require a re-read.
 
 3. **rough idea.** If the user gave any freeform direction (inline, or in reply to the prompt in step 1), KEEP IT for INTENT — this is the "drop footage + a rough idea" entry point. Do not record it as state now (no intent key is set until INTENT). At INTENT, use it as the primary signal to PROPOSE the five required answers, so a user who already said "punchy 30s TikTok, open on the bbq reveal" is not re-interrogated. If no idea was given, INTENT infers from the source as it does today.
 
-4. **style source.** If a `--like <project>` flag or a "same style as <project>" phrase was given, hold the named project_id aside as your `style_source`. You pass it to `vob_init_project` as `derived_from` (see **Resume behavior**), which makes the new project inherit that project's design — its intent answers, brief tone, and composition look. If none was given, this is a normal fresh project.
+4. **design profile.** If a `--profile <name>` flag or a "use the <name> profile" phrase was given, hold the profile name aside. You pass it to `vob_init_project` as `design_profile` (see **Resume behavior**), which stamps the profile so its `look` (palette/typography/caption_style/motion/grade) seeds `target.design` and its `editorial_defaults` pre-answer the stylistic INTENT keys — NEVER `key_moments` or `target_duration`. An unknown name doesn't fail (the project is created without a profile and you're told via `warning`); to author a new one (incl. "make it look like that project"), run the guided flow in `references/design-profiles.md` → `vob_save_design_profile`. If none was given, this is a normal fresh project.
 
 **Examples (all valid):**
 - `/vob leon-talk ~/footage/leon.mov` — classic positional: id + path.
 - `/vob ~/footage/leon.mov` — path only; id derived → `leon`.
 - `/vob ~/footage/leon.mov punchy 30s TikTok, open on the bbq reveal` — path + rough idea carried to INTENT.
 - `/vob ~/clips/` — a folder; every media file ingested into one timeline.
-- `/vob promo ~/footage/new.mov --like bbq-talk` — new project `promo`, inheriting the design of the existing `bbq-talk`.
-- `/vob ~/footage/new.mov same style as bbq-talk, punchy 20s` — style source + rough idea (the idea is the new content; the style is borrowed).
+- `/vob promo ~/footage/new.mov --profile cinematic-gold` — new project `promo`, applying the `cinematic-gold` design profile.
+- `/vob ~/footage/new.mov use the bold-social profile, punchy 20s` — design profile + rough idea (the idea is the new content; the look comes from the profile).
 - `/vob` — no args: ask for the footage (step 1), then proceed.
 
 If anything is genuinely ambiguous (two path-like tokens, or you can't separate the id from the idea), ask one short clarifying question rather than guessing.
 
 ## Resume behavior
 
-Once you've resolved the `project_id` per **Argument parsing** (given, or derived-and-confirmed) and any `style_source`, call `mcp__vob__vob_init_project { project_id, derived_from: <style_source> }` (omit `derived_from` when no style source was given) — this is your first MCP call. A `NOT_FOUND` error means the named `style_source` project doesn't exist — tell the user, optionally list what's there (`ls ~/video-vob-sessions/`), and re-run with a corrected name or without `derived_from`. If it returns `STATE_CONFLICT`, the project already exists — call `mcp__vob__vob_read_state_summary { project_id }`, then Read the phase file for the reported phase and pick up at its first incomplete step (the summary's per-slot flags tell you which). (`--like` only takes effect when creating a NEW project; on a resume the original style lineage stands. For a resume, the user may pass just the existing `project_id` with no path; you don't need a source_path until INGEST.)
+Once you've resolved the `project_id` per **Argument parsing** (given, or derived-and-confirmed) and any **design profile** name, call `mcp__vob__vob_init_project { project_id, design_profile: <name> }` (omit `design_profile` when none was given) — this is your first MCP call. An unknown profile name does NOT fail the call — the project is created and the result carries a `warning` (surface it; `vob_doctor` lists the available profiles). If it returns `STATE_CONFLICT`, the project already exists — call `mcp__vob__vob_read_state_summary { project_id }`, then Read the phase file for the reported phase and pick up at its first incomplete step (the summary's per-slot flags tell you which). (`design_profile` only takes effect when creating a NEW project; on a resume the original profile stamp stands — `summary.design_profile` carries the resolved profile. For a resume, the user may pass just the existing `project_id` with no path; you don't need a source_path until INGEST.)
 
 ## Preflight — `vob_doctor` once per session
 
@@ -236,7 +237,8 @@ Silently record OPTIONAL keys (incl. the v3.7 creative knobs `caption_animation_
 `editorial_intent` / `speed_intent` / `transition_intent` / `layout_intent`); pre-select
 required/conditional for one-tap confirm. Conditional keys (`audio_treatment` enum, `captions_style`)
 come from `missing_required_keys`. `video_type` is reactive (pin only on re-route / podcast).
-`--like`: pre-record stylistic keys from the source project; never `key_moments`.
+Design profile: when `summary.design_profile.name` is set, its `intent_prefill` pre-answers the
+stylistic keys (tone / platform / music_vo + creative knobs); never `key_moments` / `target_duration`.
 
 **PLAN** — draft the brief (template incl. the BINDING Design language section), `vob_save_brief`;
 delegate the storyboard (data-only spawn carries the video-type/editorial/overlay-vocabulary

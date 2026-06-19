@@ -31,6 +31,9 @@ const AUDIO_TREATMENT_VALUES = Object.freeze([
 //   - `video_type`      — selects the preset (social-short / long-form / cinematic
 //                         / ...); unanswered, the engine derives it from
 //                         platform + duration at resolve time (see video-types.js).
+//   - `design_profile`  — selects a named reusable design profile (look tokens +
+//                         stylistic editorial defaults); canonicalized to {raw,name};
+//                         resolved by design-profiles.js (the --like successor).
 //   - `design_language` — the confirmed concrete look (headline/caption fonts,
 //                         palette, caption shape, motion), seeded from the
 //                         tone→design table; PLAN binds it into the brief's
@@ -80,6 +83,7 @@ const AUDIO_TREATMENT_VALUES = Object.freeze([
 // storyboarder/composer interpret them, the engine never parses them.
 const OPTIONAL_INTENT_KEYS = Object.freeze([
   "video_type",
+  "design_profile",
   "design_language",
   "pacing_intent",
   "hook_intent",

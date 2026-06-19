@@ -193,7 +193,8 @@ function renderPackageReadme(manifest) {
   // produced under package/variants/. Rendered only when the manifest carries a
   // non-empty aspect_variants set. Each variant is an honest dumb-crop — the
   // edges are discarded — so the section leads with that warning and points at
-  // the faithful --like path; it also names the single-timeline limitation.
+  // the faithful re-frame path (a new project + design profile); it also names
+  // the single-timeline limitation.
   if (Array.isArray(manifest.aspect_variants) && manifest.aspect_variants.length > 0) {
     lines.push("## Aspect variants");
     lines.push("");
@@ -202,7 +203,7 @@ function renderPackageReadme(manifest) {
       lines.push(`- **${v.aspect}** \`${v.path}\`${dims} — \`${v.quality || "naive_crop"}\``);
     }
     lines.push("");
-    lines.push("Center-crop only (`naive_crop`) — edges are discarded, which may clip captions or subjects. For a faithful re-frame, create a separate project with `--like <this project>` and the target platform.");
+    lines.push("Center-crop only (`naive_crop`) — edges are discarded, which may clip captions or subjects. For a faithful re-frame, create a separate project with the same design profile and the target platform.");
     lines.push("");
     lines.push("Aspect variants are single-timeline only; multi-short fan-out projects don't produce them.");
     lines.push("");
@@ -251,7 +252,7 @@ function renderPackageReadme(manifest) {
     if (Number.isFinite(l.composition_revision)) lines.push(`- Composition revision: ${l.composition_revision}`);
     if (Number.isFinite(l.preview_revision)) lines.push(`- Preview revision: ${l.preview_revision}`);
     if (Number.isFinite(l.render_revision)) lines.push(`- Render revision: ${l.render_revision}`);
-    if (l.derived_from) lines.push(`- Styled after: ${l.derived_from}`);
+    if (l.design_profile) lines.push(`- Design profile: ${l.design_profile}`);
     lines.push("");
   }
 

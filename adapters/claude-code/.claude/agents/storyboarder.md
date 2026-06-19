@@ -44,7 +44,7 @@ The orchestrator's spawn prompt is DATA-ONLY: a field list of paths and values, 
 - **`audio_summary`** (P2, when present) — INSPECT's channel/loudness read: `clean_audio_source_index` (which file is the cleanest voice track), `any_quiet`/`any_clip_risk`, and per-file `layout`/`balance`/`dead_channel`. Use `clean_audio_source_index` to choose the **spine audio** in a multi-file edit (prefer that file's audio under cutaways); flag a quiet/clipping/dead-channel file in a scene `note` so the concern reaches the gate. Do NOT try to level audio — normalization happens at PACKAGE.
 - **`thumbs_dir`** / **`thumb_interval_seconds`** / **`thumb_count`** — the per-file thumbnail grid (frame-index math in the grounding section).
 - **`strips_legend_path`** → the per-FILE keyframe strips: `legend.json` lists each strip image's path and maps cells (row-major) to `{segment_index, timestamps}` — cells are not labeled in the image.
-- **`style_source`** / **`style_source_brief`** — set when the project was started `--like` a prior one. The intent answers you receive (especially `tone`) are already carried over, and the brief may include a "Styled after" line. Apply the same editorial rhythm and pacing philosophy to THIS source's content — same energy, different cuts. Visual specifics (typography, color, captions) are the composer's job.
+- **`design_profile`** / **`design_profile.look`** — set when a **design profile** is active (a named, reusable brand style — see `references/design-profiles.md`). `design_profile` is the profile name; `design_profile.look` carries its resolved `look` (palette/typography/caption_style/motion/grade/slots). **Mirror that `look` VERBATIM into `target.design`** — it is the brand's binding visual identity and takes precedence over the `design_default` fallback (the orchestrator already transcribed it into the brief's Design language too, so the two agree). The profile's editorial defaults (tone, pacing, etc.) reached you as the ordinary intent values — apply the same editorial rhythm to THIS source's content (same energy, different cuts). When `design_profile` is `none`, mirror the brief's Design language / fall back to `design_default` as usual.
 - **`prior_storyboard_path`** / **`revision_notes`** — revision passes only (see Revision passes).
 
 `mcp__vob__vob_read_state { project_id }` is available if useful. You do not need it — and should not call other vob_* tools.
@@ -141,10 +141,10 @@ Optional per scene: **`transition_in`** — the transition INTO this scene, from
 (cinematic = 24): the composer sets `data-fps` from it and QC cross-checks.
 
 **`target.design`** — a machine-readable mirror of the brief's **Design language** section, so the
-composer renders from structured tokens (and a `--like` project copies them verbatim instead of
+composer renders from structured tokens (a design profile's `look` applies verbatim here instead of
 "mirror the vibe"). Read the brief's Design language and transcribe it here; where the brief is
-silent, fall back to the preset `design_default` in your `video_type` spawn data. All fields
-optional:
+silent, fall back to the active `design_profile.look` (when present), then to the preset
+`design_default` in your `video_type` spawn data. All fields optional:
 
 ```json
 "design": {

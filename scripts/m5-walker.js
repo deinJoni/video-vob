@@ -41,10 +41,10 @@ const PROJECT_ID = process.env.VOB_WALKER_PROJECT || "dji-aerial";
 // video file ≥15s via VOB_WALKER_SOURCE:
 //   VOB_WALKER_SOURCE=/path/to/clip.mp4 node scripts/m5-walker.js [phase]
 const SOURCE = process.env.VOB_WALKER_SOURCE || "";
-// `stillsqc` (synthetic test stills), `spans`, `editorial`, `takequality`, and
-// `variety`, `hook`, and `visualqc` (source-free unit harnesses) need no source
-// video — every other phase lays out a fixture against a real clip.
-if (!SOURCE && !["stillsqc", "spans", "editorial", "takequality", "variety", "hook", "visualqc"].includes(process.argv[2])) {
+// `stillsqc` (synthetic test stills), `spans`, `editorial`, `takequality`,
+// `variety`, `hook`, `visualqc`, and `designprofile` (source-free unit harnesses)
+// need no source video — every other phase lays out a fixture against a real clip.
+if (!SOURCE && !["stillsqc", "spans", "editorial", "takequality", "variety", "hook", "visualqc", "designprofile"].includes(process.argv[2])) {
   console.error(
     "m5-walker: set VOB_WALKER_SOURCE to a video file or directory, e.g.\n" +
     "  VOB_WALKER_SOURCE=/path/to/clip.mp4 node scripts/m5-walker.js [phase]",
@@ -3612,6 +3612,181 @@ async function runVisualQc() {
   console.log("\n=== visualqc: caption-contrast engine + spawn-gate verified");
 }
 
+// v0.3.10 `designprofile` walker phase — the named, reusable design-profile store
+// (the --like successor). A source-free, model-free harness: it isolates the
+// .vob-config/design-profiles/ dir (VOB_DESIGN_PROFILES_DIR) and HOME (so sessions
+// land in a throwaway tree) and exercises, via the real engine + executeTool:
+//   (a) resolveActiveDesignProfile precedence (none < init-stamp < intent-answer < env)
+//   (b) the intent-key carve-out (intent_prefill never carries key_moments/target_duration)
+//   (c) save/load round-trip through vob_save_design_profile -> resolveActiveDesignProfile
+//   (d) fail-safe on an unknown name (source:"none", no throw) and a bad token (dropped)
+//   (e) the --like migration: initProject({design_profile}) stamps state.design_profile,
+//       the summary surfaces it, and an unknown name -> created with a `warning`.
+// No source video, no ffmpeg/python/hyperframes — pure engine + the tool.
+async function runDesignProfile() {
+  console.log("=== v0.3.10 designprofile walker (named style profiles — the --like successor) — source-free unit harness");
+
+  // Isolate BEFORE touching the engine: a throwaway profiles dir + HOME (so any
+  // session this phase creates lands under the temp tree, not ~/video-vob-sessions).
+  const tmpRoot = fs.mkdtempSync(path.join(require("os").tmpdir(), "vob-designprofile-"));
+  const profilesDirPath = path.join(tmpRoot, "design-profiles");
+  const homeDir = path.join(tmpRoot, "home");
+  fs.mkdirSync(profilesDirPath, { recursive: true });
+  fs.mkdirSync(homeDir, { recursive: true });
+  const savedEnv = { HOME: process.env.HOME, VOB_DESIGN_PROFILES_DIR: process.env.VOB_DESIGN_PROFILES_DIR, VOB_DESIGN_PROFILE: process.env.VOB_DESIGN_PROFILE };
+  process.env.HOME = homeDir;
+  process.env.VOB_DESIGN_PROFILES_DIR = profilesDirPath;
+  delete process.env.VOB_DESIGN_PROFILE;
+
+  const dp = require("../mcp/lib/design-profiles.js");
+  const { initProject, buildStateSummary } = require("../mcp/lib/session-state.js");
+  dp._reloadForTests(); // drop any default-dir table cached at module load
+
+  try {
+    await step("resolution precedence — none < init-stamp < intent-answer < env", () => {
+      // empty state -> no profile, never throws
+      const none = dp.resolveActiveDesignProfile({});
+      assert(none.source === "none" && none.name === null && none.profile === null, `empty state should be source:none, got ${JSON.stringify(none)}`);
+
+      // tier 3: init-time stamp (the --like successor)
+      const stamped = dp.resolveActiveDesignProfile({ design_profile: { name: "cinematic-gold" } });
+      assert(stamped.source === "init" && stamped.name === "cinematic-gold", `init stamp should win over none: ${JSON.stringify(stamped)}`);
+
+      // tier 2: a recorded intent answer OUTRANKS the init stamp (explicit human choice)
+      const intentWins = dp.resolveActiveDesignProfile({ design_profile: { name: "cinematic-gold" }, intent: { answers: { design_profile: "bold-social" } } });
+      assert(intentWins.source === "intent" && intentWins.name === "bold-social", `intent answer should outrank init stamp: ${JSON.stringify(intentWins)}`);
+
+      // tier 1: VOB_DESIGN_PROFILE env OUTRANKS everything
+      process.env.VOB_DESIGN_PROFILE = "warm-podcast";
+      dp._reloadForTests();
+      const envWins = dp.resolveActiveDesignProfile({ design_profile: { name: "cinematic-gold" }, intent: { answers: { design_profile: "bold-social" } } });
+      assert(envWins.source === "env" && envWins.name === "warm-podcast", `env should outrank all: ${JSON.stringify(envWins)}`);
+      delete process.env.VOB_DESIGN_PROFILE;
+      dp._reloadForTests();
+    });
+
+    await step("intent-key carve-out — key_moments / target_duration NEVER pre-filled", () => {
+      // built-ins carry only stylistic defaults
+      assert(!Object.prototype.hasOwnProperty.call(dp.EDITORIAL_DEFAULT_KEYS, "key_moments"), "EDITORIAL_DEFAULT_KEYS must not map key_moments");
+      assert(!Object.prototype.hasOwnProperty.call(dp.EDITORIAL_DEFAULT_KEYS, "target_duration"), "EDITORIAL_DEFAULT_KEYS must not map target_duration");
+      const bold = dp.getDesignProfile("bold-social");
+      const prefill = dp.intentPrefill(bold);
+      assert(!("key_moments" in prefill) && !("target_duration" in prefill), `built-in prefill leaked a carve-out key: ${JSON.stringify(Object.keys(prefill))}`);
+      // and the friendly->canonical remap is wired
+      assert(prefill.caption_animation_intent === "pop" && prefill.pacing_intent === "fast", `friendly->canonical remap missing: ${JSON.stringify(prefill)}`);
+
+      // a HAND-AUTHORED profile that TRIES to set the carve-out keys has them stripped
+      const sneaky = dp.normalizeProfile({
+        name: "sneaky",
+        editorial_defaults: { tone: "x", key_moments: "0:00 intro", target_duration: "30s" },
+      });
+      assert(!("key_moments" in sneaky.editorial_defaults) && !("target_duration" in sneaky.editorial_defaults), `normalizeProfile must strip carve-out keys: ${JSON.stringify(sneaky.editorial_defaults)}`);
+      const sneakyPrefill = dp.intentPrefill(sneaky);
+      assert(!("key_moments" in sneakyPrefill) && !("target_duration" in sneakyPrefill) && sneakyPrefill.tone === "x", `carve-out keys reached intent_prefill: ${JSON.stringify(sneakyPrefill)}`);
+    });
+
+    await step("save/load round-trip — vob_save_design_profile -> resolveActiveDesignProfile", async () => {
+      const saved = await call("vob_save_design_profile", {
+        name: "Acme Brand",
+        description: "the house look",
+        look: { palette: { bg: "#101010", accent: "#FF6600" }, typography: { headline: "Anton" }, grade: "warm" },
+        editorial_defaults: { tone: "bold", target_platform: "tiktok", caption_animation: "pop" },
+      });
+      assert(saved.saved === true && saved.name === "acme-brand", `save should kebab-case the name: ${JSON.stringify(saved)}`);
+      assert(saved.path === path.join(profilesDirPath, "acme-brand.json") && fs.existsSync(saved.path), `profile file not written: ${saved.path}`);
+      assert(saved.existed === false, "first save should report existed:false");
+      assert(saved.intent_prefill && saved.intent_prefill.caption_animation_intent === "pop" && saved.intent_prefill.tone === "bold", `intent_prefill wrong in result: ${JSON.stringify(saved.intent_prefill)}`);
+      assert(!("key_moments" in saved.intent_prefill) && !("target_duration" in saved.intent_prefill), "saved intent_prefill leaked a carve-out key");
+
+      // invalidateCache() inside the tool means it resolves IMMEDIATELY in this process
+      const active = dp.resolveActiveDesignProfile({ design_profile: { name: "acme-brand" } });
+      assert(active.profile && active.name === "acme-brand", `saved profile not resolvable: ${JSON.stringify(active)}`);
+      assert(active.profile.look.palette.bg === "#101010" && active.profile.look.palette.accent === "#FF6600", `look not persisted: ${JSON.stringify(active.profile.look)}`);
+
+      // re-save reports existed:true (overwrite is idempotent by default)
+      const resaved = await call("vob_save_design_profile", { name: "acme-brand", look: { palette: { bg: "#0F0F0F" } } });
+      assert(resaved.existed === true, "re-save should report existed:true");
+      // overwrite:false on an existing name is a STATE_CONFLICT (the only non-name hard error)
+      await expectError("vob_save_design_profile", { name: "acme-brand", overwrite: false }, /STATE_CONFLICT/);
+      // an unusable name is the one INVALID_ARGUMENTS path (can't write a file without a slug)
+      await expectError("vob_save_design_profile", { name: "!!!" }, /INVALID_ARGUMENTS/);
+    });
+
+    await step("fail-safe — unknown name resolves to source:none (never throws)", () => {
+      const unknown = dp.resolveActiveDesignProfile({ design_profile: { name: "does-not-exist" } });
+      assert(unknown.source === "none" && unknown.profile === null, `unknown init name should fall through to none: ${JSON.stringify(unknown)}`);
+      const unknownIntent = dp.resolveActiveDesignProfile({ intent: { answers: { design_profile: "ghost" } } });
+      assert(unknownIntent.source === "none" && unknownIntent.profile === null, `unknown intent answer should fall through to none: ${JSON.stringify(unknownIntent)}`);
+      // canonicalize stores name:null for an unrecognized value (so the resolver falls through)
+      assert(dp.canonicalizeDesignProfile("ghost").name === null, "canonicalize unknown -> name:null");
+      assert(dp.canonicalizeDesignProfile("Bold Social").name === "bold-social", "canonicalize recognized -> canonical name");
+    });
+
+    await step("fail-safe — a bad token is dropped, the save still succeeds", async () => {
+      const saved = await call("vob_save_design_profile", {
+        name: "loose-tokens",
+        // a non-string palette value + a non-string grade are not valid tokens
+        look: { palette: { bg: "#222", accent: 12345 }, grade: { nope: true } },
+        editorial_defaults: { tone: "calm", pacing: 5 },
+      });
+      assert(saved.saved === true, "save with bad tokens should still succeed (fail-safe)");
+      assert(saved.profile.look.palette.bg === "#222" && !("accent" in saved.profile.look.palette), `non-string palette value not dropped: ${JSON.stringify(saved.profile.look.palette)}`);
+      assert(!("grade" in saved.profile.look), `non-string grade not dropped: ${JSON.stringify(saved.profile.look)}`);
+      assert(saved.profile.editorial_defaults.tone === "calm" && !("pacing" in saved.profile.editorial_defaults), `non-string editorial default not dropped: ${JSON.stringify(saved.profile.editorial_defaults)}`);
+    });
+
+    await step("--like migration — initProject({design_profile}) stamps state + summary surfaces it", () => {
+      const r = initProject({ project_id: "designprofile-walker-1", design_profile: "cinematic-gold" });
+      assert(r.created === true && r.design_profile && r.design_profile.name === "cinematic-gold", `init should stamp the profile: ${JSON.stringify(r)}`);
+      assert(!("warning" in r), "a recognized profile must NOT produce a warning");
+      // the stamp lives on state.design_profile (the state.style successor)
+      const stateFile = path.join(homeDir, "video-vob-sessions", "designprofile-walker-1", "state.json");
+      assert(fs.existsSync(stateFile), `session state.json not under the isolated HOME: ${stateFile}`);
+      const state = JSON.parse(fs.readFileSync(stateFile, "utf8"));
+      assert(state.design_profile && state.design_profile.name === "cinematic-gold" && typeof state.design_profile.applied_at === "string", `state.design_profile not stamped: ${JSON.stringify(state.design_profile)}`);
+      assert(!("style" in state), "the old state.style field must be gone");
+      // read_state_summary surfaces the resolved active profile (mirrors video_type)
+      const summary = buildStateSummary(state);
+      assert(summary.design_profile && summary.design_profile.name === "cinematic-gold" && summary.design_profile.source === "init", `summary.design_profile not surfaced: ${JSON.stringify(summary.design_profile)}`);
+      assert(summary.design_profile.look && summary.design_profile.look.palette, "summary should carry the resolved effective look");
+    });
+
+    await step("--like migration — vob_init_project via executeTool accepts design_profile + rejects the removed derived_from (SCHEMA path, not the bare handler)", async () => {
+      // Drives init through the REAL dispatch/validation layer (call -> executeTool),
+      // not the bare initProject() handler — locking the inputSchema/handler contract
+      // so the design_profile arg can never silently regress to "not allowed" again.
+      const ok = await call("vob_init_project", { project_id: "designprofile-walker-3", design_profile: "bold-social" });
+      assert(ok.created === true && ok.design_profile && ok.design_profile.name === "bold-social", `executeTool init with design_profile must be accepted + stamp the profile: ${JSON.stringify(ok)}`);
+      let rejected = false;
+      try {
+        await call("vob_init_project", { project_id: "designprofile-walker-4", derived_from: "whatever" });
+      } catch (e) {
+        rejected = /not allowed|INVALID_ARGUMENTS/i.test(String(e && e.message));
+      }
+      assert(rejected, "the removed --like derived_from arg must now be rejected by schema validation (additionalProperties defaults false)");
+    });
+
+    await step("--like migration — unknown profile at init -> created WITH a warning (not an error)", () => {
+      const r = initProject({ project_id: "designprofile-walker-2", design_profile: "totally-unknown" });
+      assert(r.created === true, "unknown profile must NOT block project creation (fail-safe, unlike the old derived_from NOT_FOUND)");
+      assert(r.design_profile === null, `unknown profile should not stamp: ${JSON.stringify(r)}`);
+      assert(typeof r.warning === "string" && /unknown design profile/i.test(r.warning), `expected an unknown-profile warning: ${JSON.stringify(r)}`);
+      const state = JSON.parse(fs.readFileSync(path.join(homeDir, "video-vob-sessions", "designprofile-walker-2", "state.json"), "utf8"));
+      assert(!("design_profile" in state), "an unknown profile must leave state.design_profile absent (lean baseline)");
+    });
+
+    console.log("\n=== designprofile: precedence + carve-out + save/load + fail-safe + --like migration verified");
+  } finally {
+    // restore env + clean up the throwaway tree
+    for (const [k, v] of Object.entries(savedEnv)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+    dp._reloadForTests();
+    try { fs.rmSync(tmpRoot, { recursive: true, force: true }); } catch { /* best-effort */ }
+  }
+}
+
 async function main() {
   const phase = process.argv[2] || "all";
   if (phase === "stillsqc") {
@@ -3676,6 +3851,10 @@ async function main() {
   }
   if (phase === "visualqc") {
     await runVisualQc();
+    return;
+  }
+  if (phase === "designprofile") {
+    await runDesignProfile();
     return;
   }
   console.log(`=== M5 walker v2 — phase: ${phase} — project: ${PROJECT_ID}`);
@@ -4085,8 +4264,8 @@ async function main() {
         assert(probed.primary_video && probed.primary_video.width === v.width && probed.primary_video.height === v.height,
           `decoded dims ${probed.primary_video && `${probed.primary_video.width}x${probed.primary_video.height}`} != manifest ${v.width}x${v.height} for ${v.aspect}`);
       }
-      assert(/## Aspect variants/.test(readme) && /naive_crop/.test(readme) && /--like/.test(readme),
-        "README ## Aspect variants section / naive_crop warning / --like note missing");
+      assert(/## Aspect variants/.test(readme) && /naive_crop/.test(readme) && /design profile/.test(readme),
+        "README ## Aspect variants section / naive_crop warning / design-profile re-frame note missing");
       console.log(`   variants:  ${manifest.aspect_variants.map((v) => `${v.aspect} ${v.width}x${v.height}`).join(", ")}`);
     }
 

@@ -30,7 +30,7 @@ and never ask about something the engine can't honor (every row maps to a real k
 |---|---|---|
 | catalog | once at entry: `Read` `references/clarifying-questions.md` | the question rows, per-mode default matrix, triage tiers, `maps_to` keys, auto-heuristics |
 | mode | summary `video_type.{canonical, source}` | the active preset — supplies every per-mode default; resolve BEFORE defaulting anything |
-| inherited style | `vob_read_state_summary { project_id: <derived_from> }` | `intent.answers` (verbatim stored answers) |
+| design profile | summary `design_profile` | `{name, source, description?, look:{palette,typography,caption_style,motion,grade,slots?}, editorial_defaults, intent_prefill, editorial_default_keys}` — the engine-resolved active profile (no cross-project read) |
 | 1 | INSPECT context already in conversation | digest hook candidates, clean-cut stats, pools |
 | structure beat | summary `inspect.classification.{file_roles[],content_tagged_count,on_screen_text_count}`; `Read` pools for per-segment tags | per-file role map (`{file_index, role: primary_aroll\|broll\|narration\|mixed, summary}`); `content_tags`/`on_screen_text`/`b_roll_role`/`camera_movement`/`setting` live in `aroll_pool`/`broll_index` (P3) |
 | audio beat | summary `inspect.audio` (+ `transcript_aligned`) | per-file `{layout, lufs_integrated, balance, dead_channel, out_of_phase, gain_to_target_db, clip_risk}`, doc-level `{target_lufs, any_clip_risk, any_quiet, clean_audio_source_index}`; `audio_analysis_path`/`segments_path` for the deep read |
@@ -38,22 +38,28 @@ and never ask about something the engine can't honor (every row maps to a real k
 | 4A | read of `transcript_summary_path` / `transcript_paragraphs_path` | paragraph list |
 | 6–7 | latest `vob_record_intent_answer` result | `missing_required_keys` |
 
-**Inherited style (when `--like` was used).** If the summary shows `style.derived_from`, that
-prior project is your strongest signal for the *stylistic* keys. Before proposing, call
-`vob_vob_read_state_summary { project_id: <derived_from> }` — the summary carries the source
-project's full `intent.answers` verbatim — and read its brief at
-`~/video-vob-sessions/<derived_from>/brief.md`. Pre-record `tone`, `target_platform`,
-`target_duration`, `music_vo`, and — when this source's audio makes them applicable
-(`audio_treatment` only when audio is present; `captions_style` only when `audio_treatment` is
-`keep_audio` or `transcribe_captions`) — `audio_treatment` and `captions_style`, carried from the
-source. Also propose `design_language` from the source brief's **Design language** section
-verbatim (its whole point is to reuse the LOOK) — present it as the proposal in the look beat
-below. Do NOT inherit `key_moments` or `hook_intent`: those are specific to THIS footage — derive
-them fresh. If the source's `video_type` mismatches what this footage derives to (e.g. the
-template was `cinematic`, this derives to `long-form`), say so in the video-type beat and let the
-user pick. Tell the user what you carried over and that it's all overridable. If the source
-project has been deleted (the read fails), say the styled-after project is no longer available and
-fall back to inferring from this source — the lineage stays stamped in `state.style` regardless.
+**Active design profile (when one is in play).** A **design profile** is a named, self-contained
+style bundle (look + editorial defaults — see `references/design-profiles.md`). The engine has
+ALREADY resolved the active one (env > recorded answer > init stamp) into the summary's
+`design_profile` block — there is **no cross-project read**. If `summary.design_profile.name` is
+set, it is your strongest signal for the *stylistic* keys, and its `intent_prefill` map carries the
+profile's editorial defaults already remapped onto the canonical intent keys (`tone`,
+`target_platform`, `music_vo`, `video_type`, `pacing_intent`, `caption_animation_intent`,
+`speed_intent`, `transition_intent`, `layout_intent`). Use it with this precedence per key:
+**explicit human answer > profile default (`intent_prefill`) > derivation/ask**:
+- **OPTIONAL keys** (`video_type`, `pacing_intent`, `caption_animation_intent`, `speed_intent`,
+  `transition_intent`, `layout_intent`) present in `intent_prefill` — silently RECORD them (they
+  never gate), and tell the user what the profile preset.
+- **REQUIRED/stylistic keys** (`tone`, `target_platform`, `music_vo`) present in `intent_prefill` —
+  PRE-SELECT them as the card default but don't force them; the human confirms or overrides.
+- The profile's `look` (palette/typography/caption_style/motion/grade) seeds `design_language` — use
+  it as the proposal in the look beat below (its whole point is to reuse the LOOK).
+The profile NEVER carries `key_moments` or `target_duration` (the carve-out — they are content- and
+campaign-specific; derive them fresh from THIS footage), and never `hook_intent`. If the profile's
+`video_type` mismatches what this footage derives to (e.g. the profile is `cinematic`, this derives
+to `long-form`), say so in the video-type beat and let the user pick. Tell the user which profile is
+active and that everything it presets is overridable. When no profile is active the summary shows
+`{name:null, source:"none"}` — proceed exactly as you would without one.
 
 ## The flow — resolve from the prompt, else ask (5 passes)
 
@@ -61,15 +67,20 @@ Work the catalog in five passes. The goal is to ASK as little as possible: every
 resolved from evidence, and only genuine gaps surface — as grouped `AskUserQuestion` cards with the
 mode's default pre-selected.
 
-**Pass 0 — Resolve the mode FIRST.** Read the summary's `video_type.{canonical, source}`. It
-parameterizes every per-mode default in the catalog, so settle it before defaulting anything else.
-When `source` is `"derived"`, propose it (see the video-type beat) but DON'T record a plain "keep" —
-the derivation stays live and reactive. Record `video_type` only on an explicit re-route, and
-ALWAYS pin **podcast** (it never derives — a youtube + long source silently derives long-form).
+**Pass 0 — Resolve the mode FIRST, and read the active design profile.** Read the summary's
+`video_type.{canonical, source}`. It parameterizes every per-mode default in the catalog, so settle
+it before defaulting anything else. When `source` is `"derived"`, propose it (see the video-type
+beat) but DON'T record a plain "keep" — the derivation stays live and reactive. Record `video_type`
+only on an explicit re-route, and ALWAYS pin **podcast** (it never derives — a youtube + long source
+silently derives long-form). Also read the summary's `design_profile` block (the engine-resolved
+active profile — a NEW pre-answer SOURCE for the catalog): when `name` is set, its `intent_prefill`
+pre-answers the stylistic optional/required keys per the **Active design profile** note above (and
+its `look` seeds the look beat). When `name` is null, there is no profile — proceed as before.
 
 **Pass 1 — Pre-fill from evidence.** From the rough idea + the classification + transcript + your
-visual read (+ the `--like` source's `intent.answers`), draft a value for every catalog row you can
-ground. The invocation idea is the strongest signal. Use `digest_path`'s `hook_candidates` and
+visual read (+ the active **design profile**'s `intent_prefill`, see Pass 0 / the design-profile
+note above), draft a value for every catalog row you can ground. The invocation idea is the
+strongest signal. Use `digest_path`'s `hook_candidates` and
 clean-cut stats as evidence. **Silently RECORD only OPTIONAL keys** (`design_language`,
 `pacing_intent`, the creative knobs, …) — they never gate, so a confident inference is safe to
 commit and tell the user ("I'm assuming voiceover-driven, energetic, light speed-up — say the word
@@ -102,7 +113,9 @@ an adapter without it, the same rows present as conversational PROPOSE-and-confi
 Group the cards by beat — don't interrogate one key at a time. Each beat PROPOSES from evidence; the
 user taps the recommended default or picks an alternate.
 
-- **Beat 0 — Inherited style** (only with `--like`): tell the user what carried over (above).
+- **Beat 0 — Active design profile** (only when `summary.design_profile.name` is set): announce it
+  — "Using the **<name>** design profile — <one-line look from `description`>; adjust any of it?" —
+  and tell the user what its `intent_prefill` preset (above). When no profile is active, skip Beat 0.
 - **Beat 1 — Format & platform**: `target_platform`, `target_duration`, and the `video_type`
   one-liner. (Render dims/fps/quality are a silent default — recap them once at the PLAN gate.)
   *Multi-short fan-out caveat:* all shorts inherit this ONE project aspect/platform — per-short
@@ -203,7 +216,8 @@ resolved values — not "I'll pick a look":
 > with a **#FF3B30** accent, bold-pop ALL-CAPS caption chunks, fast-snap motion. Good, or change
 > any of it?"
 
-- `--like` set → propose the SOURCE brief's Design language section instead of the table row.
+- A **design profile** active → propose its `look` (palette / typography / caption_style / motion /
+  grade from `summary.design_profile.look`) as the concrete row instead of the table row.
 - Name only kit families (the table + the wider kit list in `brief-design.md`); for a
   bilingual/CJK look name the matching Noto SC/JP face explicitly.
 - Record the agreed look (table row, with the user's edits) as one compact line:

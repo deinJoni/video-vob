@@ -11,7 +11,7 @@ moment.
 ## Read sites
 | step | source | fields |
 |---|---|---|
-| 1 | `vob_read_state_summary` | `manifest{path,file_count,total_duration_seconds}`, `intent.answers`, `platform{...}`, `video_type{canonical,source,lint_ruleset,segmentation,clean_cut,overlay_vocabulary,transition_vocabulary,design_default}`, `target_duration_seconds`, `inspect.classification` pool paths, `inspect.{clean_speech_path,digest_path,strips_legend_path,thumbs_dir,thumb_interval_seconds,thumb_count,transcript_path,transcript_aligned,audio,segments_path}`, `brief`, `storyboard{...,broll_gap_count,broll_gaps_path}`, `style.derived_from` |
+| 1 | `vob_read_state_summary` | `manifest{path,file_count,total_duration_seconds}`, `intent.answers`, `platform{...}`, `video_type{canonical,source,lint_ruleset,segmentation,clean_cut,overlay_vocabulary,transition_vocabulary,design_default}`, `target_duration_seconds`, `inspect.classification` pool paths, `inspect.{clean_speech_path,digest_path,strips_legend_path,thumbs_dir,thumb_interval_seconds,thumb_count,transcript_path,transcript_aligned,audio,segments_path}`, `brief`, `storyboard{...,broll_gap_count,broll_gaps_path}`, `design_profile{name,look,...}` |
 | 2 | read of `.opencode/vob/references/brief-design.md` | brief skeleton + tone→design table |
 | 7 | `vob_save_storyboard` result (via subagent) or summary | `storyboard.markdown_path`, `scene_count`, `plan_lint` |
 
@@ -35,9 +35,12 @@ moment.
    section is BINDING for the composer. **When `intent.answers.design_language` is present** (the
    user already confirmed the concrete look at INTENT), transcribe it into the Design language
    section verbatim — that IS the binding decision; do not re-derive from tone. Only when it is
-   absent, fill the section from the tone table. Either way, adjust only where the user's
-   `captions_style` / rough idea / `--like` source brief say otherwise, and keep the platform safe
-   bands + 56px caption floor as hard constraints (surface any forced adjustment at the gate).
+   absent, fill the section from the tone table. **When `summary.design_profile.name` is set**, seed
+   the Design language section from the profile's `look` (palette/typography/caption_style/motion/
+   grade) before the tone table — it is the brand baseline (the orchestrator already proposed it at
+   INTENT). Either way, adjust only where the user's `captions_style` / rough idea say otherwise, and
+   keep the platform safe bands + 56px caption floor as hard constraints (surface any forced
+   adjustment at the gate).
 
    **Fan-out:** when the job is N shorts, the brief's Target section MUST name the deliverable
    count and per-short duration (e.g. `- Deliverables: 3 shorts, 20–35s each`) — the brief is the
@@ -82,6 +85,8 @@ moment.
    overlay_vocabulary: <summary.video_type.overlay_vocabulary, comma-joined>
    transition_vocabulary: <summary.video_type.transition_vocabulary, comma-joined>
    design_default: <summary.video_type.design_default, compact: palette/typography/caption_style/motion/grade — the storyboarder mirrors the brief's Design language into target.design, falling back to these>
+   design_profile: <summary.design_profile.name | none>
+   design_profile.look: <summary.design_profile.look, compact: palette/typography/caption_style/motion/grade/slots — the resolved active profile's LOOK; the storyboarder mirrors it VERBATIM into target.design (it takes precedence over design_default)>
 
    fan_out: <N> shorts                            (omit the two fan_out lines entirely for a single video)
    fan_out.per_short_duration: <min>-<max>s       (from target_duration_range; or the single per-short figure)
@@ -112,8 +117,6 @@ moment.
    thumb_interval_seconds: <n>
    thumb_count: <n>
    strips_legend_path: <inspect.strips_legend_path | none>
-   style_source: <derived_from | none>
-   style_source_brief: ~/video-vob-sessions/<derived_from>/brief.md | none
    prior_storyboard_path: <storyboard.artifact_path | none>
    revision_notes: <user's exact words, or validator errors | none>
    Follow your agent instructions.

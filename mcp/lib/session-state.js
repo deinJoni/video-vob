@@ -12,6 +12,7 @@ const { materializeSceneClips } = require("./clip-materialize.js");
 const { materializeSubjectMattes } = require("./matte-materialize.js");
 const { materializeSceneLayouts } = require("./layout-materialize.js");
 const { summarizeActiveVideoType } = require("./video-types.js");
+const { getDesignProfile, summarizeActiveDesignProfile } = require("./design-profiles.js");
 const { visualCriticMode } = require("./visual-legibility.js");
 const hostProfile = require("./host-profile.js");
 const { deriveRenderPlan, validSegmentRenders } = require("./render-segments.js");
@@ -39,7 +40,7 @@ function nowIso() {
   return new Date().toISOString();
 }
 
-function buildInitialSessionState({ project_id, target, derived_from }) {
+function buildInitialSessionState({ project_id, target, design_profile }) {
   const id = assertSafeProjectId(project_id);
   const ts = nowIso();
   const state = {
@@ -50,14 +51,14 @@ function buildInitialSessionState({ project_id, target, derived_from }) {
     last_updated: ts,
     history: [],
   };
-  // Optional style lineage: when a project is started "--like" a prior one
-  // (vob_init_project { derived_from }), stamp the source project_id so the
-  // orchestrator can inherit its design — the source's intent answers, brief
-  // tone, and composition look. Advisory only: no gate reads it, and it rides
-  // through every transition because all state writes spread ...state. Omitted
-  // entirely when not deriving, to keep a baseline state.json lean.
-  if (derived_from != null) {
-    state.style = { derived_from, applied_at: ts };
+  // Optional design profile (v0.3.10, the --like successor): when a project is
+  // started with a named profile (vob_init_project { design_profile }), stamp the
+  // resolved profile NAME so resolveActiveDesignProfile (design-profiles.js) picks
+  // it up — no cross-project read, just a self-contained name. Advisory only: no
+  // gate reads it, and it rides through every transition because all state writes
+  // spread ...state. Omitted entirely when none, to keep a baseline state.json lean.
+  if (design_profile != null && String(design_profile).trim()) {
+    state.design_profile = { name: String(design_profile).trim(), applied_at: ts };
   }
   return state;
 }
@@ -69,18 +70,20 @@ function initProject(args) {
     throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, "target must be an object if provided");
   }
 
-  // Optional "--like <project>" style inheritance. Validate the source project
-  // BEFORE creating the new one, so we never leave a new project pointing at a
-  // source that doesn't exist. We only check the source's state.json existence
-  // (a read); we never take the source's session lock.
-  const derivedFrom = args && args.derived_from != null ? String(args.derived_from).trim() : null;
-  if (derivedFrom) {
-    const sourceId = assertSafeProjectId(derivedFrom);
-    if (!fs.existsSync(statePath(sourceId))) {
-      throw new ToolError(
-        ERROR_CODES.NOT_FOUND,
-        `cannot derive from '${sourceId}': no such project (state.json not found). Use an existing project_id to inherit its style.`,
-      );
+  // Optional named design profile (v0.3.10, replaces --like). Resolve the name
+  // BEFORE creating the project. Fail-safe: an unknown name does NOT hard-error
+  // (unlike the old derived_from NOT_FOUND) — the project is still created, just
+  // without a profile, and the caller is told via `warning`. A profile is
+  // self-contained, so there is no cross-project read and no bad state to leave.
+  const requestedProfile = args && args.design_profile != null ? String(args.design_profile).trim() : null;
+  let resolvedProfileName = null;
+  let profileWarning = null;
+  if (requestedProfile) {
+    const profile = getDesignProfile(requestedProfile);
+    if (profile) {
+      resolvedProfileName = profile.name;
+    } else {
+      profileWarning = `unknown design profile '${requestedProfile}'; project created without one (run vob_doctor to list available profiles)`;
     }
   }
 
@@ -94,14 +97,15 @@ function initProject(args) {
         `state.json already exists for project ${id} (already initialized)`,
       );
     }
-    const state = buildInitialSessionState({ project_id: id, target, derived_from: derivedFrom });
+    const state = buildInitialSessionState({ project_id: id, target, design_profile: resolvedProfileName });
     writeFileAtomic(file, `${JSON.stringify(state, null, 2)}\n`);
     return {
       created: true,
       project_id: id,
       session_dir: dir,
       phase: state.phase,
-      style: state.style ? { derived_from: state.style.derived_from } : null,
+      design_profile: state.design_profile ? { name: state.design_profile.name } : null,
+      ...(profileWarning ? { warning: profileWarning } : {}),
     };
   });
 }
@@ -594,7 +598,6 @@ function buildStateSummary(state, projectId) {
   const intentSlot = asSlot(state.intent);
   const answers = intentSlot ? intentSlot.answers : null;
   const transcoded = asSlot(state.transcoded_clips);
-  const style = asSlot(state.style);
   return {
     project_id: state.project_id,
     phase: state.phase,
@@ -603,7 +606,9 @@ function buildStateSummary(state, projectId) {
     iteration_version: currentIterationVersion(state),
     archived_version_count: iteration ? arrOr(iteration.archive).length : 0,
     finalized_version: iteration ? intOr(iteration.finalized_version, null) : null,
-    style: style && style.derived_from != null ? { derived_from: style.derived_from } : null,
+    // (v0.3.10) Resolved design profile (env > recorded intent answer > init stamp
+    // > none) — the --like successor; mirrors how video_type is surfaced.
+    design_profile: summarizeActiveDesignProfile(state),
     external_import: state.external_import === true,
     deliverable_count: arrOr(state.deliverables).length,
     deliverables: summarizeDeliverables(state.deliverables),

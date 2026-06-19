@@ -125,13 +125,17 @@ a **gap** instead of forcing a bad match: gaps land in `plan/broll_gaps.json` as
 shopping list ("~2.5s: close-up of hands typing"), you upload more footage, and a sanctioned
 PLAN→INGEST loop re-derives the plan with the new material.
 
-### Inherit a past project's style (`--like`)
+### Choose a design profile
 
-Add `--like <past_project>` (or just say "same style as <past_project>") to start a new project from a previous one's design. Its tone, platform, duration, and caption/visual treatment carry over; the new footage's content (key moments, cuts) is derived fresh. Handy for a recurring series or a consistent brand look — instead of re-describing the style each time, point at the project you liked.
+A **design profile** is a named, reusable bundle that captures how a brand's output looks and feels — its palette, typography, caption look, motion, grade, plus house editorial defaults (tone, platform, music/VO treatment, caption animation, pacing). Author it once, apply it to any future project **by name**, and every output shares the same identity without re-describing the style each time. (This replaces the old `--like` lineage: instead of pointing at a prior project and re-deriving its look every run, a profile is a self-contained named thing.)
 
-- `/vob promo ~/footage/new.mov --like bbq-talk` — new project `promo`, styled after the existing `bbq-talk`.
+Pick one of the **5 built-in starters** — `bold-social` (punchy vertical social), `clean-corporate` (clean explainer), `cinematic-gold` (warm cinematic film), `warm-podcast` (warm talk), `mono-editorial` (stark monochrome) — or author your own. Apply it by name:
 
-The named project must already exist; the new project records the lineage (you'll see `Styled after: bbq-talk` in its package manifest/README). `--like` only applies when creating a **new** project — resuming an existing project keeps its original lineage (you can't change the inherited style retroactively).
+- `/vob promo ~/footage/new.mov --profile bold-social` — new project `promo`, styled with the `bold-social` profile.
+
+A profile is orthogonal to the **video-type preset** (the preset decides *what kind of video* this is; the profile decides *what it looks like*), so the same profile renders as a social-short **or** a cinematic long-form. It's applied when creating a new project, recorded as an optional intent answer, or set per-process with `VOB_DESIGN_PROFILE`. The new project records the profile (you'll see `Design profile: bold-social` in its package manifest/README). Unknown names never error — the project is created anyway, with a warning. A profile may default the stylistic keys but **never** your `key_moments` or `target_duration` (those are content-specific and always derived fresh).
+
+**Authoring your own:** the orchestrator's guided flow asks for palette / font / vibe / tone / captions / music and saves a profile (you can start from blank, a starter, or an existing project's resolved look). Or hand-author one: drop a JSON in `.vob-config/design-profiles/<name>.json` (one profile per file) — copy `.vob-config/design-profile.example.json` as a template. Run `vob_doctor` to list the resolved profiles.
 
 ### Off-rails builds (escape hatch)
 

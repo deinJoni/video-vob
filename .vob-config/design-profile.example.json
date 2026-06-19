@@ -1,0 +1,43 @@
+{
+  "_comment": "Design profile template (v0.3.10) — a named, reusable style bundle. Copy this into .vob-config/design-profiles/<name>.json (one file per profile; the directory is read once per process; files starting with '.' or '_' are skipped). A profile is applied to any project BY NAME, via `vob_init_project { design_profile: \"<name>\" }`, the VOB_DESIGN_PROFILE env var, or by recording it as the `design_profile` intent answer. Unknown names / bad tokens never error (fail-safe). This replaces the old --like lineage. Run `vob_doctor` to list the resolved profiles. (The keys starting with '_' below are comments and are ignored by the loader.)",
+
+  "name": "acme-brand",
+  "description": "One-line summary of the brand's look + feel.",
+  "version": 1,
+
+  "_look": "Resolves INTO target.design + the --vob-* CSS tokens the composer renders from. Every block is OPTIONAL and PARTIAL — omitted tokens gap-fill from the active video-type's design_default. palette keys map to tokens: bg→--vob-bg, surface→--vob-surface, text→--vob-text, text_muted→--vob-text-muted, accent→--vob-accent, accent_2→--vob-accent-2. typography values are font-kit family names (Inter, Anton, Hanken Grotesk, Playfair Display, EB Garamond, Archivo Black, Noto Sans SC, ...). caption_style/motion/grade are freeform treatment notes (e.g. bold-pop / fast-snap / high-contrast). slots optionally pins design-system component names per slot (title/lower_third/grade/motion/backdrop/caption/...).",
+  "look": {
+    "palette": {
+      "bg": "#0A0A0A",
+      "surface": "#14141A",
+      "text": "#FFFFFF",
+      "text_muted": "#B8B8C0",
+      "accent": "#FF3B30",
+      "accent_2": "#FFD60A"
+    },
+    "typography": {
+      "headline": "Anton",
+      "caption": "Hanken Grotesk",
+      "body": "Inter"
+    },
+    "caption_style": "bold-pop",
+    "motion": "fast-snap",
+    "grade": "high-contrast",
+    "slots": {
+      "grade": "grade-punch"
+    }
+  },
+
+  "_editorial_defaults": "Stylistic INTENT pre-answers (precedence: explicit human answer > this profile default > derivation/ask). CARVE-OUT: a profile may NEVER default `key_moments` (content-specific) or `target_duration` (content/campaign-specific) — those keys are stripped if present. Friendly names map onto the canonical intent keys: caption_animation→caption_animation_intent, pacing→pacing_intent, transition_lean→transition_intent, speed→speed_intent, layout→layout_intent.",
+  "editorial_defaults": {
+    "video_type": "social-short",
+    "target_platform": "tiktok",
+    "tone": "energetic, punchy, direct",
+    "music_vo": "music bed under voiceover, burned captions",
+    "caption_animation": "pop",
+    "pacing": "fast",
+    "transition_lean": "punchy cuts, occasional whip/zoom",
+    "speed": "light",
+    "layout": "none"
+  }
+}

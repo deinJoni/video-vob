@@ -4,13 +4,13 @@ const { initProject } = require("../session-state.js");
 
 module.exports = Object.freeze({
   name: "vob_init_project",
-  description: "Create the session directory and initial state.json (phase INGEST). Errors STATE_CONFLICT if the project exists (resume instead). Optional derived_from stamps style lineage from an existing project (NOT_FOUND if it doesn't exist). Returns {created, project_id, session_dir, phase, style}.",
+  description: "Create the session directory and initial state.json (phase INGEST). Errors STATE_CONFLICT if the project exists (resume instead). Optional design_profile names a reusable design profile (look tokens + stylistic editorial defaults) to stamp; an UNKNOWN name is non-fatal — the project is still created and the result carries a `warning` (fail-safe; replaces the old --like derived_from/NOT_FOUND path). Returns {created, project_id, session_dir, phase, design_profile, warning?}.",
   inputSchema: {
     type: "object",
     properties: {
       project_id: { type: "string" },
       target: { type: "object", additionalProperties: true },
-      derived_from: { type: "string" },
+      design_profile: { type: "string" },
     },
     required: ["project_id"],
   },

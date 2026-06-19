@@ -18,6 +18,7 @@ const { probeFile, summarizeProbe } = require("../ffprobe.js");
 const { compositeOverlayOverBase } = require("../overlay-compositor.js");
 const { normalizeLoudnessInPlace } = require("../loudnorm.js");
 const { resolveLoudnessTarget } = require("../video-types.js");
+const { resolveActiveDesignProfile } = require("../design-profiles.js");
 const { buildCaptionSidecar } = require("../caption-sidecar.js");
 const { buildTranscriptResolver, distributionFromStoryboard, findTimeline, loadTranscript, storyboardHasShorts, storyboardTimelines } = require("../storyboard-schema.js");
 
@@ -415,7 +416,7 @@ async function importDeliverable(args) {
       manifest_version: "1.0",
       project_id: id,
       generated_at: importedAt,
-      derived_from: stateNow.style && stateNow.style.derived_from ? stateNow.style.derived_from : null,
+      design_profile: resolveActiveDesignProfile(stateNow).name, // the --like successor; null when none (mirrors package-output.js)
       ...(distribution ? { distribution } : {}),
       deliverable_count: merged.length,
       deliverables: merged,
