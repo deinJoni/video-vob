@@ -76,7 +76,15 @@ const AUDIO_TREATMENT_VALUES = Object.freeze([
 //                         ONE clip at COMPOSE (layout-materialize.js, costs one <video>); degrades
 //                         to CSS-positioned cells. `pip` here = scene.layout pip, NOT an overlay
 //                         pip nor a b_roll render_mode pip.
-// All but video_type stay plain free-text (no server canonicalization) — the
+//   - `highlight_count`  — (v0.3.11) the number of short-worthy moments to AUTO-EXTRACT from a long
+//                         (or already-edited) source. When set, PLAN runs the discovery pre-pass
+//                         (vob_propose_highlights → highlight-discovery.js) to auto-author a
+//                         multi-short shorts[] storyboard — one short per ranked candidate window —
+//                         which then flows through the EXISTING fan-out machinery unchanged. Absent
+//                         ⇒ the feature is off (manual fan-out / single-timeline authoring).
+//                         Canonicalized server-side to {raw, count} (a positive integer); count:null
+//                         when no integer is parseable (the feature then stays off, no error).
+// All but video_type/highlight_count stay plain free-text (no server canonicalization) — the
 // storyboarder/composer interpret them, the engine never parses them.
 const OPTIONAL_INTENT_KEYS = Object.freeze([
   "video_type",
@@ -90,6 +98,8 @@ const OPTIONAL_INTENT_KEYS = Object.freeze([
   "speed_intent",
   "transition_intent",
   "layout_intent",
+  // v0.3.11 highlight extraction trigger (canonicalized to {raw, count}).
+  "highlight_count",
 ]);
 
 const ALL_INTENT_KEYS = Object.freeze([

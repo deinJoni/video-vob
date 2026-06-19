@@ -12,6 +12,7 @@ const TOOL_MODULES = Object.freeze([
   require("./save-classification.js"),
   require("./acknowledge-inspect.js"),
   require("./record-intent-answer.js"),
+  require("./propose-highlights.js"),
   require("./save-brief.js"),
   require("./confirm-brief.js"),
   require("./save-storyboard.js"),

@@ -11,7 +11,7 @@ moment.
 ## Read sites
 | step | source | fields |
 |---|---|---|
-| 1 | `vob_read_state_summary` | `manifest{path,file_count,total_duration_seconds}`, `intent.answers`, `platform{...}`, `video_type{canonical,source,lint_ruleset,segmentation,clean_cut,overlay_vocabulary,transition_vocabulary,design_default}`, `target_duration_seconds`, `inspect.classification` pool paths, `inspect.{clean_speech_path,digest_path,strips_legend_path,thumbs_dir,thumb_interval_seconds,thumb_count,transcript_path,transcript_aligned,audio,segments_path}`, `brief`, `storyboard{...,broll_gap_count,broll_gaps_path}`, `style.derived_from` |
+| 1 | `vob_read_state_summary` | `manifest{path,file_count,total_duration_seconds}`, `intent.answers` (incl. `highlight_count`), `platform{...}`, `video_type{canonical,source,lint_ruleset,segmentation,clean_cut,overlay_vocabulary,transition_vocabulary,design_default}`, `target_duration_seconds`, `inspect.classification` pool paths, `inspect.{clean_speech_path,digest_path,strips_legend_path,thumbs_dir,thumb_interval_seconds,thumb_count,transcript_path,transcript_aligned,audio,segments_path}`, `brief`, `storyboard{...,broll_gap_count,broll_gaps_path}`, `highlights{count,candidates_summary,highlights_path}`, `style.derived_from` |
 | 2 | read of `.opencode/vob/references/brief-design.md` | brief skeleton + tone→design table |
 | 7 | `vob_save_storyboard` result (via subagent) or summary | `storyboard.markdown_path`, `scene_count`, `plan_lint` |
 
@@ -62,12 +62,28 @@ moment.
    revision_notes? }`. Omit `revision_notes` on the first invocation; pass the user's exact words
    on every subsequent pass.
 
+4b. **Highlight extraction — auto-author the fan-out (v0.3.11).** When
+   `intent.answers.highlight_count` is set (the user asked to *find / cut the best N moments* of a
+   long or already-edited source), call `vob_vob_propose_highlights { project_id }` BEFORE the
+   spawn. It runs the INSPECT signals (ranked hook archetypes, take-quality strength, clean-cut
+   keep-spans, named key moments) FORWARD as a generative selection pass and writes
+   `plan/highlights.json`; the result (mirrored in `summary.highlights`) carries `count` +
+   `candidates_summary` + `highlights_path`. Then:
+   - `count >= 1` → this IS a fan-out of `count` shorts: set the step-5 `fan_out` lines to `count`,
+     and add `highlights_path` to the spawn so the storyboarder authors one schema-1.1 `shorts[]`
+     short per candidate window (it selects clips, captions, and pacing WITHIN each proposed window).
+   - `count == 0` → discovery found nothing usable (`notes` says why): fall back to normal authoring
+     — manual fan-out if the user still wants N shorts, else a single timeline. Never block; the
+     human still approves the plan at the gate.
+   When `highlight_count` is absent, SKIP this step (the feature is off — normal authoring).
+
 5. Invoke the storyboarder. Spawn prompt is DATA-ONLY (no behavioral clauses — the agent .md owns
    behavior; if you are tempted to add an instruction, it belongs in the agent file). Fields with
    no value are passed as the literal string `none`; values come from the read-sites table.
    **Fan-out:** when the job is N shorts from this source (the user asked for multiple, and/or
-   `target_duration_range.per_deliverable` is set in the summary), add the two `fan_out` lines —
-   the storyboarder then emits the schema-1.1 `shorts[]` form:
+   `target_duration_range.per_deliverable` is set in the summary, and/or highlight extraction
+   (step 4b) proposed `count >= 1` candidate windows — N = that `count`), add the two `fan_out`
+   lines — the storyboarder then emits the schema-1.1 `shorts[]` form:
    Invoke the `storyboarder` subagent with the `task` tool, passing:
    ```
    DATA
@@ -103,6 +119,7 @@ moment.
    broll_index_path: <path | none>
    review_pool_path: <path | none>
    segments_path: <path | none>
+   highlights_path: <highlights_path | none>       (v0.3.11 — when set, author ONE schema-1.1 short per candidate window in this file: select clips/captions/pacing within each {start_seconds,end_seconds})
    clean_speech_path: <inspect.clean_speech_path | none>
    digest_path: <inspect.digest_path | none>
    transcript_path: <path | none>

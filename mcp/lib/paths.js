@@ -226,6 +226,14 @@ function brollGapsPath(projectId) {
   return path.join(planDir(projectId), "broll_gaps.json");
 }
 
+// Highlight-extraction candidates (v0.3.11): the ranked short-worthy windows the
+// discovery pre-pass proposes from the INSPECT signals, threaded into the
+// storyboarder spawn to auto-author a multi-short shorts[] plan. Regenerated each
+// vob_propose_highlights run, like broll_gaps.json — a planning aid, not state.
+function highlightsPath(projectId) {
+  return path.join(planDir(projectId), "highlights.json");
+}
+
 function storyboardPath(projectId) {
   return path.join(sessionDir(projectId), "storyboard.json");
 }
@@ -432,6 +440,7 @@ module.exports = {
   briefPath,
   brollGapsPath,
   brollIndexPath,
+  highlightsPath,
   planDir,
   reviewPoolPath,
   composeDir,

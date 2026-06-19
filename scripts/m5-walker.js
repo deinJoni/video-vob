@@ -44,7 +44,7 @@ const SOURCE = process.env.VOB_WALKER_SOURCE || "";
 // `stillsqc` (synthetic test stills), `spans`, `editorial`, `takequality`, and
 // `variety`, `hook`, and `visualqc` (source-free unit harnesses) need no source
 // video — every other phase lays out a fixture against a real clip.
-if (!SOURCE && !["stillsqc", "spans", "editorial", "takequality", "variety", "hook", "visualqc"].includes(process.argv[2])) {
+if (!SOURCE && !["stillsqc", "spans", "editorial", "takequality", "variety", "hook", "visualqc", "highlights"].includes(process.argv[2])) {
   console.error(
     "m5-walker: set VOB_WALKER_SOURCE to a video file or directory, e.g.\n" +
     "  VOB_WALKER_SOURCE=/path/to/clip.mp4 node scripts/m5-walker.js [phase]",
@@ -3316,6 +3316,207 @@ async function runEditorial() {
   console.log("\n=== editorial: hook-grounding lint negative paths verified");
 }
 
+// v0.3.11 `highlights` walker phase — highlight extraction discovery
+// (mcp/lib/highlight-discovery.js) + the vob_propose_highlights tool end-to-end.
+// Source-free: the PURE scorer/clusterer is asserted from synthetic INSPECT
+// signals (ranked hooks, take-quality strength, clean-cut keep-spans, key moments),
+// then the tool path is exercised against a real temp session — write inspect
+// artifacts, record intent, propose, and check plan/highlights.json +
+// state.highlights + read_state_summary. Model-free, deterministic.
+async function runHighlights() {
+  console.log("=== v0.3.11 highlights walker (discovery + propose-highlights tool) — source-free harness");
+  const { discoverHighlights, MAX_HIGHLIGHTS, OVERLAP_FRACTION } = require("../mcp/lib/highlight-discovery.js");
+
+  // Synthetic speech segment. strength/energy default to a solid take so a window
+  // clears the threshold; pass {e,s,t} to vary energy / strength / transcript.
+  const seg = (i, a, b, opts = {}) => ({
+    file_index: 0, index: i, start_seconds: a, end_seconds: b, duration_seconds: b - a,
+    is_silence: false, has_speech: true,
+    transcript_text: opts.t || "some spoken words right here",
+    energy_rms_db: opts.e != null ? opts.e : -15,
+    speech_rate_wpm: 150,
+    strength: opts.s != null ? { score: opts.s, tier: opts.s >= 0.66 ? "strong" : opts.s >= 0.4 ? "usable" : "weak" } : null,
+  });
+  const sil = (i, a, b) => ({ file_index: 0, index: i, start_seconds: a, end_seconds: b, duration_seconds: b - a, is_silence: true, has_speech: false });
+  const overlapSec = (c, d) => Math.max(0, Math.min(c.end_seconds, d.end_seconds) - Math.max(c.start_seconds, d.start_seconds));
+  const overlaps = (c, d) => overlapSec(c, d) > 0;
+
+  // Two strong hooks separated by a silence; a named key moment inside the first.
+  const segsA = [
+    seg(0, 0, 3, { e: -12, s: 0.8, t: "what if you could double your output today" }),
+    seg(1, 3, 6, { e: -13, s: 0.7 }), seg(2, 6, 9, { e: -13, s: 0.7 }),
+    seg(3, 9, 12, { e: -12, s: 0.75 }), seg(4, 12, 15, { e: -14, s: 0.6 }),
+    sil(5, 15, 16),
+    seg(6, 16, 19, { e: -12, s: 0.78, t: "three things nobody tells you about this" }),
+    seg(7, 19, 22, { e: -13, s: 0.7 }), seg(8, 22, 25, { e: -13, s: 0.65 }), seg(9, 25, 28, { e: -14, s: 0.6 }),
+  ];
+  const hooksA = [
+    { rank: 1, score: 6, start_seconds: 0.2, end_seconds: 2.8, hook_type: "question", text: "what if you could double your output today", signals: ["question"] },
+    { rank: 2, score: 4, start_seconds: 16.2, end_seconds: 18.5, hook_type: "number_stat", text: "three things nobody tells you about this", signals: ["number"] },
+  ];
+  const keepA = [{ start: 0, end: 15 }, { start: 16, end: 28 }];
+  const removedA = [{ start: 15, end: 16, reason: "gap" }];
+
+  await step("ranking + keep-span snapping + duration band + key-moment + hook_type", () => {
+    const r = discoverHighlights({
+      hookCandidates: hooksA, segments: segsA, keepSpans: keepA, removedSpans: removedA,
+      keyMoments: { ranges: [{ start: 9, end: 12 }], points: [] },
+      sourceFileIndex: 0, sourceDurationSeconds: 28, target: { seconds: 12, min_seconds: 8, max_seconds: 18 }, count: 2,
+    });
+    assert(r.candidates.length === 2, `expected 2 candidates, got ${r.candidates.length}`);
+    // ranking: monotone non-increasing score, ranks 1..N
+    assert(r.candidates[0].score >= r.candidates[1].score, "candidates not ranked by score");
+    assert(r.candidates[0].rank === 1 && r.candidates[1].rank === 2, "ranks not 1..N");
+    const keepStarts = new Set([0, 16]); const keepEnds = new Set([15, 28]);
+    for (const c of r.candidates) {
+      assert(keepStarts.has(c.start_seconds), `start ${c.start_seconds} is not a keep-span start`);
+      assert(keepEnds.has(c.end_seconds), `end ${c.end_seconds} is not a keep-span end`);
+      assert(c.duration_seconds >= 8 - 1e-6 && c.duration_seconds <= 18 + 1e-6, `duration ${c.duration_seconds} out of [8,18]`);
+      assert(c.source_file_index === 0, "wrong source_file_index");
+    }
+    const km = r.candidates.find((c) => c.start_seconds === 0);
+    assert(km && km.key_moment_refs.length === 1, "key moment 9–12 not captured in its window");
+    assert(km.hook_type === "question", `expected question hook, got ${km.hook_type}`);
+    assert(typeof km.suggested_title === "string" && km.suggested_title.length > 0, "no suggested_title");
+    assert(typeof km.reason === "string" && /question/i.test(km.reason), "reason missing hook archetype");
+    // non-overlapping
+    assert(!overlaps(r.candidates[0], r.candidates[1]), "candidates overlap after dedupe");
+  });
+
+  await step("overlap dedupe — competing seeds yield distinct candidates within the overlap bound", () => {
+    // 60s clean keep span, strong hooks at 0s and 30s, target 20–30s. Many
+    // intermediate seeds grow overlapping windows; dedupe must (a) yield >= 2
+    // DISTINCT candidates (so the pairwise check is NON-vacuous) and (b) keep
+    // every accepted pair's overlap within OVERLAP_FRACTION of the shorter window.
+    const segsD = []; for (let i = 0; i < 20; i++) { const a = i * 3; segsD.push(seg(i, a, a + 3, { e: -12, s: 0.72, t: `body line ${i} spoken` })); }
+    const hooksD = [
+      { rank: 1, score: 6, start_seconds: 0, end_seconds: 2.5, hook_type: "question", text: "why does this matter so much" },
+      { rank: 2, score: 6, start_seconds: 30, end_seconds: 32.5, hook_type: "bold_claim", text: "the only approach that ever works" },
+    ];
+    const r = discoverHighlights({
+      hookCandidates: hooksD, segments: segsD, keepSpans: [{ start: 0, end: 60 }], removedSpans: [], keyMoments: { ranges: [], points: [] },
+      sourceFileIndex: 0, sourceDurationSeconds: 60, target: { seconds: 25, min_seconds: 20, max_seconds: 30 }, count: 3,
+    });
+    assert(r.candidates.length >= 2, `expected >= 2 distinct candidates to exercise dedupe, got ${r.candidates.length}`);
+    for (let i = 0; i < r.candidates.length; i++) {
+      for (let j = i + 1; j < r.candidates.length; j++) {
+        const ci = r.candidates[i]; const cj = r.candidates[j];
+        assert(ci.start_seconds !== cj.start_seconds, "deduped candidates share a start (not distinct)");
+        const shorter = Math.min(ci.duration_seconds, cj.duration_seconds);
+        assert(overlapSec(ci, cj) <= OVERLAP_FRACTION * shorter + 1e-6, `accepted candidates exceed the ${OVERLAP_FRACTION} overlap bound`);
+      }
+    }
+  });
+
+  await step("inverted target band (min > max) degrades gracefully, never inverts a window", () => {
+    const r = discoverHighlights({
+      hookCandidates: hooksA, segments: segsA, keepSpans: keepA, removedSpans: removedA, keyMoments: { ranges: [], points: [] },
+      sourceFileIndex: 0, sourceDurationSeconds: 28, target: { min_seconds: 18, max_seconds: 8 }, count: 2,
+    });
+    for (const c of r.candidates) assert(c.end_seconds > c.start_seconds && c.duration_seconds > 0, "inverted band produced a bad window");
+  });
+
+  await step("null / garbage inputs degrade to empty, never throw (pure-module contract)", () => {
+    for (const bad of [null, undefined, {}, { segments: null, keepSpans: null, hookCandidates: null }, { options: null }, { segments: [{}], target: null, keyMoments: null }]) {
+      const r = discoverHighlights(bad);
+      assert(r && Array.isArray(r.candidates), "discoverHighlights did not return a candidates array");
+    }
+  });
+
+  await step("already-edited source — one long continuous keep span still yields N distinct highlights", () => {
+    const segsB = [];
+    for (let i = 0; i < 20; i++) { const a = i * 8; segsB.push(seg(i, a, a + 8, { e: -13 + (i % 3 === 0 ? 2 : 0), s: i % 5 === 0 ? 0.8 : 0.62, t: `content line number ${i} spoken clearly` })); }
+    const hooksB = [
+      { rank: 1, score: 6, start_seconds: 0, end_seconds: 5, hook_type: "question", text: "why does this always happen" },
+      { rank: 2, score: 5, start_seconds: 64, end_seconds: 69, hook_type: "contrarian", text: "actually everyone gets this wrong" },
+      { rank: 3, score: 4.5, start_seconds: 120, end_seconds: 125, hook_type: "promise", text: "here is how to fix it fast" },
+    ];
+    const r = discoverHighlights({
+      hookCandidates: hooksB, segments: segsB, keepSpans: [{ start: 0, end: 160 }], removedSpans: [], keyMoments: { ranges: [], points: [] },
+      sourceFileIndex: 0, sourceDurationSeconds: 160, target: { seconds: 30, min_seconds: 20, max_seconds: 45 }, count: 3,
+    });
+    assert(r.candidates.length === 3, `expected 3 distinct highlights from a long keep span, got ${r.candidates.length}`);
+    for (const c of r.candidates) assert(c.duration_seconds >= 20 - 1e-6 && c.duration_seconds <= 45 + 1e-6, `dur ${c.duration_seconds} out of [20,45]`);
+    for (let i = 0; i < r.candidates.length; i++) for (let j = i + 1; j < r.candidates.length; j++) assert(!overlaps(r.candidates[i], r.candidates[j]), "edited-source highlights overlap");
+  });
+
+  await step("fail-safe — weak signals return [] with a notes reason, never throws", () => {
+    const segsC = []; for (let i = 0; i < 6; i++) { const a = i * 3; segsC.push(seg(i, a, a + 3, { e: -34, s: 0.16, t: "um filler" })); }
+    const r = discoverHighlights({ hookCandidates: [], segments: segsC, keepSpans: [{ start: 0, end: 18 }], removedSpans: [], keyMoments: { ranges: [], points: [] }, sourceFileIndex: 0, sourceDurationSeconds: 18, target: { seconds: 12, min_seconds: 8, max_seconds: 18 }, count: 3 });
+    assert(r.candidates.length === 0, `weak signals should yield no candidates, got ${r.candidates.length}`);
+    assert(typeof r.notes === "string" && r.notes.length > 0, "expected a notes reason on empty output");
+    // no speech at all → also empty, never throws
+    const empty = discoverHighlights({ hookCandidates: [], segments: [sil(0, 0, 10)], keepSpans: [], sourceFileIndex: 0, target: {}, count: 2 });
+    assert(empty.candidates.length === 0, "no-speech input should be empty");
+  });
+
+  await step("count is clamped to MAX_HIGHLIGHTS and defaults when unspecified", () => {
+    const segsB = []; for (let i = 0; i < 30; i++) { const a = i * 6; segsB.push(seg(i, a, a + 6, { e: -13, s: 0.7, t: `line ${i} spoken` })); }
+    const hooksB = []; for (let i = 0; i < 30; i += 3) hooksB.push({ rank: i, score: 5, start_seconds: i * 6, end_seconds: i * 6 + 4, hook_type: "bold_claim", text: `claim number ${i}` });
+    const huge = discoverHighlights({ hookCandidates: hooksB, segments: segsB, keepSpans: [{ start: 0, end: 180 }], removedSpans: [], keyMoments: { ranges: [], points: [] }, sourceFileIndex: 0, sourceDurationSeconds: 180, target: { seconds: 12, min_seconds: 8, max_seconds: 18 }, count: 50 });
+    assert(huge.candidates.length <= MAX_HIGHLIGHTS, `count ${huge.candidates.length} exceeds cap ${MAX_HIGHLIGHTS}`);
+    assert(/capped/.test(huge.notes), "expected a 'capped' note when over MAX_HIGHLIGHTS");
+  });
+
+  // --- tool path: real temp session, real artifacts, executeTool end-to-end ---
+  await step("tool path — vob_propose_highlights reads artifacts, writes highlights.json, stamps state + summary", async () => {
+    const HID = "walker_highlights";
+    fs.rmSync(sessionDir(HID), { recursive: true, force: true });
+    await call("vob_init_project", { project_id: HID, target: { format: "tiktok", duration: "20-35s per short" } });
+    const insp = path.join(sessionDir(HID), "inspect");
+    fs.mkdirSync(insp, { recursive: true });
+    // 60s scenario whose keep-span ends fall in the 20–35s band from each hook.
+    const segsT = [];
+    for (let i = 0; i < 10; i++) { const a = i * 3; segsT.push(seg(i, a, a + 3, { e: i === 0 ? -11 : -13, s: i === 0 ? 0.82 : 0.66, t: i === 0 ? "what nobody ever tells you about this" : `body line ${i}` })); }
+    segsT.push(sil(10, 30, 31));
+    for (let i = 11; i < 21; i++) { const a = 31 + (i - 11) * 3; segsT.push(seg(i, a, a + 3, { e: i === 11 ? -11 : -13, s: i === 11 ? 0.8 : 0.65, t: i === 11 ? "here is the one trick that changes everything" : `body line ${i}` })); }
+    const hooksT = [
+      { rank: 1, score: 6, start_seconds: 0.2, end_seconds: 2.8, hook_type: "curiosity_gap", text: "what nobody ever tells you about this", signals: ["curiosity_gap"] },
+      { rank: 2, score: 5, start_seconds: 31.2, end_seconds: 33.6, hook_type: "promise", text: "here is the one trick that changes everything", signals: ["promise"] },
+    ];
+    const keepT = [{ start: 0, end: 30 }, { start: 31, end: 61 }];
+    fs.writeFileSync(path.join(insp, "inspect.json"), JSON.stringify({ transcribed_file_index: 0, hook_candidates: hooksT }));
+    fs.writeFileSync(path.join(insp, "segments.json"), JSON.stringify({ files: [{ file_index: 0, segments: segsT }] }));
+    fs.writeFileSync(path.join(insp, "clean_speech.json"), JSON.stringify({ file_index: 0, keep_spans: keepT, removed: [{ start: 30, end: 31, reason: "gap" }] }));
+    await call("vob_record_intent_answer", { project_id: HID, key: "target_duration", value: "20-35s per short" });
+    await call("vob_record_intent_answer", { project_id: HID, key: "key_moments", value: "0:10-0:12" });
+    await call("vob_record_intent_answer", { project_id: HID, key: "highlight_count", value: "find the best 2 moments" });
+
+    const res = await call("vob_propose_highlights", { project_id: HID });
+    assert(res.count === 2, `tool proposed ${res.count}, expected 2`);
+    assert(res.requested_count === 2, `requested_count ${res.requested_count}, expected 2 (from highlight_count)`);
+    assert(res.source_file_index === 0, "wrong source_file_index");
+    assert(res.candidates_summary.length === 2, "candidates_summary length");
+    assert(res.candidates_summary.every((c) => c.duration_seconds >= 20 - 1e-6 && c.duration_seconds <= 35 + 1e-6), "tool windows out of the 20–35s band");
+
+    const hjson = JSON.parse(fs.readFileSync(path.join(sessionDir(HID), "plan", "highlights.json"), "utf8"));
+    assert(hjson.candidates.length === 2, "highlights.json candidate count");
+    assert(hjson.candidates[0].key_moment_refs.length >= 1, "key moment not recorded in highlights.json");
+    assert(hjson.source.file_index === 0 && hjson.requested_count === 2, "highlights.json header fields");
+
+    const sum = await call("vob_read_state_summary", { project_id: HID });
+    assert(sum.highlights && sum.highlights.count === 2, "state summary highlights.count");
+    assert(sum.highlights.candidates_summary.length === 2, "state summary candidates_summary");
+    assert(sum.highlights.highlights_path === res.highlights_path, "state summary highlights_path");
+    fs.rmSync(sessionDir(HID), { recursive: true, force: true });
+  });
+
+  await step("tool fail-safe — no INSPECT artifacts → count:0 with notes, never errors", async () => {
+    const HID2 = "walker_highlights_empty";
+    fs.rmSync(sessionDir(HID2), { recursive: true, force: true });
+    await call("vob_init_project", { project_id: HID2, target: { format: "tiktok", duration: "30s" } });
+    const res = await call("vob_propose_highlights", { project_id: HID2, count: 3 });
+    assert(res.count === 0, `expected 0 with no inspect artifacts, got ${res.count}`);
+    assert(typeof res.notes === "string" && res.notes.length > 0, "expected a notes reason");
+    // the artifact + state slot are still written (count:0)
+    const sum = await call("vob_read_state_summary", { project_id: HID2 });
+    assert(sum.highlights && sum.highlights.count === 0, "expected a count:0 highlights slot");
+    fs.rmSync(sessionDir(HID2), { recursive: true, force: true });
+  });
+
+  console.log("\n=== highlights: discovery + tool wiring verified");
+}
+
 // v3.9 `hook` walker phase — the semantic hook scorer (mcp/lib/hook-scoring.js) +
 // its integration in rankHookCandidates. Source-free unit harness: faithful legacy
 // superset (VOB_HOOK_SCORING=off == old weights), rhetorical archetype
@@ -3676,6 +3877,10 @@ async function main() {
   }
   if (phase === "visualqc") {
     await runVisualQc();
+    return;
+  }
+  if (phase === "highlights") {
+    await runHighlights();
     return;
   }
   console.log(`=== M5 walker v2 — phase: ${phase} — project: ${PROJECT_ID}`);

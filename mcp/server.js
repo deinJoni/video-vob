@@ -8,7 +8,7 @@ const { TOOLS, VALID_ROLE_BUNDLES } = require("./lib/tool-registry.js");
 const { executeTool } = require("./lib/dispatch.js");
 const { verifyAdapterToolReferences, verifyAgentRegistrations } = require("./lib/registry-integrity.js");
 
-const SERVER_INFO = Object.freeze({ name: "vob", version: "0.3.9" });
+const SERVER_INFO = Object.freeze({ name: "vob", version: "0.3.11" });
 
 // Boot-time integrity check: every SUBAGENT definition shipped by ANY adapter
 // must have a matching entry in VALID_ROLE_BUNDLES. Encodes the M3 lesson — a
