@@ -14,6 +14,7 @@ allowed-tools:
   - mcp__vob__vob_inspect_source
   - mcp__vob__vob_acknowledge_inspect
   - mcp__vob__vob_record_intent_answer
+  - mcp__vob__vob_propose_highlights
   - mcp__vob__vob_save_brief
   - mcp__vob__vob_confirm_brief
   - mcp__vob__vob_log_storyboarder_invocation

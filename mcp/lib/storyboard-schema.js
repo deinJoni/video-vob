@@ -3436,6 +3436,7 @@ module.exports = {
   allStoryboardScenes,
   buildTranscriptResolver,
   captionSegmentsOf,
+  parseKeyMoments,
   clipRoleOf,
   clipSpeedOf,
   collectBrollGaps,

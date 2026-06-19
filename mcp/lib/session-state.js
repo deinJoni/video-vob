@@ -185,6 +185,25 @@ function clipsDigest(projectId, transcodedClips) {
   };
 }
 
+// Lean digest of the highlight-extraction discovery pass (v0.3.11). The full
+// candidate detail (reason/components/key_moment_refs) lives in plan/highlights.json;
+// the orchestrator reads this slot to know how many shorts the discovery pass
+// proposed (and to thread highlights_path into the storyboarder spawn). null until
+// vob_propose_highlights has run.
+function summarizeHighlights(slot) {
+  const h = asSlot(slot);
+  if (!h) return null;
+  return {
+    count: intOr(h.count, 0),
+    requested_count: Number.isInteger(h.requested_count) ? h.requested_count : null,
+    source_file_index: intOr(h.source_file_index, null),
+    generated_at: strOrNull(h.generated_at),
+    highlights_path: strOrNull(h.highlights_path),
+    notes: strOrNull(h.notes),
+    candidates_summary: arrOr(h.candidates_summary).slice(0, 10),
+  };
+}
+
 // Lean digest of the subject-matte materialization (v3.3 subject compositing).
 // The full per-matte document persists in state.subject_mattes on disk; the
 // orchestrator reads this to know whether mattes are ready / over budget / on a
@@ -637,6 +656,10 @@ function buildStateSummary(state, projectId) {
     target_duration_range: summarizeTargetDurationRange(answers),
     brief: summarizeBrief(state.brief),
     storyboard: summarizeStoryboard(state.storyboard),
+    // (v0.3.11) Auto-discovered highlight windows (one per future fan-out short);
+    // null until vob_propose_highlights runs. The orchestrator reads `count` to
+    // decide the highlight-driven fan-out branch and threads highlights_path in.
+    highlights: summarizeHighlights(state.highlights),
     clips: transcoded
       ? { generated_at: strOrNull(transcoded.generated_at), ...clipsDigest(projectId, transcoded) }
       : null,
